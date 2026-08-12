@@ -1,11 +1,11 @@
 {
-  "name": "freebuff.com application",
-  "short_name": "freebuff.com",
-  "description": "freebuff.com application",
+  "name": "Aria — a quiet desk for your GitHub",
+  "short_name": "Aria",
+  "description": "Aria — browse, edit, branch, and commit to your GitHub from one quiet desk.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#000000",
+  "background_color": "#72D0D0",
+  "theme_color": "#72D0D0",
   "icons": [
     {
       "src": "/logo.png",

@@ -72,7 +72,7 @@ import { useNavigate, useSearchParams } from "react-router";
 function Wordmark() {
   return (
     <div className="flex items-baseline gap-1">
-      <span className="text-[15px] font-semibold tracking-tight">commit</span>
+      <span className="text-[15px] font-semibold tracking-tight">Aria</span>
       <span className="text-[15px] font-semibold tracking-tight text-neutral-400">
         .
       </span>
@@ -127,7 +127,7 @@ function ConnectScreen({
               Connect your GitHub
             </h1>
             <p className="mt-3 text-sm leading-6 text-neutral-500">
-              Authorize commit. to read your repositories and push commits.
+              Authorize Aria to read your repositories and push commits.
               It's a one-time handshake — after this, everything happens here.
             </p>
           </div>

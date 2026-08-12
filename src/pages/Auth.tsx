@@ -104,7 +104,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
           to="/"
           className="flex items-baseline gap-1 text-[15px] font-semibold tracking-tight"
         >
-          commit<span className="text-neutral-400">.</span>
+          Aria<span className="text-neutral-400">.</span>
         </Link>
         <p className="text-xs text-neutral-400">Personal GitHub desk</p>
       </header>

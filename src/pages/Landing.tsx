@@ -84,7 +84,7 @@ const SAMPLE_COMMITS = [
 
 const FAKE_REPOS = [
   { name: "chaperon", meta: "main · 2d", active: true },
-  { name: "commit.", meta: "main · 5h", active: false },
+  { name: "aria", meta: "main · 5h", active: false },
   { name: "ne-ha-rfp", meta: "prod · 3d", active: false },
 ];
 
@@ -98,7 +98,7 @@ const FAKE_FILES = [
 function Wordmark() {
   return (
     <Link to="/" className="flex items-baseline gap-1">
-      <span className="text-[15px] font-semibold tracking-tight">commit</span>
+      <span className="text-[15px] font-semibold tracking-tight">Aria</span>
       <span className="text-[15px] font-semibold tracking-tight text-neutral-400">
         .
       </span>
@@ -117,7 +117,7 @@ function DeskPreview() {
           <span className="size-2 rounded-full bg-neutral-200" />
         </div>
         <span className="font-mono text-[11px] text-neutral-400">
-          commit. — personal desk
+          aria — personal desk
         </span>
         <div className="flex items-center gap-2 font-mono text-[11px] text-neutral-400">
           <span className="inline-flex items-center gap-1">
@@ -265,7 +265,7 @@ export default function Landing() {
               <span className="text-neutral-400">Commit from anywhere.</span>
             </h1>
             <p className="mt-7 max-w-lg text-pretty text-lg leading-7 text-neutral-500 sm:text-xl sm:leading-8">
-              commit. is a quiet workspace for your GitHub — browse any
+              Aria is a quiet workspace for your GitHub — browse any
               repository, switch branches, create, rename, and delete files,
               review the diff, and push changes or open a pull request without
               ever leaving the page.
