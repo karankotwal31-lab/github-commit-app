@@ -42,6 +42,7 @@ import {
   type Repository,
 } from "@/lib/github";
 import { diffLines, type DiffLine } from "@/lib/diff";
+import { secretRisk } from "@/lib/secrets";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
@@ -63,6 +64,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  ShieldAlert,
   Trash2,
   Unplug,
 } from "lucide-react";
@@ -349,6 +351,7 @@ function Workspace({
   const createBranchAction = useAction(api.githubActions.createBranch);
   const createPullRequest = useAction(api.githubActions.createPullRequest);
   const commitChanges = useAction(api.githubActions.commitChanges);
+  const listTreeFiles = useAction(api.githubActions.listTreeFiles);
   const disconnect = useMutation(api.github.disconnect);
 
   const [repos, setRepos] = useState<Repository[] | null>(null);
@@ -401,6 +404,18 @@ function Workspace({
     }>
   >([]);
   const [stagedDiffOpen, setStagedDiffOpen] = useState<string | null>(null);
+
+  // Secret guardrails: committing secret-looking files is blocked until the
+  // user explicitly confirms. `allowSecrets` is that explicit confirmation.
+  const [allowSecrets, setAllowSecrets] = useState(false);
+
+  // ⌘K quick-jump: every file in the current branch, loaded once per branch.
+  const [treeFiles, setTreeFiles] = useState<Array<{ path: string; size: number }> | null>(
+    null,
+  );
+  const [treeFilesLoading, setTreeFilesLoading] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
 
@@ -481,6 +496,39 @@ function Workspace({
     [listBranches],
   );
 
+  const loadTreeFiles = useCallback(
+    async (repo: Repository, branchName: string) => {
+      setTreeFilesLoading(true);
+      try {
+        const data = await listTreeFiles({
+          owner: ownerOf(repo.fullName),
+          repo: repoNameOf(repo.fullName),
+          branch: branchName,
+        });
+        setTreeFiles(data);
+      } catch (e) {
+        // Search is a nicety — don't block the workspace on it.
+        setTreeFiles(null);
+        console.error(errorMessage(e));
+      } finally {
+        setTreeFilesLoading(false);
+      }
+    },
+    [listTreeFiles],
+  );
+
+  // ⌘K / Ctrl+K opens the file quick-jump.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        if (selectedRepo) setSearchOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedRepo]);
+
   const handleSelectRepo = (repo: Repository) => {
     setSelectedRepo(repo);
     setBranch(repo.defaultBranch);
@@ -493,10 +541,15 @@ function Workspace({
     setPrResult(null);
     setStaged([]);
     setStagedDiffOpen(null);
+    setAllowSecrets(false);
+    setTreeFiles(null);
+    setSearchQuery("");
+    setSearchOpen(false);
     setPath("");
     setViewMode("edit");
     loadEntries(repo, repo.defaultBranch, "");
     loadBranches(repo);
+    loadTreeFiles(repo, repo.defaultBranch);
   };
 
   const handleBackToRepos = () => {
@@ -511,6 +564,10 @@ function Workspace({
     setPrResult(null);
     setStaged([]);
     setStagedDiffOpen(null);
+    setAllowSecrets(false);
+    setTreeFiles(null);
+    setSearchQuery("");
+    setSearchOpen(false);
     setPath("");
     setViewMode("edit");
   };
@@ -526,9 +583,14 @@ function Workspace({
     setPrResult(null);
     setStaged([]);
     setStagedDiffOpen(null);
+    setAllowSecrets(false);
+    setTreeFiles(null);
+    setSearchQuery("");
+    setSearchOpen(false);
     setPath("");
     setViewMode("edit");
     loadEntries(selectedRepo, name, "");
+    if (selectedRepo) loadTreeFiles(selectedRepo, name);
   };
 
   const filteredRepos = useMemo(() => {
@@ -576,6 +638,40 @@ function Workspace({
         branch: currentBranch,
       });
       setOpenFile({ ...data, path: entry.path });
+      setEditorContent(data.content);
+      setIsNewFile(false);
+      setLastCommit(null);
+      setPrResult(null);
+    } catch (e) {
+      setStatus({ kind: "err", text: errorMessage(e) });
+    } finally {
+      setFileLoading(false);
+    }
+  };
+
+  const searchResults = useMemo(() => {
+    if (!treeFiles) return [];
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return treeFiles.slice(0, 50);
+    return treeFiles
+      .filter((f) => f.path.toLowerCase().includes(q))
+      .slice(0, 50);
+  }, [treeFiles, searchQuery]);
+
+  const handleSearchSelect = async (path: string) => {
+    if (!selectedRepo || !currentBranch) return;
+    setSearchOpen(false);
+    setSearchQuery("");
+    setFileLoading(true);
+    setStatus(null);
+    try {
+      const data = await getFile({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        path,
+        branch: currentBranch,
+      });
+      setOpenFile({ ...data, path });
       setEditorContent(data.content);
       setIsNewFile(false);
       setLastCommit(null);
@@ -661,6 +757,12 @@ function Workspace({
 
   const handleStage = () => {
     if (!openFile) return;
+    const stageRisk = secretRisk(openFile.path, editorContent);
+    if (stageRisk.risky) {
+      toast.warning(
+        "Heads up — this file looks like it contains secrets. Aria will ask you to confirm before committing it.",
+      );
+    }
     const change = {
       path: openFile.path,
       originalContent: openFile.content,
@@ -696,6 +798,7 @@ function Workspace({
           repo: repoNameOf(selectedRepo.fullName),
           branch: currentBranch,
           message,
+          allowSecrets,
           files: staged.map((f) => ({
             path: f.path,
             content: f.content,
@@ -736,6 +839,7 @@ function Workspace({
         if (isNewFile) setIsNewFile(false);
         setStaged([]);
         setStagedDiffOpen(null);
+        setAllowSecrets(false);
       } catch (e) {
         setStatus({ kind: "err", text: errorMessage(e) });
       } finally {
@@ -758,6 +862,7 @@ function Workspace({
             branch: currentBranch,
             message,
             content: editorContent,
+            allowSecrets,
           })
         : await commitFile({
             owner: ownerOf(selectedRepo.fullName),
@@ -767,6 +872,7 @@ function Workspace({
             message,
             content: editorContent,
             sha: openFile.sha,
+            allowSecrets,
           });
       setStatus({
         kind: "ok",
@@ -794,6 +900,7 @@ function Workspace({
           sha: result.sha ?? openFile.sha,
         });
       }
+      setAllowSecrets(false);
     } catch (e) {
       setStatus({ kind: "err", text: errorMessage(e) });
     } finally {
@@ -873,11 +980,28 @@ function Workspace({
   };
 
   const dirty = openFile !== null && !isNewFile && editorContent !== openFile.content;
+  const riskyStaged = useMemo(
+    () => staged.filter((f) => secretRisk(f.path, f.content).risky),
+    [staged],
+  );
+  const openFileRisk = useMemo(() => {
+    if (!openFile || (!isNewFile && !dirty)) return null;
+    const risk = secretRisk(openFile.path, editorContent);
+    return risk.risky ? risk : null;
+  }, [openFile, isNewFile, dirty, editorContent]);
+  // The warning should only list files that actually block the commit: risky
+  // staged files when committing the batch, or the risky open file when
+  // committing a single file.
+  const flaggedSecretPaths = useMemo(() => {
+    if (staged.length > 0) return riskyStaged.map((f) => f.path);
+    return openFileRisk && openFile ? [openFile.path] : [];
+  }, [staged, riskyStaged, openFileRisk, openFile]);
   const canCommit = staged.length > 0
-    ? commitMessage.trim() !== ""
+    ? commitMessage.trim() !== "" && (riskyStaged.length === 0 || allowSecrets)
     : isNewFile
-      ? editorContent.trim() !== "" || commitMessage.trim() !== ""
-      : dirty;
+      ? (editorContent.trim() !== "" || commitMessage.trim() !== "") &&
+        (openFileRisk === null || allowSecrets)
+      : dirty && (openFileRisk === null || allowSecrets);
   const openFileIsStaged =
     openFile !== null && staged.some((f) => f.path === openFile.path);
 
@@ -1092,6 +1216,14 @@ function Workspace({
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
+                  <button
+                    type="button"
+                    onClick={() => setSearchOpen(true)}
+                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+                    title="Jump to file (⌘K)"
+                  >
+                    <Search className="size-3.5" />
+                  </button>
                   <button
                     type="button"
                     onClick={() => setDialog({ kind: "newFile" })}
@@ -1380,6 +1512,7 @@ function Workspace({
                         onClick={() => {
                           setStaged([]);
                           setStagedDiffOpen(null);
+                          setAllowSecrets(false);
                         }}
                         className="text-xs text-neutral-500 hover:text-neutral-900"
                       >
@@ -1435,6 +1568,32 @@ function Workspace({
                     The open file has unstaged edits — stage it to include it in
                     this commit.
                   </p>
+                )}
+
+                {flaggedSecretPaths.length > 0 && (
+                  <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                    <p className="flex items-start gap-2 text-xs text-amber-900">
+                      <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
+                      <span>
+                        Aria blocked this commit:{" "}
+                        <span className="font-mono">
+                          {flaggedSecretPaths.join(", ")}
+                        </span>{" "}
+                        {flaggedSecretPaths.length > 1
+                          ? "look like they contain secrets."
+                          : "looks like it contains secrets."}
+                      </span>
+                    </p>
+                    <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-xs text-amber-900">
+                      <input
+                        type="checkbox"
+                        checked={allowSecrets}
+                        onChange={(e) => setAllowSecrets(e.target.checked)}
+                        className="size-3.5 accent-amber-700"
+                      />
+                      I've reviewed these files — commit them anyway
+                    </label>
+                  </div>
                 )}
 
                 <div className="flex items-center gap-2">
@@ -1532,6 +1691,65 @@ function Workspace({
           )}
         </main>
       </div>
+
+      {/* ⌘K quick-jump to any file in the branch */}
+      <Dialog
+        open={searchOpen}
+        onOpenChange={(open) => {
+          setSearchOpen(open);
+          if (!open) setSearchQuery("");
+        }}
+      >
+        <DialogContent className="top-[18%] sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Jump to file</DialogTitle>
+          </DialogHeader>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-neutral-400" />
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Type a file name…"
+              className="h-10 pl-8 font-mono text-sm"
+              autoFocus
+            />
+          </div>
+          <div className="max-h-72 overflow-auto">
+            {treeFilesLoading && !treeFiles ? (
+              <div className="flex items-center justify-center gap-2 py-6 text-xs text-neutral-400">
+                <Loader2 className="size-3.5 animate-spin" />
+                Loading files…
+              </div>
+            ) : searchResults.length === 0 ? (
+              <p className="py-6 text-center text-xs text-neutral-400">
+                {searchQuery
+                  ? "No files match that name."
+                  : "Type to filter every file in this branch."}
+              </p>
+            ) : (
+              <ul className="divide-y divide-neutral-100">
+                {searchResults.map((file) => (
+                  <li key={file.path}>
+                    <button
+                      type="button"
+                      onClick={() => handleSearchSelect(file.path)}
+                      className="flex w-full items-center gap-2 rounded px-1 py-1.5 text-left hover:bg-neutral-100"
+                    >
+                      <FileCode2 className="size-3.5 shrink-0 text-neutral-400" />
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-800">
+                        {file.path}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-neutral-400">
+                        {formatSize(file.size)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Input dialog: new file / rename / new branch */}
       <InputDialog

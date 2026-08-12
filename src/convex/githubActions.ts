@@ -4,6 +4,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { action, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { anySecretRisk } from "../lib/secrets";
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "commit-app";
@@ -220,8 +221,15 @@ export const commitFile = action({
     message: v.string(),
     content: v.string(),
     sha: v.optional(v.string()),
+    allowSecrets: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
+    const risk = anySecretRisk([{ path: args.path, content: args.content }]);
+    if (risk.risky && !args.allowSecrets) {
+      throw new Error(
+        `Aria refuses to commit ${risk.files.join(", ")} — it looks like it contains secrets. Confirm “commit anyway” to override.`,
+      );
+    }
     const token = await getToken(ctx);
     const body: Record<string, unknown> = {
       message: args.message,
@@ -255,8 +263,15 @@ export const createFile = action({
     branch: v.string(),
     message: v.string(),
     content: v.string(),
+    allowSecrets: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
+    const risk = anySecretRisk([{ path: args.path, content: args.content }]);
+    if (risk.risky && !args.allowSecrets) {
+      throw new Error(
+        `Aria refuses to create ${risk.files.join(", ")} — it looks like it contains secrets. Confirm “commit anyway” to override.`,
+      );
+    }
     const token = await getToken(ctx);
     const data = await githubFetch<GitHubCommitResponse>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(args.path)}`,
@@ -387,6 +402,33 @@ export const renameFile = action({
 });
 
 /**
+ * List every file (path + size) in a branch via the recursive Git tree.
+ * Powers instant ⌘K file search without walking the contents API.
+ */
+export const listTreeFiles = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    branch: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+    const ref = await githubFetch<GitHubRef>(
+      `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
+      token,
+    );
+    const tree = await githubFetch<{
+      tree: Array<{ path: string; type: string; size?: number }>;
+    }>(`${repoUrl}/git/trees/${ref.object.sha}?recursive=1`, token);
+    return tree.tree
+      .filter((entry) => entry.type === "blob")
+      .map((entry) => ({ path: entry.path, size: entry.size ?? 0 }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  },
+});
+
+/**
  * Commit several file changes to a branch in one atomic commit using the
  * Git Data API (blobs → tree → commit → update ref). This is what powers
  * multi-file staging: a batch of staged files lands as a single commit.
@@ -397,6 +439,7 @@ export const commitChanges = action({
     repo: v.string(),
     branch: v.string(),
     message: v.string(),
+    allowSecrets: v.optional(v.boolean()),
     files: v.array(
       v.object({
         path: v.string(),
@@ -411,6 +454,14 @@ export const commitChanges = action({
     }
     if (args.files.length === 0) {
       throw new Error("Nothing to commit.");
+    }
+    const risk = anySecretRisk(
+      args.files.map((f) => ({ path: f.path, content: f.content })),
+    );
+    if (risk.risky && !args.allowSecrets) {
+      throw new Error(
+        `Aria refuses to commit ${risk.files.join(", ")} — ${risk.files.length > 1 ? "they look" : "it looks"} like ${risk.files.length > 1 ? "they contain" : "it contains"} secrets. Confirm “commit anyway” to override.`,
+      );
     }
     if (new Set(args.files.map((f) => f.path)).size !== args.files.length) {
       throw new Error("A file appears twice in this commit — stage each file once.");
