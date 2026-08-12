@@ -819,7 +819,9 @@ function Workspace({
         <aside
           className={cn(
             "shrink-0 flex-col border-r border-neutral-200",
-            mobileView === "repos" ? "flex w-full" : "hidden",
+            mobileView === "repos"
+              ? "max-md:flex max-md:w-full"
+              : "max-md:hidden",
             "md:flex md:w-64",
           )}
         >
@@ -906,7 +908,9 @@ function Workspace({
         <aside
           className={cn(
             "shrink-0 flex-col border-r border-neutral-200",
-            mobileView === "files" ? "flex w-full" : "hidden",
+            mobileView === "files"
+              ? "max-md:flex max-md:w-full"
+              : "max-md:hidden",
             "md:flex md:w-72",
           )}
         >
@@ -1079,7 +1083,7 @@ function Workspace({
         <main
           className={cn(
             "min-w-0 flex-1 flex-col bg-background",
-            mobileView === "editor" ? "flex" : "hidden",
+            mobileView === "editor" ? "max-md:flex" : "max-md:hidden",
             "md:flex",
           )}
         >
@@ -1264,30 +1268,44 @@ function Workspace({
               </div>
             </>
           ) : (
-            <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-              {selectedRepo ? (
-                <>
-                  <FileCode2 className="size-6 text-neutral-300" />
-                  <p className="mt-4 text-sm font-medium text-neutral-700">
-                    Select a file to edit
-                  </p>
-                  <p className="mt-1 max-w-xs text-sm text-neutral-400">
-                    Pick a text file from the browser to the left, or create a new
-                    one. Changes are committed to{" "}
-                    <span className="font-mono">{currentBranch}</span>.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <FolderOpen className="size-6 text-neutral-300" />
-                  <p className="mt-4 text-sm font-medium text-neutral-700">
-                    No repository selected
-                  </p>
-                  <p className="mt-1 max-w-xs text-sm text-neutral-400">
-                    Choose a repository to start browsing and editing files.
-                  </p>
-                </>
-              )}
+            <div className="relative flex h-full flex-col items-center justify-center overflow-hidden px-6 text-center">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-0 bg-[radial-gradient(50%_40%_at_50%_35%,rgba(0,0,0,0.03),transparent)]"
+              />
+              <div className="relative w-full max-w-sm">
+                {selectedRepo ? (
+                  <>
+                    <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-neutral-200 bg-white shadow-sm">
+                      <FileCode2 className="size-4 text-neutral-500" />
+                    </div>
+                    <p className="mt-4 text-sm font-medium text-neutral-800">
+                      Select a file to edit
+                    </p>
+                    <p className="mt-1.5 text-sm leading-6 text-neutral-400">
+                      Pick a text file from the browser, or create a new one.
+                      Changes commit to{" "}
+                      <span className="font-mono text-neutral-600">
+                        {currentBranch}
+                      </span>
+                      .
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-neutral-200 bg-white shadow-sm">
+                      <Github className="size-4 text-neutral-500" />
+                    </div>
+                    <p className="mt-4 text-sm font-medium text-neutral-800">
+                      Welcome back, @{connection.login}
+                    </p>
+                    <p className="mt-1.5 text-sm leading-6 text-neutral-400">
+                      Pick a repository from the list to start browsing and
+                      editing files.
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </main>
