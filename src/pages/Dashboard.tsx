@@ -163,7 +163,12 @@ function ConnectScreen({
 function Workspace({
   connection,
 }: {
-  connection: { connected: true; login: string; name: string | null; avatar: string | null };
+  connection: {
+    connected: boolean;
+    login: string | null;
+    name: string | null;
+    avatar: string | null;
+  };
 }) {
   const { signOut } = useAuth();
   const navigate = useNavigate();
@@ -224,7 +229,7 @@ function Workspace({
           path: dirPath,
           branch: repo.defaultBranch,
         });
-        setEntries(data);
+        setEntries(data as DirEntry[]);
       } catch (e) {
         setEntriesError(errorMessage(e));
       } finally {
@@ -239,6 +244,7 @@ function Workspace({
       setEntries(null);
       setOpenFile(null);
       setStatus(null);
+      setPath("");
       loadEntries(selectedRepo, "");
     }
   }, [selectedRepo, loadEntries]);
@@ -363,11 +369,11 @@ function Workspace({
                   />
                 ) : (
                   <span className="flex size-6 items-center justify-center rounded-full bg-neutral-900 text-[11px] font-medium text-white">
-                    {connection.login.slice(0, 1).toUpperCase()}
+                    {(connection.login ?? "?").slice(0, 1).toUpperCase()}
                   </span>
                 )}
                 <span className="font-medium text-neutral-800">
-                  @{connection.login}
+                  @{connection.login ?? "github"}
                 </span>
               </button>
             </DropdownMenuTrigger>

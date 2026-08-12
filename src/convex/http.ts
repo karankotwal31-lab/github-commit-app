@@ -26,25 +26,38 @@ http.route({
   method: "GET",
   handler: httpAction(async (ctx, request) => {
     const siteUrl = process.env.CONVEX_SITE_URL ?? "";
+    // The app passes its own origin explicitly (the preview may run in an
+    // iframe where the Referer header is unavailable); fall back to Referer.
+    const url = new URL(request.url);
+    const originParam = url.searchParams.get("origin") ?? undefined;
+    const origin = originParam?.startsWith("http") ? originParam : undefined;
+    const referer = request.headers.get("referer");
+    const originFromReferer = referer
+      ? new URL(referer).origin
+      : undefined;
+    const resolvedOrigin = origin ?? originFromReferer;
+
     const identity = await ctx.auth.getUserIdentity();
     if (identity === null) {
-      return Response.redirect(`${siteUrl || "/"}`);
+      return Response.redirect(
+        `${resolvedOrigin ?? siteUrl}/auth?returnTo=%2Fdashboard`,
+      );
     }
     const [userId] = identity.subject.split("|");
-    const referer = request.headers.get("referer");
-    const origin = referer ? new URL(referer).origin : undefined;
 
     const clientId = process.env.GITHUB_CLIENT_ID;
     const clientSecret = process.env.GITHUB_CLIENT_SECRET;
     if (!clientId || !clientSecret) {
-      return Response.redirect(`${origin ?? siteUrl}/dashboard?github=config`);
+      return Response.redirect(
+        `${resolvedOrigin ?? siteUrl}/dashboard?github=config`,
+      );
     }
 
     const state = randomHex(32);
     await ctx.runMutation(internal.github.storeOAuthState, {
       state,
       userId: userId as any,
-      origin,
+      origin: resolvedOrigin,
       expiresAt: Date.now() + STATE_TTL_MS,
     });
 

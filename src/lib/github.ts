@@ -10,7 +10,8 @@ export function convexSiteUrl(): string {
 }
 
 export function githubAuthorizeUrl(): string {
-  return `${convexSiteUrl()}/api/github/authorize`;
+  const origin = encodeURIComponent(window.location.origin);
+  return `${convexSiteUrl()}/api/github/authorize?origin=${origin}`;
 }
 
 export interface Repository {
