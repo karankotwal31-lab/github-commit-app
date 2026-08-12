@@ -13,6 +13,7 @@ import {
   formatDate,
   formatSize,
   githubAuthorizeUrl,
+  convexSiteUrl,
   errorMessage,
   ownerOf,
   repoNameOf,
@@ -56,11 +57,28 @@ function Wordmark() {
 function ConnectScreen({
   config,
 }: {
-  config: { clientIdConfigured: boolean; clientSecretConfigured: boolean };
+  config: {
+    clientIdConfigured: boolean;
+    clientSecretConfigured: boolean;
+    clientId: string | null;
+  };
 }) {
-  const siteUrl = githubAuthorizeUrl().replace("/api/github/authorize", "");
-  const callbackUrl = `${siteUrl}/api/github/callback`;
+  const startOAuth = useMutation(api.github.startOAuth);
+  const callbackUrl = `${convexSiteUrl()}/api/github/callback`;
   const keysReady = config.clientIdConfigured && config.clientSecretConfigured;
+
+  const handleConnect = async () => {
+    if (!config.clientId) {
+      toast.error("GitHub keys aren't configured yet — see the setup steps.");
+      return;
+    }
+    try {
+      const state = await startOAuth({ origin: window.location.origin });
+      window.location.href = githubAuthorizeUrl(state, config.clientId);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    }
+  };
 
   return (
     <main className="flex min-h-screen flex-col bg-background text-foreground antialiased">
@@ -143,9 +161,7 @@ function ConnectScreen({
           <Button
             type="button"
             className="mt-6 h-11 w-full gap-2"
-            onClick={() => {
-              window.location.href = githubAuthorizeUrl();
-            }}
+            onClick={handleConnect}
           >
             <Github className="size-4" />
             {keysReady ? "Connect GitHub" : "Connect GitHub (keys pending)"}

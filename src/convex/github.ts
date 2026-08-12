@@ -2,6 +2,14 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { v, type GenericId } from "convex/values";
 
+const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function randomHex(bytes: number) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
@@ -37,6 +45,9 @@ export const config = query({
   handler: () => ({
     clientIdConfigured: !!process.env.GITHUB_CLIENT_ID,
     clientSecretConfigured: !!process.env.GITHUB_CLIENT_SECRET,
+    // The client ID is public by design (it appears in every authorize URL);
+    // the secret never leaves the server.
+    clientId: process.env.GITHUB_CLIENT_ID ?? null,
   }),
 });
 
@@ -62,6 +73,27 @@ export const connectionForUser = internalQuery({
 // Public mutations
 // ---------------------------------------------------------------------------
 
+/**
+ * Start a GitHub OAuth flow for the signed-in user. Runs inside the app (where
+ * the session works), creates a one-time state token bound to the user, and
+ * returns it so the client can send the user to GitHub.
+ */
+export const startOAuth = mutation({
+  args: { origin: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const state = randomHex(32);
+    await ctx.db.insert("githubOAuthStates", {
+      state,
+      userId,
+      origin: args.origin,
+      expiresAt: Date.now() + STATE_TTL_MS,
+    });
+    return state;
+  },
+});
+
 export const disconnect = mutation({
   args: {},
   handler: async (ctx) => {
@@ -78,23 +110,6 @@ export const disconnect = mutation({
 // ---------------------------------------------------------------------------
 // Internal mutations (called from HTTP actions only)
 // ---------------------------------------------------------------------------
-
-export const storeOAuthState = internalMutation({
-  args: {
-    state: v.string(),
-    userId: v.id("users"),
-    origin: v.optional(v.string()),
-    expiresAt: v.number(),
-  },
-  handler: async (ctx, args) => {
-    await ctx.db.insert("githubOAuthStates", {
-      state: args.state,
-      userId: args.userId,
-      origin: args.origin,
-      expiresAt: args.expiresAt,
-    });
-  },
-});
 
 export const consumeOAuthState = internalMutation({
   args: { state: v.string() },

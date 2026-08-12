@@ -9,9 +9,19 @@ export function convexSiteUrl(): string {
   return new URL(api).origin;
 }
 
-export function githubAuthorizeUrl(): string {
-  const origin = encodeURIComponent(window.location.origin);
-  return `${convexSiteUrl()}/api/github/authorize?origin=${origin}`;
+/**
+ * Build the GitHub OAuth authorize URL for a state token created by the
+ * `startOAuth` mutation (which binds it to the signed-in user).
+ */
+export function githubAuthorizeUrl(state: string, clientId: string): string {
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: `${convexSiteUrl()}/api/github/callback`,
+    scope: "repo read:user user:email",
+    state,
+    allow_signup: "false",
+  });
+  return `https://github.com/login/oauth/authorize?${params.toString()}`;
 }
 
 export interface Repository {
