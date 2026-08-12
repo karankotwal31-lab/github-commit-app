@@ -1,12 +1,45 @@
 "use node";
 
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { action } from "./_generated/server";
+import { action, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "commit-app";
+
+interface GitHubRepo {
+  full_name: string;
+  name: string;
+  private: boolean;
+  description: string | null;
+  default_branch: string;
+  updated_at: string | null;
+}
+
+interface GitHubContentItem {
+  name: string;
+  path: string;
+  type: string;
+  size: number;
+}
+
+interface GitHubFile {
+  type: string;
+  encoding: string;
+  content: string;
+  size: number;
+  sha: string;
+  truncated: boolean;
+}
+
+interface GitHubCommitResponse {
+  commit?: {
+    sha?: string;
+    message?: string;
+    html_url?: string;
+  };
+}
 
 function githubHeaders(token: string, extra?: Record<string, string>) {
   return {
@@ -26,11 +59,11 @@ function encodePath(path: string) {
     .join("/");
 }
 
-async function githubFetch(
+async function githubFetch<T>(
   url: string,
   token: string,
   init?: RequestInit,
-): Promise<any> {
+): Promise<T> {
   const res = await fetch(url, {
     ...init,
     headers: githubHeaders(
@@ -39,7 +72,7 @@ async function githubFetch(
     ),
   });
   const text = await res.text();
-  let data: any = null;
+  let data: unknown = null;
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
@@ -47,14 +80,15 @@ async function githubFetch(
   }
   if (!res.ok) {
     const message =
-      data?.message ?? `GitHub request failed (${res.status} ${res.statusText})`;
+      (data as { message?: string } | null)?.message ??
+      `GitHub request failed (${res.status} ${res.statusText})`;
     throw new Error(message);
   }
-  return data;
+  return data as T;
 }
 
 /** Resolve the signed-in user's GitHub access token, or throw if absent. */
-async function getToken(ctx: any): Promise<string> {
+async function getToken(ctx: ActionCtx): Promise<string> {
   const userId = await getAuthUserId(ctx);
   if (userId === null) {
     throw new Error("You are not signed in.");
@@ -72,11 +106,11 @@ export const listRepositories = action({
   args: {},
   handler: async (ctx) => {
     const token = await getToken(ctx);
-    const data = await githubFetch(
+    const data = await githubFetch<GitHubRepo[]>(
       `${GITHUB_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`,
       token,
     );
-    return data.map((repo: any) => ({
+    return data.map((repo) => ({
       fullName: repo.full_name,
       name: repo.name,
       private: !!repo.private,
@@ -99,9 +133,12 @@ export const listContents = action({
     const url = `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
       args.path,
     )}?ref=${encodeURIComponent(args.branch)}`;
-    const data = await githubFetch(url, token);
+    const data = await githubFetch<GitHubContentItem[] | GitHubContentItem>(
+      url,
+      token,
+    );
     if (!Array.isArray(data)) return [];
-    return data.map((item: any) => ({
+    return data.map((item) => ({
       name: item.name,
       path: item.path,
       type: item.type === "dir" ? "dir" : "file",
@@ -122,7 +159,7 @@ export const getFile = action({
     const url = `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
       args.path,
     )}?ref=${encodeURIComponent(args.branch)}`;
-    const data = await githubFetch(url, token);
+    const data = await githubFetch<GitHubFile>(url, token);
     if (data.type !== "file") {
       throw new Error("That path is not a file.");
     }
@@ -160,7 +197,7 @@ export const commitFile = action({
       branch: args.branch,
     };
     if (args.sha) body.sha = args.sha;
-    const data = await githubFetch(
+    const data = await githubFetch<GitHubCommitResponse>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(args.path)}`,
       token,
       {
@@ -170,9 +207,9 @@ export const commitFile = action({
       },
     );
     return {
-      sha: data?.commit?.sha ?? null,
-      message: data?.commit?.message ?? args.message,
-      htmlUrl: data?.commit?.html_url ?? null,
+      sha: data.commit?.sha ?? null,
+      message: data.commit?.message ?? args.message,
+      htmlUrl: data.commit?.html_url ?? null,
     };
   },
 });

@@ -180,7 +180,7 @@ function Workspace({
   const disconnect = useMutation(api.github.disconnect);
 
   const [repos, setRepos] = useState<Repository[] | null>(null);
-  const [reposLoading, setReposLoading] = useState(false);
+  const [reposLoading, setReposLoading] = useState(true);
   const [reposError, setReposError] = useState<string | null>(null);
   const [repoQuery, setRepoQuery] = useState("");
   const [selectedRepo, setSelectedRepo] = useState<Repository | null>(null);
@@ -215,8 +215,21 @@ function Workspace({
   }, [listRepositories]);
 
   useEffect(() => {
-    loadRepos();
-  }, [loadRepos]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await listRepositories();
+        if (!cancelled) setRepos(data);
+      } catch (e) {
+        if (!cancelled) setReposError(errorMessage(e));
+      } finally {
+        if (!cancelled) setReposLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [listRepositories]);
 
   const loadEntries = useCallback(
     async (repo: Repository, dirPath: string) => {
@@ -239,15 +252,22 @@ function Workspace({
     [listContents],
   );
 
-  useEffect(() => {
-    if (selectedRepo) {
-      setEntries(null);
-      setOpenFile(null);
-      setStatus(null);
-      setPath("");
-      loadEntries(selectedRepo, "");
-    }
-  }, [selectedRepo, loadEntries]);
+  const handleSelectRepo = (repo: Repository) => {
+    setSelectedRepo(repo);
+    setEntries(null);
+    setOpenFile(null);
+    setStatus(null);
+    setPath("");
+    loadEntries(repo, "");
+  };
+
+  const handleBackToRepos = () => {
+    setSelectedRepo(null);
+    setEntries(null);
+    setOpenFile(null);
+    setStatus(null);
+    setPath("");
+  };
 
   const filteredRepos = useMemo(() => {
     if (!repos) return [];
@@ -441,7 +461,7 @@ function Workspace({
                     <li key={repo.fullName}>
                       <button
                         type="button"
-                        onClick={() => setSelectedRepo(repo)}
+                        onClick={() => handleSelectRepo(repo)}
                         className={`w-full rounded-md px-2.5 py-2 text-left transition-colors ${
                           active
                             ? "bg-neutral-900 text-white"
@@ -478,7 +498,7 @@ function Workspace({
               <>
                 <button
                   type="button"
-                  onClick={() => setSelectedRepo(null)}
+                  onClick={handleBackToRepos}
                   className="mr-1 rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
                   title="Back to repositories"
                 >

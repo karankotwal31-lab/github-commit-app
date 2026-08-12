@@ -1,4 +1,5 @@
 import { httpRouter } from "convex/server";
+import { type GenericId } from "convex/values";
 import { auth } from "./auth";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -56,7 +57,7 @@ http.route({
     const state = randomHex(32);
     await ctx.runMutation(internal.github.storeOAuthState, {
       state,
-      userId: userId as any,
+      userId: userId as GenericId<"users">,
       origin: resolvedOrigin,
       expiresAt: Date.now() + STATE_TTL_MS,
     });
@@ -92,7 +93,7 @@ http.route({
       return fail(null, "error");
     }
 
-    let stateDoc: { userId: string; origin: string | null };
+    let stateDoc: { userId: GenericId<"users">; origin: string | null };
     try {
       stateDoc = await ctx.runMutation(internal.github.consumeOAuthState, {
         state,
@@ -122,7 +123,9 @@ http.route({
         redirect_uri: `${siteUrl}/api/github/callback`,
       }),
     });
-    const tokenData: any = await tokenRes.json();
+    const tokenData = (await tokenRes.json()) as {
+      access_token?: string;
+    };
     const accessToken = tokenData.access_token;
     if (!accessToken) {
       return fail(stateDoc.origin, "error");
@@ -140,10 +143,14 @@ http.route({
     if (!profileRes.ok) {
       return fail(stateDoc.origin, "error");
     }
-    const profile: any = await profileRes.json();
+    const profile = (await profileRes.json()) as {
+      login: string;
+      name?: string | null;
+      avatar_url?: string | null;
+    };
 
     await ctx.runMutation(internal.github.saveConnection, {
-      userId: stateDoc.userId as any,
+      userId: stateDoc.userId,
       token: accessToken,
       login: profile.login,
       name: profile.name ?? undefined,
