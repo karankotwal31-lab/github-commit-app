@@ -26,7 +26,13 @@ http.route({
   path: "/api/github/authorize",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const siteUrl = process.env.CONVEX_SITE_URL ?? "";
+    // The request arrives at the Convex site domain, so its origin IS the
+    // site URL — don't depend on env vars that may be unset.
+    const siteUrl =
+      new URL(request.url).origin ||
+      process.env.CONVEX_SITE_URL ||
+      process.env.SITE_URL ||
+      "";
     // The app passes its own origin explicitly (the preview may run in an
     // iframe where the Referer header is unavailable); fall back to Referer.
     const url = new URL(request.url);
@@ -81,7 +87,13 @@ http.route({
   path: "/api/github/callback",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    const siteUrl = process.env.CONVEX_SITE_URL ?? "";
+    // The request arrives at the Convex site domain, so its origin IS the
+    // site URL — don't depend on env vars that may be unset.
+    const siteUrl =
+      new URL(request.url).origin ||
+      process.env.CONVEX_SITE_URL ||
+      process.env.SITE_URL ||
+      "";
     const url = new URL(request.url);
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
