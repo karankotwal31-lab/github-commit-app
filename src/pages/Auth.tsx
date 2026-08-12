@@ -110,7 +110,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
       </header>
 
       <main className="flex flex-1 items-center justify-center px-6 py-16">
-        <div className="w-full max-w-sm">
+        <div className="w-full max-w-sm rounded-xl border border-neutral-200 bg-white p-8 shadow-[0_16px_48px_-24px_rgba(0,0,0,0.12)]">
           {step === "signIn" ? (
             <>
               <div className="mb-8 text-center">
@@ -236,7 +236,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
             </>
           )}
 
-          <p className="mt-10 text-center text-xs text-neutral-400">
+          <p className="mt-8 border-t border-neutral-100 pt-6 text-center text-xs text-neutral-400">
             Secured by{" "}
             <a
               href="https://freebuff.com"

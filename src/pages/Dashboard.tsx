@@ -42,6 +42,7 @@ import {
   type Repository,
 } from "@/lib/github";
 import { diffLines, type DiffLine } from "@/lib/diff";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -55,6 +56,7 @@ import {
   GitPullRequest,
   Github,
   Loader2,
+  Lock,
   LogOut,
   Pencil,
   Plus,
@@ -385,6 +387,14 @@ function Workspace({
   const [prResult, setPrResult] = useState<PullRequestResult | null>(null);
 
   const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
+
+  // On mobile the workspace is a single drill-down screen; desktop shows all
+  // three panes side by side.
+  const mobileView: "repos" | "files" | "editor" = openFile
+    ? "editor"
+    : selectedRepo
+      ? "files"
+      : "repos";
 
   const loadRepos = useCallback(async () => {
     setReposLoading(true);
@@ -806,7 +816,13 @@ function Workspace({
       {/* Body */}
       <div className="flex min-h-0 flex-1">
         {/* Repos */}
-        <aside className="flex w-64 shrink-0 flex-col border-r border-neutral-200">
+        <aside
+          className={cn(
+            "shrink-0 flex-col border-r border-neutral-200",
+            mobileView === "repos" ? "flex w-full" : "hidden",
+            "md:flex md:w-64",
+          )}
+        >
           <div className="flex items-center justify-between px-4 pt-4">
             <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-neutral-400">
               Repositories
@@ -853,13 +869,23 @@ function Workspace({
                             : "hover:bg-neutral-100"
                         }`}
                       >
-                        <p
-                          className={`truncate font-mono text-[13px] ${
-                            active ? "text-white" : "text-neutral-900"
-                          }`}
-                        >
-                          {repo.name}
-                        </p>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <p
+                            className={`truncate font-mono text-[13px] ${
+                              active ? "text-white" : "text-neutral-900"
+                            }`}
+                          >
+                            {repo.name}
+                          </p>
+                          {repo.private && (
+                            <Lock
+                              className={cn(
+                                "size-3 shrink-0",
+                                active ? "text-neutral-400" : "text-neutral-300",
+                              )}
+                            />
+                          )}
+                        </div>
                         <p
                           className={`mt-0.5 truncate text-[11px] ${
                             active ? "text-neutral-300" : "text-neutral-400"
@@ -877,7 +903,13 @@ function Workspace({
         </aside>
 
         {/* Files */}
-        <aside className="flex w-72 shrink-0 flex-col border-r border-neutral-200">
+        <aside
+          className={cn(
+            "shrink-0 flex-col border-r border-neutral-200",
+            mobileView === "files" ? "flex w-full" : "hidden",
+            "md:flex md:w-72",
+          )}
+        >
           <div className="flex items-center gap-1 px-4 pt-4">
             {selectedRepo ? (
               <>
@@ -1044,11 +1076,25 @@ function Workspace({
         </aside>
 
         {/* Editor */}
-        <main className="flex min-w-0 flex-1 flex-col bg-background">
+        <main
+          className={cn(
+            "min-w-0 flex-1 flex-col bg-background",
+            mobileView === "editor" ? "flex" : "hidden",
+            "md:flex",
+          )}
+        >
           {openFile ? (
             <>
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-200 px-4">
                 <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOpenFile(null)}
+                    className="mr-1 rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 md:hidden"
+                    title="Back to files"
+                  >
+                    <ArrowLeft className="size-4" />
+                  </button>
                   <FileCode2 className="size-4 shrink-0 text-neutral-400" />
                   <p className="truncate font-mono text-[13px] text-neutral-900">
                     {openFile.path}
