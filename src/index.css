@@ -43,18 +43,31 @@
 }
 
 /* Remap the neutral scale to turquoise-tinted ink so every text color,
-   border, and hover state harmonizes with the sea-glass canvas. */
+   border, and hover state harmonizes with the sea-glass canvas.
+   Each color declares a plain-hex value first and the oklch value second —
+   browsers that can't parse oklch() keep the hex, so nothing degrades. */
 @theme {
+  --color-neutral-50: #E0F5F5;
   --color-neutral-50: oklch(0.955 0.022 195);
+  --color-neutral-100: #C0E7E6;
   --color-neutral-100: oklch(0.9 0.04 195);
+  --color-neutral-200: #79B8B7;
   --color-neutral-200: oklch(0.74 0.065 195);
+  --color-neutral-300: #6BA4A4;
   --color-neutral-300: oklch(0.68 0.06 195);
+  --color-neutral-400: #528584;
   --color-neutral-400: oklch(0.58 0.055 195);
+  --color-neutral-500: #346769;
   --color-neutral-500: oklch(0.48 0.055 198);
+  --color-neutral-600: #225052;
   --color-neutral-600: oklch(0.4 0.05 200);
+  --color-neutral-700: #0C3D40;
   --color-neutral-700: oklch(0.33 0.05 202);
+  --color-neutral-800: #003033;
   --color-neutral-800: oklch(0.28 0.048 202);
+  --color-neutral-900: #002629;
   --color-neutral-900: oklch(0.24 0.048 202);
+  --color-neutral-950: #00191B;
   --color-neutral-950: oklch(0.19 0.04 202);
 }
 
@@ -62,71 +75,134 @@
 :root {
   --radius: 0.625rem;
   /* Turquoise sea-glass theme: a clear aqua canvas, deep teal ink, crisp
-     white surfaces, and teal-tinted hairlines. */
+     white surfaces, and teal-tinted hairlines. Hex first for older
+     browsers, then the oklch value. */
+  --background: #72D0D0;
   --background: oklch(0.8 0.09 195);
+  --foreground: #002629;
   --foreground: oklch(0.24 0.05 202);
+  --card: #FFFFFF;
   --card: oklch(1 0 0);
+  --card-foreground: #002629;
   --card-foreground: oklch(0.24 0.05 202);
+  --popover: #FFFFFF;
   --popover: oklch(1 0 0);
+  --popover-foreground: #002629;
   --popover-foreground: oklch(0.24 0.05 202);
+  --primary: #006B68;
   --primary: oklch(0.47 0.095 192);
+  --primary-foreground: #F3FCFB;
   --primary-foreground: oklch(0.985 0.01 190);
+  --secondary: #ADDDDD;
   --secondary: oklch(0.865 0.05 195);
+  --secondary-foreground: #003133;
   --secondary-foreground: oklch(0.28 0.055 200);
+  --muted: #ADDDDD;
   --muted: oklch(0.865 0.05 195);
+  --muted-foreground: #315E5E;
   --muted-foreground: oklch(0.45 0.05 195);
+  --accent: #ADDDDD;
   --accent: oklch(0.865 0.05 195);
+  --accent-foreground: #003133;
   --accent-foreground: oklch(0.28 0.055 200);
+  --destructive: #E7000B;
   --destructive: oklch(0.577 0.245 27.325);
+  --border: #67ACAC;
   --border: oklch(0.7 0.07 195);
+  --input: #67ACAC;
   --input: oklch(0.7 0.07 195);
+  --ring: #007373;
   --ring: oklch(0.5 0.09 195);
+  --chart-1: #E76F51;
   --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: #2A9D8F;
   --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: #457B9D;
   --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: #E9C46A;
   --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: #E59866;
   --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: #AAE0DF;
   --sidebar: oklch(0.87 0.055 195);
+  --sidebar-foreground: #002629;
   --sidebar-foreground: oklch(0.24 0.05 202);
+  --sidebar-primary: #006B68;
   --sidebar-primary: oklch(0.47 0.095 192);
+  --sidebar-primary-foreground: #F3FCFB;
   --sidebar-primary-foreground: oklch(0.985 0.01 190);
+  --sidebar-accent: #87CCCC;
   --sidebar-accent: oklch(0.8 0.07 195);
+  --sidebar-accent-foreground: #003133;
   --sidebar-accent-foreground: oklch(0.28 0.055 200);
+  --sidebar-border: #67ACAC;
   --sidebar-border: oklch(0.7 0.07 195);
+  --sidebar-ring: #007373;
   --sidebar-ring: oklch(0.5 0.09 195);
 }
 
 .dark {
+  --background: #123036;
   --background: oklch(0.17 0.035 200);
+  --foreground: #E4F5F2;
   --foreground: oklch(0.94 0.025 190);
+  --card: #16373D;
   --card: oklch(0.21 0.035 200);
+  --card-foreground: #E4F5F2;
   --card-foreground: oklch(0.94 0.025 190);
+  --popover: #16373D;
   --popover: oklch(0.21 0.035 200);
+  --popover-foreground: #E4F5F2;
   --popover-foreground: oklch(0.94 0.025 190);
+  --primary: #4FD8D0;
   --primary: oklch(0.7 0.11 190);
+  --primary-foreground: #123036;
   --primary-foreground: oklch(0.17 0.035 200);
+  --secondary: #1C4248;
   --secondary: oklch(0.27 0.04 200);
+  --secondary-foreground: #E4F5F2;
   --secondary-foreground: oklch(0.94 0.025 190);
+  --muted: #1C4248;
   --muted: oklch(0.27 0.04 200);
+  --muted-foreground: #9CC6C4;
   --muted-foreground: oklch(0.72 0.04 195);
+  --accent: #1C4248;
   --accent: oklch(0.27 0.04 200);
+  --accent-foreground: #E4F5F2;
   --accent-foreground: oklch(0.94 0.025 190);
+  --destructive: #FF5D5D;
   --destructive: oklch(0.704 0.191 22.216);
+  --border: #FFFFFF1A;
   --border: oklch(1 0 0 / 10%);
+  --input: #FFFFFF26;
   --input: oklch(1 0 0 / 15%);
+  --ring: #37B6AE;
   --ring: oklch(0.6 0.09 195);
+  --chart-1: #6D6BE0;
   --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: #43D2B4;
   --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: #E9C46A;
   --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: #B98AE6;
   --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: #E599A8;
   --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: #16373D;
   --sidebar: oklch(0.21 0.035 200);
+  --sidebar-foreground: #E4F5F2;
   --sidebar-foreground: oklch(0.94 0.025 190);
+  --sidebar-primary: #4FD8D0;
   --sidebar-primary: oklch(0.7 0.11 190);
+  --sidebar-primary-foreground: #123036;
   --sidebar-primary-foreground: oklch(0.17 0.035 200);
+  --sidebar-accent: #1C4248;
   --sidebar-accent: oklch(0.27 0.04 200);
+  --sidebar-accent-foreground: #E4F5F2;
   --sidebar-accent-foreground: oklch(0.94 0.025 190);
+  --sidebar-border: #FFFFFF1A;
   --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: #37B6AE;
   --sidebar-ring: oklch(0.6 0.09 195);
 }
 
@@ -136,12 +212,10 @@
   }
   body {
     @apply bg-background text-foreground;
-    /* A soft lighter-aqua glow at the top of the canvas for depth. */
-    background-image: radial-gradient(
-      120% 55% at 50% 0%,
-      oklch(0.93 0.045 190 / 0.45),
-      transparent 62%
-    );
+    /* A soft lighter-aqua glow at the top of the canvas for depth.
+       Hex fallback first, then the oklch version. */
+    background-image: radial-gradient(120% 55% at 50% 0%, #D7F0EF73, transparent 62%);
+    background-image: radial-gradient(120% 55% at 50% 0%, oklch(0.93 0.045 190 / 0.45), transparent 62%);
     background-attachment: fixed;
   }
   button:not([disabled]),
