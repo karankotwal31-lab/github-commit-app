@@ -9,14 +9,19 @@ import { v, type GenericId } from "convex/values";
 /** Public connection status for the signed-in user. */
 export const connection = query({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx): Promise<{
+    connected: boolean;
+    login: string | null;
+    name: string | null;
+    avatar: string | null;
+  }> => {
     const userId = await getAuthUserId(ctx);
-    if (userId === null) return { connected: false };
+    if (userId === null) return { connected: false, login: null, name: null, avatar: null };
     const conn = await ctx.db
       .query("githubConnections")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .unique();
-    if (conn === null) return { connected: false };
+    if (conn === null) return { connected: false, login: null, name: null, avatar: null };
     return {
       connected: true,
       login: conn.login,
