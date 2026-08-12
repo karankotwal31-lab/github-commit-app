@@ -120,10 +120,10 @@ function ConnectScreen({
       <div className="flex flex-1 items-center justify-center px-6 py-16">
         <div className="w-full max-w-md">
           <div className="mb-8">
-            <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-neutral-400">
+            <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
               Step 1 of 1
             </p>
-            <h1 className="mt-4 text-3xl font-semibold tracking-tight">
+            <h1 className="mt-4 text-4xl font-semibold tracking-tight">
               Connect your GitHub
             </h1>
             <p className="mt-3 text-sm leading-6 text-neutral-500">
@@ -162,7 +162,7 @@ function ConnectScreen({
           </div>
 
           <div className="mt-6 rounded-lg border border-neutral-200 p-5">
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-neutral-400">
+            <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
               Callback URL
             </p>
             <p className="mt-2 break-all font-mono text-xs text-neutral-700">
@@ -278,7 +278,7 @@ function InputDialog({
 function DiffView({ lines }: { lines: DiffLine[] }) {
   return (
     <div className="h-full overflow-auto bg-background">
-      <table className="w-full border-collapse font-mono text-[13px] leading-6">
+      <table className="w-full border-collapse font-mono text-sm leading-6">
         <tbody>
           {lines.map((line, i) => (
             <tr
@@ -291,10 +291,10 @@ function DiffView({ lines }: { lines: DiffLine[] }) {
                     : ""
               }
             >
-              <td className="w-12 select-none border-r border-neutral-100 px-2 text-right text-[11px] text-neutral-400">
+              <td className="w-12 select-none border-r border-neutral-100 px-2 text-right text-xs text-neutral-400">
                 {line.oldLine ?? ""}
               </td>
-              <td className="w-12 select-none border-r border-neutral-100 px-2 text-right text-[11px] text-neutral-400">
+              <td className="w-12 select-none border-r border-neutral-100 px-2 text-right text-xs text-neutral-400">
                 {line.newLine ?? ""}
               </td>
               <td
@@ -826,7 +826,7 @@ function Workspace({
           )}
         >
           <div className="flex items-center justify-between px-4 pt-4">
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-neutral-400">
+            <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
               Repositories
             </p>
             <button
@@ -873,7 +873,7 @@ function Workspace({
                       >
                         <div className="flex min-w-0 items-center gap-1.5">
                           <p
-                            className={`truncate font-mono text-[13px] ${
+                            className={`truncate font-mono text-sm ${
                               active ? "text-white" : "text-neutral-900"
                             }`}
                           >
@@ -889,7 +889,7 @@ function Workspace({
                           )}
                         </div>
                         <p
-                          className={`mt-0.5 truncate text-[11px] ${
+                          className={`mt-0.5 truncate text-xs ${
                             active ? "text-neutral-300" : "text-neutral-400"
                           }`}
                         >
@@ -925,7 +925,7 @@ function Workspace({
                 >
                   <ArrowLeft className="size-3.5" />
                 </button>
-                <p className="truncate font-mono text-[13px] font-medium text-neutral-900">
+                <p className="truncate font-mono text-sm font-medium text-neutral-900">
                   {selectedRepo.name}
                 </p>
                 <div className="ml-auto flex items-center gap-0.5">
@@ -933,7 +933,7 @@ function Workspace({
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
-                        className="flex max-w-32 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 hover:bg-neutral-100"
+                        className="flex max-w-32 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs text-neutral-500 hover:bg-neutral-100"
                         title="Switch branch"
                       >
                         <GitBranch className="size-3 shrink-0" />
@@ -955,7 +955,7 @@ function Workspace({
                         <DropdownMenuItem
                           key={b.name}
                           onClick={() => handleSwitchBranch(b.name)}
-                          className="cursor-pointer font-mono text-[13px]"
+                          className="cursor-pointer font-mono text-sm"
                         >
                           {b.name}
                         </DropdownMenuItem>
@@ -963,7 +963,7 @@ function Workspace({
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         onClick={() => setDialog({ kind: "branch" })}
-                        className="cursor-pointer text-[13px]"
+                        className="cursor-pointer text-sm"
                       >
                         <Plus className="mr-2 size-3.5" />
                         Create branch…
@@ -981,7 +981,7 @@ function Workspace({
                 </div>
               </>
             ) : (
-              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-neutral-400">
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
                 Files
               </p>
             )}
@@ -1044,7 +1044,7 @@ function Workspace({
                           loadEntries(selectedRepo, currentBranch, parent);
                         }
                       }}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-neutral-500 hover:bg-neutral-100"
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-neutral-500 hover:bg-neutral-100"
                     >
                       <FolderOpen className="size-4 shrink-0" />
                       <span className="truncate">..</span>
@@ -1063,11 +1063,11 @@ function Workspace({
                       ) : (
                         <FileCode2 className="size-4 shrink-0 text-neutral-400" />
                       )}
-                      <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-neutral-800">
+                      <span className="min-w-0 flex-1 truncate font-mono text-sm text-neutral-800">
                         {entry.name}
                       </span>
                       {entry.type === "file" && (
-                        <span className="shrink-0 text-[11px] text-neutral-400">
+                        <span className="shrink-0 text-xs text-neutral-400">
                           {formatSize(entry.size)}
                         </span>
                       )}
@@ -1100,11 +1100,11 @@ function Workspace({
                     <ArrowLeft className="size-4" />
                   </button>
                   <FileCode2 className="size-4 shrink-0 text-neutral-400" />
-                  <p className="truncate font-mono text-[13px] text-neutral-900">
+                  <p className="truncate font-mono text-sm text-neutral-900">
                     {openFile.path}
                   </p>
                   {isNewFile && (
-                    <span className="shrink-0 rounded border border-neutral-300 px-1 py-0.5 text-[10px] uppercase tracking-wide text-neutral-500">
+                    <span className="shrink-0 rounded border border-neutral-300 px-1 py-0.5 text-[11px] uppercase tracking-wide text-neutral-500">
                       New
                     </span>
                   )}
@@ -1113,7 +1113,7 @@ function Workspace({
                   )}
                 </div>
                 <div className="flex shrink-0 items-center gap-3">
-                  <div className="flex items-center rounded-md border border-neutral-200 p-0.5 text-[11px]">
+                  <div className="flex items-center rounded-md border border-neutral-200 p-0.5 text-xs">
                     <button
                       type="button"
                       onClick={() => setViewMode("edit")}
@@ -1157,7 +1157,7 @@ function Workspace({
                       </button>
                     </>
                   )}
-                  <span className="hidden font-mono text-[11px] text-neutral-400 sm:inline">
+                  <span className="hidden font-mono text-xs text-neutral-400 sm:inline">
                     {currentBranch}
                   </span>
                   {dirty && (
@@ -1186,7 +1186,7 @@ function Workspace({
                     spellCheck={false}
                     autoCapitalize="off"
                     autoCorrect="off"
-                    className="h-full w-full resize-none bg-background p-4 font-mono text-[13px] leading-6 text-neutral-900 outline-none"
+                    className="h-full w-full resize-none bg-background p-4 font-mono text-sm leading-6 text-neutral-900 outline-none"
                   />
                 )}
               </div>
@@ -1279,10 +1279,10 @@ function Workspace({
                     <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-neutral-200 bg-white shadow-sm">
                       <FileCode2 className="size-4 text-neutral-500" />
                     </div>
-                    <p className="mt-4 text-sm font-medium text-neutral-800">
+                    <p className="mt-4 text-lg font-medium text-neutral-800">
                       Select a file to edit
                     </p>
-                    <p className="mt-1.5 text-sm leading-6 text-neutral-400">
+                    <p className="mt-1.5 text-[15px] leading-7 text-neutral-500">
                       Pick a text file from the browser, or create a new one.
                       Changes commit to{" "}
                       <span className="font-mono text-neutral-600">
@@ -1296,10 +1296,10 @@ function Workspace({
                     <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-neutral-200 bg-white shadow-sm">
                       <Github className="size-4 text-neutral-500" />
                     </div>
-                    <p className="mt-4 text-sm font-medium text-neutral-800">
+                    <p className="mt-4 text-lg font-medium text-neutral-800">
                       Welcome back, @{connection.login}
                     </p>
-                    <p className="mt-1.5 text-sm leading-6 text-neutral-400">
+                    <p className="mt-1.5 text-[15px] leading-7 text-neutral-500">
                       Pick a repository from the list to start browsing and
                       editing files.
                     </p>

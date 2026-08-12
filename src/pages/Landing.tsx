@@ -256,15 +256,15 @@ export default function Landing() {
             transition={{ duration: 0.55, ease: "easeOut" }}
             className="mx-auto flex max-w-2xl flex-col items-center text-center"
           >
-            <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-neutral-400">
+            <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
               A personal GitHub desk
             </p>
-            <h1 className="mt-7 text-balance text-4xl font-semibold leading-[1.05] tracking-tight sm:text-6xl">
+            <h1 className="mt-7 text-balance text-5xl font-semibold leading-[1.04] tracking-tight sm:text-7xl">
               Edit your GitHub files.
               <br />
               <span className="text-neutral-400">Commit from anywhere.</span>
             </h1>
-            <p className="mt-7 max-w-lg text-pretty text-base leading-7 text-neutral-500 sm:text-lg sm:leading-8">
+            <p className="mt-7 max-w-lg text-pretty text-lg leading-7 text-neutral-500 sm:text-xl sm:leading-8">
               commit. is a quiet workspace for your GitHub — browse any
               repository, switch branches, create, rename, and delete files,
               review the diff, and push changes or open a pull request without
@@ -300,7 +300,7 @@ export default function Landing() {
       {/* How it works */}
       <section className="border-t border-neutral-200">
         <div className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-28">
-          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-neutral-400">
+          <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
             How it works
           </p>
           <div className="mt-8 grid gap-px overflow-hidden rounded-lg border border-neutral-200 bg-neutral-200 sm:grid-cols-3">
@@ -312,10 +312,10 @@ export default function Landing() {
                 <span className="text-xs font-medium tabular-nums tracking-widest text-neutral-400">
                   {step.n}
                 </span>
-                <h3 className="text-base font-semibold tracking-tight">
+                <h3 className="text-lg font-semibold tracking-tight">
                   {step.title}
                 </h3>
-                <p className="text-sm leading-6 text-neutral-500">
+                <p className="text-base leading-7 text-neutral-500">
                   {step.body}
                 </p>
               </div>
@@ -327,17 +327,17 @@ export default function Landing() {
       {/* Features */}
       <section className="border-t border-neutral-200">
         <div className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-28">
-          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-neutral-400">
+          <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
             What the desk can do
           </p>
           <div className="mt-8 grid gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {FEATURES.map((feature) => (
               <div key={feature.title} className="flex flex-col gap-2.5">
                 <feature.icon className="size-4 text-neutral-500" />
-                <h3 className="text-sm font-semibold tracking-tight">
+                <h3 className="text-base font-semibold tracking-tight">
                   {feature.title}
                 </h3>
-                <p className="text-sm leading-6 text-neutral-500">
+                <p className="text-[15px] leading-7 text-neutral-500">
                   {feature.body}
                 </p>
               </div>
@@ -350,7 +350,7 @@ export default function Landing() {
       <section className="border-t border-neutral-200">
         <div className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-28">
           <div className="mx-auto max-w-xl">
-            <p className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.22em] text-neutral-400">
+            <p className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
               <GitCommitHorizontal className="size-3.5" />
               Recent activity
             </p>
@@ -372,7 +372,7 @@ export default function Landing() {
                     <p className="font-mono text-xs text-neutral-500">
                       {commit.sha}
                     </p>
-                    <p className="mt-1 text-[11px] text-neutral-400">
+                    <p className="mt-1 text-xs text-neutral-400">
                       {commit.when}
                     </p>
                   </div>

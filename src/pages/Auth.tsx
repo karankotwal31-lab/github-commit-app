@@ -114,10 +114,10 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
           {step === "signIn" ? (
             <>
               <div className="mb-8 text-center">
-                <h1 className="text-xl font-semibold tracking-tight">
+                <h1 className="text-2xl font-semibold tracking-tight">
                   Get started
                 </h1>
-                <p className="mt-2 text-sm text-neutral-500">
+                <p className="mt-2 text-[15px] text-neutral-500">
                   Enter your email to log in or sign up.
                 </p>
               </div>
@@ -150,7 +150,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
 
               <div className="my-6 flex items-center gap-3">
                 <span className="h-px flex-1 bg-neutral-200" />
-                <span className="text-[11px] uppercase tracking-widest text-neutral-400">
+                <span className="text-xs uppercase tracking-widest text-neutral-400">
                   Or
                 </span>
                 <span className="h-px flex-1 bg-neutral-200" />
@@ -169,10 +169,10 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
           ) : (
             <>
               <div className="mb-8 text-center">
-                <h1 className="text-xl font-semibold tracking-tight">
+                <h1 className="text-2xl font-semibold tracking-tight">
                   Check your email
                 </h1>
-                <p className="mt-2 text-sm text-neutral-500">
+                <p className="mt-2 text-[15px] text-neutral-500">
                   We sent a code to <span className="text-neutral-900">{step.email}</span>
                 </p>
               </div>
