@@ -348,6 +348,7 @@ function Workspace({
   const listBranches = useAction(api.githubActions.listBranches);
   const createBranchAction = useAction(api.githubActions.createBranch);
   const createPullRequest = useAction(api.githubActions.createPullRequest);
+  const commitChanges = useAction(api.githubActions.commitChanges);
   const disconnect = useMutation(api.github.disconnect);
 
   const [repos, setRepos] = useState<Repository[] | null>(null);
@@ -387,6 +388,19 @@ function Workspace({
   const [lastCommit, setLastCommit] = useState<CommitResult | null>(null);
   const [prOpen, setPrOpen] = useState(false);
   const [prResult, setPrResult] = useState<PullRequestResult | null>(null);
+
+  // Multi-file staging: each entry is a snapshot of one changed file that will
+  // be committed together in a single atomic commit.
+  const [staged, setStaged] = useState<
+    Array<{
+      path: string;
+      originalContent: string;
+      content: string;
+      sha: string;
+      action: "update" | "create";
+    }>
+  >([]);
+  const [stagedDiffOpen, setStagedDiffOpen] = useState<string | null>(null);
 
   const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
 
@@ -477,6 +491,8 @@ function Workspace({
     setStatus(null);
     setLastCommit(null);
     setPrResult(null);
+    setStaged([]);
+    setStagedDiffOpen(null);
     setPath("");
     setViewMode("edit");
     loadEntries(repo, repo.defaultBranch, "");
@@ -493,6 +509,8 @@ function Workspace({
     setStatus(null);
     setLastCommit(null);
     setPrResult(null);
+    setStaged([]);
+    setStagedDiffOpen(null);
     setPath("");
     setViewMode("edit");
   };
@@ -506,6 +524,8 @@ function Workspace({
     setStatus(null);
     setLastCommit(null);
     setPrResult(null);
+    setStaged([]);
+    setStagedDiffOpen(null);
     setPath("");
     setViewMode("edit");
     loadEntries(selectedRepo, name, "");
@@ -532,6 +552,11 @@ function Workspace({
   const pathSegments = useMemo(
     () => (path ? path.split("/") : []),
     [path],
+  );
+
+  const stagedPathSet = useMemo(
+    () => new Set(staged.map((f) => f.path)),
+    [staged],
   );
 
   const handleOpenEntry = async (entry: DirEntry) => {
@@ -598,6 +623,9 @@ function Workspace({
           branch: currentBranch,
           message: `Rename ${oldPath} → ${clean}`,
         });
+        // A staged entry for the old path is now stale — committing it later
+        // would recreate the old file. Drop it.
+        setStaged((prev) => prev.filter((f) => f.path !== oldPath));
         setOpenFile({
           content: result.content,
           sha: result.sha ?? "",
@@ -631,8 +659,91 @@ function Workspace({
     }
   };
 
+  const handleStage = () => {
+    if (!openFile) return;
+    const change = {
+      path: openFile.path,
+      originalContent: openFile.content,
+      content: editorContent,
+      sha: openFile.sha,
+      action: isNewFile ? ("create" as const) : ("update" as const),
+    };
+    setStaged((prev) => {
+      const next = prev.filter((f) => f.path !== change.path);
+      return [...next, change];
+    });
+    setStagedDiffOpen(null);
+    toast.success(isNewFile ? "Staged new file" : "Staged changes");
+  };
+
+  const handleUnstage = (path: string) => {
+    setStaged((prev) => prev.filter((f) => f.path !== path));
+    if (stagedDiffOpen === path) setStagedDiffOpen(null);
+  };
+
   const handleCommit = async () => {
-    if (!selectedRepo || !openFile || !currentBranch) return;
+    if (!selectedRepo || !currentBranch) return;
+    if (staged.length > 0) {
+      // Multi-file: commit every staged file as one atomic commit.
+      const message =
+        commitMessage.trim() ||
+        `Update ${staged.length} file${staged.length > 1 ? "s" : ""}`;
+      setCommitting(true);
+      setStatus(null);
+      try {
+        const result = await commitChanges({
+          owner: ownerOf(selectedRepo.fullName),
+          repo: repoNameOf(selectedRepo.fullName),
+          branch: currentBranch,
+          message,
+          files: staged.map((f) => ({
+            path: f.path,
+            content: f.content,
+            action: f.action,
+          })),
+        });
+        setStatus({
+          kind: "ok",
+          text: `Committed ${result.sha?.slice(0, 7) ?? ""} — ${message} (${staged.length} file${staged.length > 1 ? "s" : ""})`,
+        });
+        setCommitMessage("");
+        setLastCommit(result);
+        setPrResult(null);
+        // Refresh the file tree so the new state is visible immediately.
+        // New files may live in a different directory than the one we're
+        // browsing, so jump the tree there.
+        const openDir = openFile?.path.includes("/")
+          ? openFile.path.slice(0, openFile.path.lastIndexOf("/"))
+          : "";
+        if (isNewFile) {
+          setPath(openDir);
+          loadEntries(selectedRepo, currentBranch, openDir);
+        } else {
+          loadEntries(selectedRepo, currentBranch, path);
+        }
+        // If the open file was part of the batch, sync its local copy.
+        if (openFile) {
+          const stagedOpen = staged.find((f) => f.path === openFile.path);
+          if (stagedOpen) {
+            setOpenFile({
+              ...openFile,
+              content: stagedOpen.content,
+              sha: result.sha ?? openFile.sha,
+            });
+            setEditorContent(stagedOpen.content);
+          }
+        }
+        if (isNewFile) setIsNewFile(false);
+        setStaged([]);
+        setStagedDiffOpen(null);
+      } catch (e) {
+        setStatus({ kind: "err", text: errorMessage(e) });
+      } finally {
+        setCommitting(false);
+      }
+      return;
+    }
+    if (!openFile) return;
     const message =
       commitMessage.trim() ||
       (isNewFile ? `Create ${openFile.path}` : `Update ${openFile.path}`);
@@ -705,6 +816,9 @@ function Workspace({
       const dir = openFile.path.includes("/")
         ? openFile.path.slice(0, openFile.path.lastIndexOf("/"))
         : "";
+      // A deleted file must not linger in the staged changes (committing it
+      // later would silently recreate it).
+      setStaged((prev) => prev.filter((f) => f.path !== openFile.path));
       setOpenFile(null);
       setIsNewFile(false);
       setPath(dir);
@@ -753,13 +867,19 @@ function Workspace({
     setEntries(null);
     setOpenFile(null);
     setIsNewFile(false);
+    setStaged([]);
+    setStagedDiffOpen(null);
     setPath("");
   };
 
   const dirty = openFile !== null && !isNewFile && editorContent !== openFile.content;
-  const canCommit = isNewFile
-    ? editorContent.trim() !== "" || commitMessage.trim() !== ""
-    : dirty;
+  const canCommit = staged.length > 0
+    ? commitMessage.trim() !== ""
+    : isNewFile
+      ? editorContent.trim() !== "" || commitMessage.trim() !== ""
+      : dirty;
+  const openFileIsStaged =
+    openFile !== null && staged.some((f) => f.path === openFile.path);
 
   const diff = useMemo(
     () => (openFile ? diffLines(openFile.content, editorContent) : []),
@@ -1068,6 +1188,12 @@ function Workspace({
                       <span className="min-w-0 flex-1 truncate font-mono text-sm text-neutral-800">
                         {entry.name}
                       </span>
+                      {entry.type === "file" && stagedPathSet.has(entry.path) && (
+                        <span
+                          className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                          title="Staged"
+                        />
+                      )}
                       {entry.type === "file" && (
                         <span className="shrink-0 text-xs text-neutral-400">
                           {formatSize(entry.size)}
@@ -1108,6 +1234,11 @@ function Workspace({
                   {isNewFile && (
                     <span className="shrink-0 rounded border border-neutral-300 px-1 py-0.5 text-[11px] uppercase tracking-wide text-neutral-500">
                       New
+                    </span>
+                  )}
+                  {openFileIsStaged && (
+                    <span className="shrink-0 rounded border border-emerald-200 bg-emerald-50 px-1 py-0.5 text-[11px] uppercase tracking-wide text-emerald-900">
+                      Staged
                     </span>
                   )}
                   {dirty && (
@@ -1238,12 +1369,84 @@ function Workspace({
                     </a>
                   </p>
                 )}
+                {staged.length > 0 && (
+                  <div className="mb-3 overflow-hidden rounded-lg border border-neutral-200 bg-white">
+                    <div className="flex items-center justify-between border-b border-neutral-100 px-3 py-2">
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+                        Changes · {staged.length}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStaged([]);
+                          setStagedDiffOpen(null);
+                        }}
+                        className="text-xs text-neutral-500 hover:text-neutral-900"
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                    <ul className="max-h-48 divide-y divide-neutral-100 overflow-auto">
+                      {staged.map((f) => (
+                        <li key={f.path}>
+                          <div className="flex items-center gap-2 px-3 py-1.5">
+                            <span
+                              className={`shrink-0 rounded px-1 font-mono text-[10px] font-semibold ${
+                                f.action === "create"
+                                  ? "bg-emerald-50 text-emerald-900"
+                                  : "bg-amber-50 text-amber-900"
+                              }`}
+                            >
+                              {f.action === "create" ? "A" : "M"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setStagedDiffOpen(
+                                  stagedDiffOpen === f.path ? null : f.path,
+                                )
+                              }
+                              className="min-w-0 flex-1 truncate text-left font-mono text-xs text-neutral-800 hover:text-neutral-900"
+                              title={stagedDiffOpen === f.path ? "Hide diff" : "Show diff"}
+                            >
+                              {f.path}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleUnstage(f.path)}
+                              className="shrink-0 text-xs text-neutral-400 hover:text-red-600"
+                            >
+                              Unstage
+                            </button>
+                          </div>
+                          {stagedDiffOpen === f.path && (
+                            <div className="max-h-48 overflow-auto border-t border-neutral-100">
+                              <DiffView lines={diffLines(f.originalContent, f.content)} />
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {staged.length > 0 && openFile && dirty && !openFileIsStaged && (
+                  <p className="mb-2 text-xs text-neutral-500">
+                    The open file has unstaged edits — stage it to include it in
+                    this commit.
+                  </p>
+                )}
+
                 <div className="flex items-center gap-2">
                   <Input
                     value={commitMessage}
                     onChange={(e) => setCommitMessage(e.target.value)}
                     placeholder={
-                      isNewFile ? "Commit message (creates the file)" : "Commit message"
+                      staged.length > 0
+                        ? `Commit message (${staged.length} file${staged.length > 1 ? "s" : ""})`
+                        : isNewFile
+                          ? "Commit message (creates the file)"
+                          : "Commit message"
                     }
                     className="h-9 flex-1 font-mono text-sm"
                     onKeyDown={(e) => {
@@ -1253,6 +1456,19 @@ function Workspace({
                       }
                     }}
                   />
+                  {(dirty || isNewFile) && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-9 shrink-0 gap-1.5"
+                      onClick={handleStage}
+                      disabled={committing}
+                      title="Add this file to the staged changes"
+                    >
+                      <Plus className="size-4" />
+                      {openFileIsStaged ? "Re-stage" : "Stage"}
+                    </Button>
+                  )}
                   <Button
                     type="button"
                     className="h-9 shrink-0 gap-1.5"
@@ -1264,7 +1480,11 @@ function Workspace({
                     ) : (
                       <Github className="size-4" />
                     )}
-                    {isNewFile ? "Create" : "Commit"}
+                    {staged.length > 0
+                      ? `Commit ${staged.length}`
+                      : isNewFile
+                        ? "Create"
+                        : "Commit"}
                   </Button>
                 </div>
               </div>

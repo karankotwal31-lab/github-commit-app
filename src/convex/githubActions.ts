@@ -386,6 +386,141 @@ export const renameFile = action({
   },
 });
 
+/**
+ * Commit several file changes to a branch in one atomic commit using the
+ * Git Data API (blobs → tree → commit → update ref). This is what powers
+ * multi-file staging: a batch of staged files lands as a single commit.
+ */
+export const commitChanges = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    branch: v.string(),
+    message: v.string(),
+    files: v.array(
+      v.object({
+        path: v.string(),
+        content: v.string(),
+        action: v.union(v.literal("update"), v.literal("create")),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    if (!args.message.trim()) {
+      throw new Error("A commit message is required.");
+    }
+    if (args.files.length === 0) {
+      throw new Error("Nothing to commit.");
+    }
+    if (new Set(args.files.map((f) => f.path)).size !== args.files.length) {
+      throw new Error("A file appears twice in this commit — stage each file once.");
+    }
+    for (const file of args.files) {
+      if (!file.path.trim()) {
+        throw new Error("A staged file has an empty path.");
+      }
+      if (file.content.length > 1_000_000) {
+        throw new Error(`${file.path} is over 1 MB — too large to commit.`);
+      }
+    }
+    const token = await getToken(ctx);
+    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+
+    // 1. Resolve the current branch tip.
+    const ref = await githubFetch<GitHubRef>(
+      `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
+      token,
+    );
+    const headSha = ref.object.sha;
+
+    // 2. Create a blob for every changed file.
+    const blobShas = new Map<string, string>();
+    for (const file of args.files) {
+      const blob = await githubFetch<{ sha: string }>(
+        `${repoUrl}/git/blobs`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            content: Buffer.from(file.content, "utf8").toString("base64"),
+            encoding: "base64",
+          }),
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+      blobShas.set(file.path, blob.sha);
+    }
+
+    // 3. Rebuild the tree from the base commit, swapping in the new blobs.
+    const baseTree = await githubFetch<{
+      sha: string;
+      tree: Array<{
+        path: string;
+        type: string;
+        mode?: string;
+        sha?: string | null;
+      }>;
+    }>(`${repoUrl}/git/trees/${headSha}?recursive=1`, token);
+
+    const tree = baseTree.tree
+      .filter(
+        (entry) => entry.type === "blob" && !blobShas.has(entry.path),
+      )
+      .map((entry) => ({
+        path: entry.path,
+        mode: entry.mode ?? "100644",
+        type: "blob" as const,
+        sha: entry.sha ?? "",
+      }));
+    for (const file of args.files) {
+      tree.push({
+        path: file.path,
+        mode: "100644",
+        type: "blob" as const,
+        sha: blobShas.get(file.path)!,
+      });
+    }
+
+    const newTree = await githubFetch<{ sha: string }>(`${repoUrl}/git/trees`, token, {
+      method: "POST",
+      body: JSON.stringify({ base_tree: baseTree.sha, tree }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    // 4. Create the commit on top of the branch tip.
+    const commit = await githubFetch<{
+      sha: string;
+      message: string;
+      html_url: string | null;
+    }>(`${repoUrl}/git/commits`, token, {
+      method: "POST",
+      body: JSON.stringify({
+        message: args.message,
+        tree: newTree.sha,
+        parents: [headSha],
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    // 5. Fast-forward the branch ref to the new commit.
+    await githubFetch<GitHubRef>(
+      `${repoUrl}/git/refs/heads/${encodeURIComponent(args.branch)}`,
+      token,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ sha: commit.sha, force: false }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+    return {
+      sha: commit.sha,
+      message: commit.message ?? args.message,
+      htmlUrl: commit.html_url ?? null,
+    } as CommitResult;
+  },
+});
+
 export const listBranches = action({
   args: {
     owner: v.string(),
