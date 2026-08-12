@@ -8,6 +8,23 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/use-auth";
 import {
   formatDate,
@@ -17,22 +34,33 @@ import {
   errorMessage,
   ownerOf,
   repoNameOf,
+  type Branch,
+  type CommitResult,
   type DirEntry,
   type FileData,
+  type PullRequestResult,
   type Repository,
 } from "@/lib/github";
+import { diffLines, type DiffLine } from "@/lib/diff";
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  ChevronDown,
   ChevronRight,
   FileCode2,
+  FilePlus2,
   Folder,
   FolderOpen,
+  GitBranch,
+  GitPullRequest,
   Github,
   Loader2,
   LogOut,
+  Pencil,
+  Plus,
   RefreshCw,
   Search,
+  Trash2,
   Unplug,
 } from "lucide-react";
 import { useAction, useMutation, useQuery } from "convex/react";
@@ -173,6 +201,123 @@ function ConnectScreen({
 }
 
 // ---------------------------------------------------------------------------
+// Input dialog (new file / rename / new branch)
+// ---------------------------------------------------------------------------
+
+function InputDialog({
+  open,
+  title,
+  label,
+  placeholder,
+  initial,
+  confirmLabel,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  label?: string;
+  placeholder?: string;
+  initial?: string;
+  confirmLabel: string;
+  busy?: boolean;
+  onConfirm: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(initial ?? "");
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && !busy) onClose();
+      }}
+    >
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          {label && <p className="text-sm leading-5 text-neutral-500">{label}</p>}
+        </DialogHeader>
+        <Input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={placeholder}
+          autoFocus
+          spellCheck={false}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && value.trim() && !busy) {
+              onConfirm(value.trim());
+            }
+          }}
+        />
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={!value.trim() || busy}
+            onClick={() => onConfirm(value.trim())}
+          >
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            {confirmLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Diff view
+// ---------------------------------------------------------------------------
+
+function DiffView({ lines }: { lines: DiffLine[] }) {
+  return (
+    <div className="h-full overflow-auto bg-background">
+      <table className="w-full border-collapse font-mono text-[13px] leading-6">
+        <tbody>
+          {lines.map((line, i) => (
+            <tr
+              key={i}
+              className={
+                line.type === "add"
+                  ? "bg-emerald-50/60"
+                  : line.type === "del"
+                    ? "bg-red-50/60"
+                    : ""
+              }
+            >
+              <td className="w-12 select-none border-r border-neutral-100 px-2 text-right text-[11px] text-neutral-400">
+                {line.oldLine ?? ""}
+              </td>
+              <td className="w-12 select-none border-r border-neutral-100 px-2 text-right text-[11px] text-neutral-400">
+                {line.newLine ?? ""}
+              </td>
+              <td
+                className={`whitespace-pre px-3 ${
+                  line.type === "add"
+                    ? "text-emerald-900"
+                    : line.type === "del"
+                      ? "text-red-900"
+                      : "text-neutral-800"
+                }`}
+              >
+                {line.text || " "}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {lines.length === 0 && (
+        <p className="p-6 text-sm text-neutral-400">No changes yet.</p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Workspace
 // ---------------------------------------------------------------------------
 
@@ -193,6 +338,12 @@ function Workspace({
   const listContents = useAction(api.githubActions.listContents);
   const getFile = useAction(api.githubActions.getFile);
   const commitFile = useAction(api.githubActions.commitFile);
+  const createFile = useAction(api.githubActions.createFile);
+  const deleteFile = useAction(api.githubActions.deleteFile);
+  const renameFile = useAction(api.githubActions.renameFile);
+  const listBranches = useAction(api.githubActions.listBranches);
+  const createBranchAction = useAction(api.githubActions.createBranch);
+  const createPullRequest = useAction(api.githubActions.createPullRequest);
   const disconnect = useMutation(api.github.disconnect);
 
   const [repos, setRepos] = useState<Repository[] | null>(null);
@@ -206,16 +357,34 @@ function Workspace({
   const [entriesError, setEntriesError] = useState<string | null>(null);
   const [path, setPath] = useState("");
 
+  const [branches, setBranches] = useState<Branch[] | null>(null);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [branch, setBranch] = useState<string | null>(null);
+
   const [openFile, setOpenFile] = useState<(FileData & { path: string }) | null>(
     null,
   );
+  const [isNewFile, setIsNewFile] = useState(false);
   const [editorContent, setEditorContent] = useState("");
+  const [viewMode, setViewMode] = useState<"edit" | "diff">("edit");
   const [fileLoading, setFileLoading] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [committing, setCommitting] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "err"; text: string } | null>(
     null,
   );
+
+  const [dialog, setDialog] = useState<
+    { kind: "newFile" | "rename" | "branch" } | null
+  >(null);
+  const [dialogBusy, setDialogBusy] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [lastCommit, setLastCommit] = useState<CommitResult | null>(null);
+  const [prOpen, setPrOpen] = useState(false);
+  const [prResult, setPrResult] = useState<PullRequestResult | null>(null);
+
+  const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
 
   const loadRepos = useCallback(async () => {
     setReposLoading(true);
@@ -248,7 +417,7 @@ function Workspace({
   }, [listRepositories]);
 
   const loadEntries = useCallback(
-    async (repo: Repository, dirPath: string) => {
+    async (repo: Repository, branchName: string, dirPath: string) => {
       setEntriesLoading(true);
       setEntriesError(null);
       try {
@@ -256,7 +425,7 @@ function Workspace({
           owner: ownerOf(repo.fullName),
           repo: repoNameOf(repo.fullName),
           path: dirPath,
-          branch: repo.defaultBranch,
+          branch: branchName,
         });
         setEntries(data as DirEntry[]);
       } catch (e) {
@@ -268,21 +437,66 @@ function Workspace({
     [listContents],
   );
 
+  const loadBranches = useCallback(
+    async (repo: Repository) => {
+      setBranchesLoading(true);
+      try {
+        const data = await listBranches({
+          owner: ownerOf(repo.fullName),
+          repo: repoNameOf(repo.fullName),
+        });
+        setBranches(data);
+      } catch (e) {
+        toast.error(errorMessage(e));
+      } finally {
+        setBranchesLoading(false);
+      }
+    },
+    [listBranches],
+  );
+
   const handleSelectRepo = (repo: Repository) => {
     setSelectedRepo(repo);
+    setBranch(repo.defaultBranch);
+    setBranches(null);
     setEntries(null);
     setOpenFile(null);
+    setIsNewFile(false);
     setStatus(null);
+    setLastCommit(null);
+    setPrResult(null);
     setPath("");
-    loadEntries(repo, "");
+    setViewMode("edit");
+    loadEntries(repo, repo.defaultBranch, "");
+    loadBranches(repo);
   };
 
   const handleBackToRepos = () => {
     setSelectedRepo(null);
+    setBranch(null);
+    setBranches(null);
     setEntries(null);
     setOpenFile(null);
+    setIsNewFile(false);
     setStatus(null);
+    setLastCommit(null);
+    setPrResult(null);
     setPath("");
+    setViewMode("edit");
+  };
+
+  const handleSwitchBranch = (name: string) => {
+    if (!selectedRepo || !currentBranch || name === currentBranch) return;
+    setBranch(name);
+    setEntries(null);
+    setOpenFile(null);
+    setIsNewFile(false);
+    setStatus(null);
+    setLastCommit(null);
+    setPrResult(null);
+    setPath("");
+    setViewMode("edit");
+    loadEntries(selectedRepo, name, "");
   };
 
   const filteredRepos = useMemo(() => {
@@ -309,13 +523,12 @@ function Workspace({
   );
 
   const handleOpenEntry = async (entry: DirEntry) => {
-    if (!selectedRepo) return;
+    if (!selectedRepo || !currentBranch) return;
     if (entry.type === "dir") {
       setPath(entry.path);
-      loadEntries(selectedRepo, entry.path);
+      loadEntries(selectedRepo, currentBranch, entry.path);
       return;
     }
-    // file
     setFileLoading(true);
     setStatus(null);
     try {
@@ -323,10 +536,13 @@ function Workspace({
         owner: ownerOf(selectedRepo.fullName),
         repo: repoNameOf(selectedRepo.fullName),
         path: entry.path,
-        branch: selectedRepo.defaultBranch,
+        branch: currentBranch,
       });
       setOpenFile({ ...data, path: entry.path });
       setEditorContent(data.content);
+      setIsNewFile(false);
+      setLastCommit(null);
+      setPrResult(null);
     } catch (e) {
       setStatus({ kind: "err", text: errorMessage(e) });
     } finally {
@@ -335,37 +551,179 @@ function Workspace({
   };
 
   const handleBreadcrumb = (index: number) => {
-    if (!selectedRepo) return;
+    if (!selectedRepo || !currentBranch) return;
     const target = pathSegments.slice(0, index + 1).join("/");
     setPath(target);
-    loadEntries(selectedRepo, target);
+    loadEntries(selectedRepo, currentBranch, target);
+  };
+
+  const handleDialogConfirm = async (value: string) => {
+    if (!selectedRepo || !dialog) return;
+    const clean = value.startsWith("/") ? value.slice(1) : value;
+    setDialogBusy(true);
+    try {
+      if (dialog.kind === "newFile") {
+        setOpenFile({ content: "", sha: "", size: 0, truncated: false, path: clean });
+        setEditorContent("");
+        setIsNewFile(true);
+        setStatus(null);
+        setViewMode("edit");
+        setLastCommit(null);
+        setPrResult(null);
+        setDialog(null);
+      } else if (dialog.kind === "rename") {
+        if (!openFile || !currentBranch) return;
+        const oldPath = openFile.path;
+        if (clean === oldPath) {
+          toast.error("New path is the same as the current path.");
+          return;
+        }
+        const result = await renameFile({
+          owner: ownerOf(selectedRepo.fullName),
+          repo: repoNameOf(selectedRepo.fullName),
+          oldPath,
+          newPath: clean,
+          branch: currentBranch,
+          message: `Rename ${oldPath} → ${clean}`,
+        });
+        setOpenFile({
+          content: result.content,
+          sha: result.sha ?? "",
+          size: 0,
+          truncated: false,
+          path: clean,
+        });
+        const dir = clean.includes("/") ? clean.slice(0, clean.lastIndexOf("/")) : "";
+        setPath(dir);
+        loadEntries(selectedRepo, currentBranch, dir);
+        setDialog(null);
+        toast.success(`Renamed to ${clean}`);
+      } else {
+        // branch
+        if (!currentBranch) return;
+        await createBranchAction({
+          owner: ownerOf(selectedRepo.fullName),
+          repo: repoNameOf(selectedRepo.fullName),
+          name: clean,
+          base: currentBranch,
+        });
+        setBranches([...(branches ?? []), { name: clean, sha: "" }]);
+        handleSwitchBranch(clean);
+        setDialog(null);
+        toast.success(`Created branch ${clean}`);
+      }
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setDialogBusy(false);
+    }
   };
 
   const handleCommit = async () => {
-    if (!selectedRepo || !openFile) return;
-    const message = commitMessage.trim() || `Update ${openFile.path}`;
+    if (!selectedRepo || !openFile || !currentBranch) return;
+    const message =
+      commitMessage.trim() ||
+      (isNewFile ? `Create ${openFile.path}` : `Update ${openFile.path}`);
     setCommitting(true);
     setStatus(null);
     try {
-      const result = await commitFile({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-        path: openFile.path,
-        branch: selectedRepo.defaultBranch,
-        message,
-        content: editorContent,
-        sha: openFile.sha,
-      });
+      const result = isNewFile
+        ? await createFile({
+            owner: ownerOf(selectedRepo.fullName),
+            repo: repoNameOf(selectedRepo.fullName),
+            path: openFile.path,
+            branch: currentBranch,
+            message,
+            content: editorContent,
+          })
+        : await commitFile({
+            owner: ownerOf(selectedRepo.fullName),
+            repo: repoNameOf(selectedRepo.fullName),
+            path: openFile.path,
+            branch: currentBranch,
+            message,
+            content: editorContent,
+            sha: openFile.sha,
+          });
       setStatus({
         kind: "ok",
         text: `Committed ${result.sha?.slice(0, 7) ?? ""} — ${message}`,
       });
       setCommitMessage("");
-      setOpenFile({ ...openFile, content: editorContent, sha: result.sha ?? openFile.sha });
+      setLastCommit(result);
+      setPrResult(null);
+      if (isNewFile) {
+        const dir = openFile.path.includes("/")
+          ? openFile.path.slice(0, openFile.path.lastIndexOf("/"))
+          : "";
+        setPath(dir);
+        loadEntries(selectedRepo, currentBranch, dir);
+        setOpenFile({
+          ...openFile,
+          content: editorContent,
+          sha: result.sha ?? "",
+        });
+        setIsNewFile(false);
+      } else {
+        setOpenFile({
+          ...openFile,
+          content: editorContent,
+          sha: result.sha ?? openFile.sha,
+        });
+      }
     } catch (e) {
       setStatus({ kind: "err", text: errorMessage(e) });
     } finally {
       setCommitting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selectedRepo || !openFile || isNewFile || !currentBranch) return;
+    setDeleting(true);
+    try {
+      await deleteFile({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        path: openFile.path,
+        branch: currentBranch,
+        message: `Delete ${openFile.path}`,
+        sha: openFile.sha,
+      });
+      const dir = openFile.path.includes("/")
+        ? openFile.path.slice(0, openFile.path.lastIndexOf("/"))
+        : "";
+      setOpenFile(null);
+      setIsNewFile(false);
+      setPath(dir);
+      loadEntries(selectedRepo, currentBranch, dir);
+      setStatus({ kind: "ok", text: `Deleted the file.` });
+      toast.success("File deleted");
+    } catch (e) {
+      setStatus({ kind: "err", text: errorMessage(e) });
+    } finally {
+      setDeleting(false);
+      setDeleteOpen(false);
+    }
+  };
+
+  const handleOpenPr = async () => {
+    if (!selectedRepo || !lastCommit || !currentBranch) return;
+    setPrOpen(true);
+    try {
+      const result = await createPullRequest({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        title: lastCommit.message,
+        head: currentBranch,
+        base: selectedRepo.defaultBranch,
+      });
+      setPrResult(result);
+      toast.success(`Pull request #${result.number} opened`);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setPrOpen(false);
     }
   };
 
@@ -378,12 +736,23 @@ function Workspace({
     await disconnect();
     setRepos(null);
     setSelectedRepo(null);
+    setBranch(null);
+    setBranches(null);
     setEntries(null);
     setOpenFile(null);
+    setIsNewFile(false);
     setPath("");
   };
 
-  const dirty = openFile !== null && editorContent !== openFile.content;
+  const dirty = openFile !== null && !isNewFile && editorContent !== openFile.content;
+  const canCommit = isNewFile
+    ? editorContent.trim() !== "" || commitMessage.trim() !== ""
+    : dirty;
+
+  const diff = useMemo(
+    () => (openFile ? diffLines(openFile.content, editorContent) : []),
+    [openFile, editorContent],
+  );
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground antialiased">
@@ -523,6 +892,57 @@ function Workspace({
                 <p className="truncate font-mono text-[13px] font-medium text-neutral-900">
                   {selectedRepo.name}
                 </p>
+                <div className="ml-auto flex items-center gap-0.5">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="flex max-w-32 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 hover:bg-neutral-100"
+                        title="Switch branch"
+                      >
+                        <GitBranch className="size-3 shrink-0" />
+                        <span className="truncate">{currentBranch}</span>
+                        <ChevronDown className="size-3 shrink-0" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="end"
+                      className="max-h-72 w-52 overflow-y-auto"
+                    >
+                      {branchesLoading && !branches && (
+                        <DropdownMenuItem disabled>
+                          <Loader2 className="mr-2 size-3 animate-spin" />
+                          Loading branches…
+                        </DropdownMenuItem>
+                      )}
+                      {branches?.map((b) => (
+                        <DropdownMenuItem
+                          key={b.name}
+                          onClick={() => handleSwitchBranch(b.name)}
+                          className="cursor-pointer font-mono text-[13px]"
+                        >
+                          {b.name}
+                        </DropdownMenuItem>
+                      ))}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => setDialog({ kind: "branch" })}
+                        className="cursor-pointer text-[13px]"
+                      >
+                        <Plus className="mr-2 size-3.5" />
+                        Create branch…
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <button
+                    type="button"
+                    onClick={() => setDialog({ kind: "newFile" })}
+                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+                    title="New file"
+                  >
+                    <FilePlus2 className="size-3.5" />
+                  </button>
+                </div>
               </>
             ) : (
               <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-neutral-400">
@@ -531,13 +951,13 @@ function Workspace({
             )}
           </div>
 
-          {selectedRepo && (
+          {selectedRepo && currentBranch && (
             <div className="flex items-center gap-1 px-4 pt-2 text-[13px]">
               <button
                 type="button"
                 onClick={() => {
                   setPath("");
-                  loadEntries(selectedRepo, "");
+                  loadEntries(selectedRepo, currentBranch, "");
                 }}
                 className={`truncate font-mono hover:underline ${
                   path === "" ? "text-neutral-900" : "text-neutral-500"
@@ -584,7 +1004,9 @@ function Workspace({
                       onClick={() => {
                         const parent = pathSegments.slice(0, -1).join("/");
                         setPath(parent);
-                        loadEntries(selectedRepo, parent);
+                        if (selectedRepo && currentBranch) {
+                          loadEntries(selectedRepo, currentBranch, parent);
+                        }
                       }}
                       className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] text-neutral-500 hover:bg-neutral-100"
                     >
@@ -631,16 +1053,63 @@ function Workspace({
                   <p className="truncate font-mono text-[13px] text-neutral-900">
                     {openFile.path}
                   </p>
+                  {isNewFile && (
+                    <span className="shrink-0 rounded border border-neutral-300 px-1 py-0.5 text-[10px] uppercase tracking-wide text-neutral-500">
+                      New
+                    </span>
+                  )}
                   {dirty && (
                     <span className="size-1.5 shrink-0 rounded-full bg-neutral-900" />
                   )}
                 </div>
-                <div className="flex shrink-0 items-center gap-4">
-                  {selectedRepo && (
-                    <span className="hidden font-mono text-[11px] text-neutral-400 sm:inline">
-                      {selectedRepo.defaultBranch}
-                    </span>
+                <div className="flex shrink-0 items-center gap-3">
+                  <div className="flex items-center rounded-md border border-neutral-200 p-0.5 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => setViewMode("edit")}
+                      className={`rounded px-2 py-0.5 transition-colors ${
+                        viewMode === "edit"
+                          ? "bg-neutral-900 text-white"
+                          : "text-neutral-500 hover:bg-neutral-100"
+                      }`}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode("diff")}
+                      className={`rounded px-2 py-0.5 transition-colors ${
+                        viewMode === "diff"
+                          ? "bg-neutral-900 text-white"
+                          : "text-neutral-500 hover:bg-neutral-100"
+                      }`}
+                    >
+                      Diff
+                    </button>
+                  </div>
+                  {!isNewFile && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setDialog({ kind: "rename" })}
+                        title="Rename"
+                        className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800"
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteOpen(true)}
+                        title="Delete"
+                        className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-red-600"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </>
                   )}
+                  <span className="hidden font-mono text-[11px] text-neutral-400 sm:inline">
+                    {currentBranch}
+                  </span>
                   {dirty && (
                     <button
                       type="button"
@@ -658,6 +1127,8 @@ function Workspace({
                   <div className="flex h-full items-center justify-center">
                     <Loader2 className="size-4 animate-spin text-neutral-400" />
                   </div>
+                ) : viewMode === "diff" ? (
+                  <DiffView lines={diff} />
                 ) : (
                   <textarea
                     value={editorContent}
@@ -680,16 +1151,53 @@ function Workspace({
                     {status.text}
                   </p>
                 )}
+                {lastCommit &&
+                  selectedRepo &&
+                  currentBranch &&
+                  currentBranch !== selectedRepo.defaultBranch &&
+                  !prResult && (
+                    <div className="mb-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 text-xs"
+                        onClick={handleOpenPr}
+                        disabled={prOpen}
+                      >
+                        {prOpen ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <GitPullRequest className="size-3" />
+                        )}
+                        Open pull request → {selectedRepo.defaultBranch}
+                      </Button>
+                    </div>
+                  )}
+                {prResult && (
+                  <p className="mb-2 text-xs text-neutral-700">
+                    <a
+                      href={prResult.htmlUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline underline-offset-2 hover:text-neutral-900"
+                    >
+                      Pull request #{prResult.number} — {prResult.title}
+                    </a>
+                  </p>
+                )}
                 <div className="flex items-center gap-2">
                   <Input
                     value={commitMessage}
                     onChange={(e) => setCommitMessage(e.target.value)}
-                    placeholder="Commit message"
+                    placeholder={
+                      isNewFile ? "Commit message (creates the file)" : "Commit message"
+                    }
                     className="h-9 flex-1 font-mono text-sm"
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
-                        handleCommit();
+                        if (canCommit) handleCommit();
                       }
                     }}
                   />
@@ -697,14 +1205,14 @@ function Workspace({
                     type="button"
                     className="h-9 shrink-0 gap-1.5"
                     onClick={handleCommit}
-                    disabled={committing || !dirty}
+                    disabled={committing || !canCommit}
                   >
                     {committing ? (
                       <Loader2 className="size-4 animate-spin" />
                     ) : (
                       <Github className="size-4" />
                     )}
-                    Commit
+                    {isNewFile ? "Create" : "Commit"}
                   </Button>
                 </div>
               </div>
@@ -718,9 +1226,9 @@ function Workspace({
                     Select a file to edit
                   </p>
                   <p className="mt-1 max-w-xs text-sm text-neutral-400">
-                    Pick a text file from the browser to the left. Changes are
-                    committed to{" "}
-                    <span className="font-mono">{selectedRepo.defaultBranch}</span>.
+                    Pick a text file from the browser to the left, or create a new
+                    one. Changes are committed to{" "}
+                    <span className="font-mono">{currentBranch}</span>.
                   </p>
                 </>
               ) : (
@@ -738,6 +1246,75 @@ function Workspace({
           )}
         </main>
       </div>
+
+      {/* Input dialog: new file / rename / new branch */}
+      <InputDialog
+        key={dialog?.kind ?? "closed"}
+        open={dialog !== null}
+        title={
+          dialog?.kind === "newFile"
+            ? "New file"
+            : dialog?.kind === "rename"
+              ? "Rename file"
+              : "New branch"
+        }
+        label={
+          dialog?.kind === "newFile"
+            ? "Path of the new file, relative to the repository root."
+            : dialog?.kind === "rename"
+              ? "New path for this file, relative to the repository root."
+              : `Branching off ${currentBranch}. The new branch gets everything that's on the current one.`
+        }
+        placeholder={
+          dialog?.kind === "newFile"
+            ? "src/new-file.ts"
+            : dialog?.kind === "rename"
+              ? "src/renamed.ts"
+              : "feature/my-change"
+        }
+        initial={dialog?.kind === "rename" ? openFile?.path ?? "" : ""}
+        confirmLabel={
+          dialog?.kind === "newFile"
+            ? "Create"
+            : dialog?.kind === "rename"
+              ? "Rename"
+              : "Create branch"
+        }
+        busy={dialogBusy}
+        onConfirm={handleDialogConfirm}
+        onClose={() => {
+          if (!dialogBusy) setDialog(null);
+        }}
+      />
+
+      {/* Delete confirmation */}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {openFile?.path}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This commits a deletion on {currentBranch}. It can always be
+              restored from Git history.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleting}
+              onClick={(e) => {
+                e.preventDefault();
+                handleDelete();
+              }}
+              className="bg-red-600 text-white hover:bg-red-700"
+            >
+              {deleting && <Loader2 className="size-4 animate-spin" />}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

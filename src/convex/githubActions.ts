@@ -41,6 +41,38 @@ interface GitHubCommitResponse {
   };
 }
 
+interface GitHubBranch {
+  name: string;
+  commit: { sha: string };
+}
+
+interface GitHubRef {
+  object: { sha: string };
+}
+
+interface GitHubPullRequest {
+  number: number;
+  title: string;
+  html_url: string;
+}
+
+export interface CommitResult {
+  sha: string | null;
+  message: string;
+  htmlUrl: string | null;
+}
+
+export interface BranchResult {
+  name: string;
+  sha: string;
+}
+
+export interface PullRequestResult {
+  number: number;
+  title: string;
+  htmlUrl: string;
+}
+
 function githubHeaders(token: string, extra?: Record<string, string>) {
   return {
     Authorization: `Bearer ${token}`,
@@ -211,5 +243,229 @@ export const commitFile = action({
       message: data.commit?.message ?? args.message,
       htmlUrl: data.commit?.html_url ?? null,
     };
+  },
+});
+
+/** Create a brand-new file at `path` (no sha — GitHub creates it). */
+export const createFile = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    path: v.string(),
+    branch: v.string(),
+    message: v.string(),
+    content: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<GitHubCommitResponse>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(args.path)}`,
+      token,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          message: args.message,
+          content: Buffer.from(args.content, "utf8").toString("base64"),
+          branch: args.branch,
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    return {
+      sha: data.commit?.sha ?? null,
+      message: data.commit?.message ?? args.message,
+      htmlUrl: data.commit?.html_url ?? null,
+    } as CommitResult;
+  },
+});
+
+/** Delete an existing file (requires its blob sha). */
+export const deleteFile = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    path: v.string(),
+    branch: v.string(),
+    message: v.string(),
+    sha: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<GitHubCommitResponse>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(args.path)}`,
+      token,
+      {
+        method: "DELETE",
+        body: JSON.stringify({
+          message: args.message,
+          sha: args.sha,
+          branch: args.branch,
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    return {
+      sha: data.commit?.sha ?? null,
+      message: data.commit?.message ?? args.message,
+      htmlUrl: data.commit?.html_url ?? null,
+    } as CommitResult;
+  },
+});
+
+/**
+ * Rename a file: copy it to the new path and delete the old path, wrapped in
+ * a single action. The GitHub contents API has no one-call rename, so this
+ * makes two requests back to back.
+ */
+export const renameFile = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    oldPath: v.string(),
+    newPath: v.string(),
+    branch: v.string(),
+    message: v.string(),
+  },
+  handler: async (ctx, args) => {
+    if (args.oldPath === args.newPath) {
+      throw new Error("New path is the same as the current path.");
+    }
+    const token = await getToken(ctx);
+    const oldData = await githubFetch<GitHubFile>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
+        args.oldPath,
+      )}?ref=${encodeURIComponent(args.branch)}`,
+      token,
+    );
+    if (oldData.type !== "file" || oldData.encoding !== "base64" || !oldData.content) {
+      throw new Error("That path isn't a readable text file — can't rename it.");
+    }
+    const content = Buffer.from(oldData.content, "base64").toString("utf8");
+    const created = await githubFetch<GitHubCommitResponse>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
+        args.newPath,
+      )}`,
+      token,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          message: args.message,
+          content: Buffer.from(content, "utf8").toString("base64"),
+          branch: args.branch,
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    try {
+      await githubFetch<GitHubCommitResponse>(
+        `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
+          args.oldPath,
+        )}`,
+        token,
+        {
+          method: "DELETE",
+          body: JSON.stringify({
+            message: args.message,
+            sha: oldData.sha,
+            branch: args.branch,
+          }),
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } catch {
+      throw new Error(
+        "The file was created at the new path, but removing the old one failed — check the repo for duplicates.",
+      );
+    }
+    return {
+      sha: created.commit?.sha ?? null,
+      message: args.message,
+      htmlUrl: created.commit?.html_url ?? null,
+      content,
+    } as CommitResult & { content: string };
+  },
+});
+
+export const listBranches = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<GitHubBranch[]>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/branches?per_page=100`,
+      token,
+    );
+    return data.map((branch) => ({
+      name: branch.name,
+      sha: branch.commit.sha,
+    })) as BranchResult[];
+  },
+});
+
+/** Create a branch `name` pointing at the current tip of `base`. */
+export const createBranch = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    name: v.string(),
+    base: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const ref = await githubFetch<GitHubRef>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/git/ref/heads/${encodeURIComponent(
+        args.base,
+      )}`,
+      token,
+    );
+    await githubFetch<GitHubRef>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/git/refs`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ref: `refs/heads/${args.name}`,
+          sha: ref.object.sha,
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    return { name: args.name, sha: ref.object.sha } as BranchResult;
+  },
+});
+
+/** Open a pull request from `head` into `base`. */
+export const createPullRequest = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    title: v.string(),
+    head: v.string(),
+    base: v.string(),
+    body: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<GitHubPullRequest>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          title: args.title,
+          head: args.head,
+          base: args.base,
+          body: args.body ?? "",
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    return {
+      number: data.number,
+      title: data.title,
+      htmlUrl: data.html_url,
+    } as PullRequestResult;
   },
 });

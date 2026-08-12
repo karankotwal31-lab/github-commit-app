@@ -47,6 +47,23 @@ export interface FileData {
   truncated: boolean;
 }
 
+export interface Branch {
+  name: string;
+  sha: string;
+}
+
+export interface CommitResult {
+  sha: string | null;
+  message: string;
+  htmlUrl: string | null;
+}
+
+export interface PullRequestResult {
+  number: number;
+  title: string;
+  htmlUrl: string;
+}
+
 export function ownerOf(fullName: string): string {
   return fullName.split("/")[0];
 }
