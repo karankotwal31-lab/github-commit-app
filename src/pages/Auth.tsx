@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/input-otp";
 
 import { useAuth } from "@/hooks/use-auth";
-import { ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Loader2, Music2 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
@@ -102,8 +102,9 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
       <header className="flex h-16 items-center justify-between border-b border-neutral-200 px-6">
         <Link
           to="/"
-          className="flex items-baseline gap-1 text-[15px] font-semibold tracking-tight"
+          className="flex items-center gap-1.5 text-[15px] font-semibold tracking-tight"
         >
+          <Music2 className="size-4 text-primary" strokeWidth={2.25} />
           Aria<span className="text-neutral-400">.</span>
         </Link>
         <p className="text-xs text-neutral-400">Personal GitHub desk</p>

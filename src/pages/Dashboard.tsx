@@ -58,6 +58,7 @@ import {
   Loader2,
   Lock,
   LogOut,
+  Music2,
   Pencil,
   Plus,
   RefreshCw,
@@ -71,7 +72,8 @@ import { useNavigate, useSearchParams } from "react-router";
 
 function Wordmark() {
   return (
-    <div className="flex items-baseline gap-1">
+    <div className="flex items-center gap-1.5">
+      <Music2 className="size-4 text-primary" strokeWidth={2.25} />
       <span className="text-[15px] font-semibold tracking-tight">Aria</span>
       <span className="text-[15px] font-semibold tracking-tight text-neutral-400">
         .

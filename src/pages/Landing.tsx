@@ -6,6 +6,7 @@ import {
   GitCommitHorizontal,
   GitPullRequest,
   Lock,
+  Music2,
   Plus,
 } from "lucide-react";
 import { Link } from "react-router";
@@ -97,7 +98,8 @@ const FAKE_FILES = [
 
 function Wordmark() {
   return (
-    <Link to="/" className="flex items-baseline gap-1">
+    <Link to="/" className="flex items-center gap-1.5">
+      <Music2 className="size-4 text-primary" strokeWidth={2.25} />
       <span className="text-[15px] font-semibold tracking-tight">Aria</span>
       <span className="text-[15px] font-semibold tracking-tight text-neutral-400">
         .
