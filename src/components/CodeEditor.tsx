@@ -1,12 +1,24 @@
+import { useRef } from "react";
 import Editor from "@monaco-editor/react";
+import type { editor as MonacoEditor } from "monaco-editor";
 import "@/lib/monaco";
 import { languageForPath } from "@/lib/monaco";
+import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
+
+export interface EditorCursor {
+  line: number;
+  column: number;
+}
 
 /**
  * The Aria code editor: Monaco with the app's turquoise "aria" theme and
  * per-file language detection. Mirrors the current file content via `value`
  * and reports edits through `onChange`, so the surrounding commit/stage
  * flows keep working exactly as before.
+ *
+ * Cross-device continuity: on mount the caret is restored from the shared
+ * cursor store (set by the Dashboard when a workspace is restored), and every
+ * caret move is written back to that store so the Dashboard can persist it.
  */
 export function CodeEditor({
   path,
@@ -17,12 +29,31 @@ export function CodeEditor({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+
   return (
     <Editor
       language={languageForPath(path)}
       value={value}
       onChange={(next) => onChange(next ?? "")}
       theme="aria"
+      onMount={(editor) => {
+        editorRef.current = editor;
+        editor.onDidChangeCursorPosition((e) => {
+          setCursorSync({
+            line: e.position.lineNumber,
+            column: e.position.column,
+          });
+        });
+        const restored = getCursorSync();
+        if (restored) {
+          editor.setPosition({
+            lineNumber: Math.max(1, restored.line),
+            column: Math.max(1, restored.column),
+          });
+          editor.revealLineInCenter(Math.max(1, restored.line));
+        }
+      }}
       options={{
         minimap: { enabled: false },
         fontSize: 13,

@@ -49,6 +49,20 @@ const schema = defineSchema(
       origin: v.optional(v.string()), // app origin to redirect back to
       expiresAt: v.number(),
     }).index("by_state", ["state"]),
+
+    // Cross-device continuity: the last workspace the user was in, so opening
+    // Aria on another device picks up right where they left off (repo, branch,
+    // open file, unsaved draft, cursor). One row per user.
+    workspaceStates: defineTable({
+      userId: v.id("users"),
+      repo: v.string(), // full name, e.g. "owner/name"
+      branch: v.string(),
+      openPath: v.optional(v.string()), // open file path, if any
+      draft: v.optional(v.string()), // unsaved editor content (capped)
+      cursorLine: v.optional(v.number()),
+      cursorColumn: v.optional(v.number()),
+      updatedAt: v.number(),
+    }).index("by_userId", ["userId"]),
   },
   {
     schemaValidation: false,

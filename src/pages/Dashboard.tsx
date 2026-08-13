@@ -1,5 +1,6 @@
 import { api } from "@/convex/_generated/api";
 import { CodeEditor } from "@/components/CodeEditor";
+import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -73,7 +74,7 @@ import {
   Unplug,
 } from "lucide-react";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 function Wordmark() {
@@ -359,7 +360,11 @@ function Workspace({
   const getCommitHistory = useAction(api.githubActions.getCommitHistory);
   const revertCommit = useAction(api.githubActions.revertCommit);
   const aiSuggest = useAction(api.aiActions.aiSuggest);
+  const listPullRequests = useAction(api.githubActions.listPullRequests);
+  const mergePullRequest = useAction(api.githubActions.mergePullRequest);
   const disconnect = useMutation(api.github.disconnect);
+  const saveWorkspaceState = useMutation(api.github.saveWorkspaceState);
+  const workspaceState = useQuery(api.github.getWorkspaceState);
 
   const [repos, setRepos] = useState<Repository[] | null>(null);
   const [reposLoading, setReposLoading] = useState(true);
@@ -460,6 +465,36 @@ function Workspace({
       originalContent: string;
     }>;
   } | null>(null);
+
+  // Pull requests: open PRs for the current repo + the PR queued for merging.
+  const [prsOpen, setPrsOpen] = useState(false);
+  const [prs, setPrs] = useState<
+    Array<{
+      number: number;
+      title: string;
+      htmlUrl: string;
+      author: string;
+      createdAt: string | null;
+      draft: boolean;
+      head: string;
+      base: string;
+      mergeable: boolean | null;
+      mergeableState: string;
+    }> | null
+  >(null);
+  const [prsLoading, setPrsLoading] = useState(false);
+  const [prsError, setPrsError] = useState<string | null>(null);
+  const [mergeTarget, setMergeTarget] = useState<{
+    number: number;
+    title: string;
+  } | null>(null);
+  const [merging, setMerging] = useState(false);
+
+  // Cross-device continuity: guards so the restore doesn't clobber state the
+  // user is actively changing. The caret itself lives in the shared cursor
+  // store (see @/lib/cursorSync) — the editor writes it, we read it to save.
+  const restoredRef = useRef(false);
+  const restoringRef = useRef(false);
 
   const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
 
@@ -583,6 +618,119 @@ function Workspace({
     setHistoryOpen(true);
     loadHistory();
   };
+
+  // Cross-device continuity: once both the repo list and the saved workspace
+  // are ready, restore repo + branch + open file + draft + caret exactly where
+  // the user left off on the other device. Runs exactly once. The restore is
+  // deferred a tick so the effect exits before touching React state.
+  useEffect(() => {
+    if (restoredRef.current) return;
+    if (repos === null || workspaceState === undefined) return; // still loading
+    restoredRef.current = true;
+    if (!workspaceState) return;
+    const saved = workspaceState;
+    const repo = repos.find((r) => r.fullName === saved.repo);
+    if (!repo) return; // repo no longer accessible — don't force it
+    const timer = setTimeout(() => {
+      restoringRef.current = true;
+      // Select repo + saved branch.
+      setSelectedRepo(repo);
+      setBranch(saved.branch);
+      setBranches(null);
+      setEntries(null);
+      setStatus(null);
+      setLastCommit(null);
+      setPrResult(null);
+      setStaged([]);
+      setStagedDiffOpen(null);
+      setAllowSecrets(false);
+      setTreeFiles(null);
+      setSearchOpen(false);
+      setHistoryOpen(false);
+      setHistory(null);
+      setRevertTarget(null);
+      setPrsOpen(false);
+      setPrs(null);
+      setPath("");
+      setViewMode("edit");
+      loadEntries(repo, saved.branch, "");
+      loadBranches(repo);
+      loadTreeFiles(repo, saved.branch);
+      if (saved.openPath) {
+        const openPath = saved.openPath;
+        void (async () => {
+          try {
+            const data = await getFile({
+              owner: ownerOf(repo.fullName),
+              repo: repoNameOf(repo.fullName),
+              path: openPath,
+              branch: saved.branch,
+            });
+            setOpenFile({ ...data, path: openPath });
+            setIsNewFile(false);
+            // Restore the unsaved draft when it differs from the committed file;
+            // otherwise open the committed content.
+            setEditorContent(
+              saved.draft && saved.draft !== data.content
+                ? saved.draft
+                : data.content,
+            );
+            if (saved.cursorLine && saved.cursorColumn) {
+              setCursorSync({
+                line: saved.cursorLine,
+                column: saved.cursorColumn,
+              });
+            }
+          } catch {
+            // File may have been deleted or renamed — just land on the repo.
+          } finally {
+            restoringRef.current = false;
+          }
+        })();
+      } else {
+        restoringRef.current = false;
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [
+    repos,
+    workspaceState,
+    loadEntries,
+    loadBranches,
+    loadTreeFiles,
+    getFile,
+  ]);
+
+  // Cross-device continuity: persist the workspace (debounced) so the other
+  // device can pick up where this one left off. Skipped while restoring.
+  useEffect(() => {
+    if (restoringRef.current) return;
+    if (!selectedRepo || !currentBranch) return;
+    const dirty =
+      openFile !== null && !isNewFile && editorContent !== openFile.content;
+    const timer = setTimeout(() => {
+      void saveWorkspaceState({
+        repo: selectedRepo.fullName,
+        branch: currentBranch,
+        openPath: openFile?.path,
+        // Only persist content that differs from what's committed — a clean
+        // file shouldn't resurrect stale edits on the other device.
+        draft: openFile && (isNewFile || dirty) ? editorContent : undefined,
+        cursorLine: getCursorSync()?.line,
+        cursorColumn: getCursorSync()?.column,
+      }).catch(() => {
+        // Best-effort persistence — never interrupt the workspace for it.
+      });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [
+    selectedRepo,
+    currentBranch,
+    openFile,
+    isNewFile,
+    editorContent,
+    saveWorkspaceState,
+  ]);
 
   const handleRevert = async () => {
     if (!revertTarget || !selectedRepo || !currentBranch) return;
@@ -720,6 +868,9 @@ function Workspace({
     setHistoryOpen(false);
     setHistory(null);
     setRevertTarget(null);
+    setPrsOpen(false);
+    setPrs(null);
+    setMergeTarget(null);
     setPath("");
     setViewMode("edit");
     loadEntries(repo, repo.defaultBranch, "");
@@ -746,6 +897,9 @@ function Workspace({
     setHistoryOpen(false);
     setHistory(null);
     setRevertTarget(null);
+    setPrsOpen(false);
+    setPrs(null);
+    setMergeTarget(null);
     setPath("");
     setViewMode("edit");
   };
@@ -768,6 +922,9 @@ function Workspace({
     setHistoryOpen(false);
     setHistory(null);
     setRevertTarget(null);
+    setPrsOpen(false);
+    setPrs(null);
+    setMergeTarget(null);
     setPath("");
     setViewMode("edit");
     loadEntries(selectedRepo, name, "");
@@ -811,6 +968,7 @@ function Workspace({
     }
     setFileLoading(true);
     setStatus(null);
+    setCursorSync(null);
     try {
       const data = await getFile({
         owner: ownerOf(selectedRepo.fullName),
@@ -845,6 +1003,7 @@ function Workspace({
     setSearchQuery("");
     setFileLoading(true);
     setStatus(null);
+    setCursorSync(null);
     try {
       const data = await getFile({
         owner: ownerOf(selectedRepo.fullName),
@@ -877,6 +1036,7 @@ function Workspace({
     setDialogBusy(true);
     try {
       if (dialog.kind === "newFile") {
+        setCursorSync(null);
         setOpenFile({ content: "", sha: "", size: 0, truncated: false, path: clean });
         setEditorContent("");
         setIsNewFile(true);
@@ -1141,6 +1301,68 @@ function Workspace({
     }
   };
 
+  const loadPullRequests = useCallback(async () => {
+    if (!selectedRepo) return;
+    setPrsLoading(true);
+    setPrsError(null);
+    try {
+      const data = await listPullRequests({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+      });
+      setPrs(data);
+    } catch (e) {
+      setPrsError(errorMessage(e));
+    } finally {
+      setPrsLoading(false);
+    }
+  }, [selectedRepo, listPullRequests]);
+
+  const handleOpenPrs = () => {
+    setPrsOpen(true);
+    loadPullRequests();
+  };
+
+  const handleMergePr = async () => {
+    if (!selectedRepo || !mergeTarget) return;
+    setMerging(true);
+    try {
+      const result = await mergePullRequest({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        number: mergeTarget.number,
+      });
+      setMergeTarget(null);
+      toast.success(result.message || `Merged pull request #${mergeTarget.number}`);
+      // Refresh the PR list, and if the merge landed on the branch we're
+      // viewing, refresh the workspace too.
+      loadPullRequests();
+      if (currentBranch === selectedRepo.defaultBranch) {
+        loadEntries(selectedRepo, currentBranch, path);
+        if (openFile && !isNewFile) {
+          try {
+            const data = await getFile({
+              owner: ownerOf(selectedRepo.fullName),
+              repo: repoNameOf(selectedRepo.fullName),
+              path: openFile.path,
+              branch: currentBranch,
+            });
+            setOpenFile({ ...data, path: openFile.path });
+            setEditorContent(data.content);
+          } catch {
+            // The merge may have touched this file — close it gracefully.
+            setOpenFile(null);
+            setEditorContent("");
+          }
+        }
+      }
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setMerging(false);
+    }
+  };
+
   const handleSignOut = async () => {
     await signOut();
     navigate("/");
@@ -1160,6 +1382,9 @@ function Workspace({
     setHistoryOpen(false);
     setHistory(null);
     setRevertTarget(null);
+    setPrsOpen(false);
+    setPrs(null);
+    setMergeTarget(null);
     setPath("");
   };
 
@@ -1196,6 +1421,89 @@ function Workspace({
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground antialiased">
+      {/* Pull requests — open PRs with merge */}
+      <Dialog open={prsOpen} onOpenChange={setPrsOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Pull requests</DialogTitle>
+          </DialogHeader>
+          <div className="flex items-center justify-between gap-2">
+            <p className="truncate font-mono text-xs text-neutral-500">
+              {selectedRepo?.name}
+            </p>
+            <button
+              type="button"
+              onClick={loadPullRequests}
+              className="flex shrink-0 items-center gap-1 text-xs text-neutral-500 hover:text-neutral-900"
+            >
+              <RefreshCw className="size-3" />
+              Refresh
+            </button>
+          </div>
+          <div className="max-h-[24rem] overflow-auto">
+            {prsLoading && !prs ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-xs text-neutral-400">
+                <Loader2 className="size-3.5 animate-spin" />
+                Loading pull requests…
+              </div>
+            ) : prsError ? (
+              <p className="py-6 text-center text-xs text-red-600">{prsError}</p>
+            ) : prs?.length === 0 ? (
+              <p className="py-6 text-center text-xs text-neutral-400">
+                No open pull requests.
+              </p>
+            ) : (
+              <ul className="divide-y divide-neutral-100">
+                {prs?.map((pr) => (
+                  <li key={pr.number} className="py-3">
+                    <div className="flex items-start gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-neutral-800">
+                          {pr.title}
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-neutral-500">
+                          #{pr.number} · {pr.author} ·{" "}
+                          <span className="font-mono">{pr.head}</span>
+                          {" → "}
+                          <span className="font-mono">{pr.base}</span>
+                        </p>
+                        {pr.draft && (
+                          <span className="mt-1 inline-block rounded border border-neutral-300 px-1 py-0.5 text-[10px] uppercase tracking-wide text-neutral-500">
+                            Draft
+                          </span>
+                        )}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 shrink-0 gap-1 text-xs"
+                        disabled={pr.draft || pr.mergeable === false || pr.mergeable === null}
+                        title={
+                          pr.draft
+                            ? "Draft pull requests can't be merged"
+                            : pr.mergeable === false
+                              ? "Has conflicts — resolve them before merging"
+                              : pr.mergeable === null
+                                ? "GitHub is still checking mergeability"
+                                : "Merge this pull request"
+                        }
+                        onClick={() =>
+                          setMergeTarget({ number: pr.number, title: pr.title })
+                        }
+                      >
+                        <GitPullRequest className="size-3" />
+                        Merge
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Ask Aria — the grounded AI assistant */}
       <Dialog open={aiOpen} onOpenChange={setAiOpen}>
         <DialogContent className="max-w-2xl">
@@ -1334,6 +1642,37 @@ function Workspace({
             >
               {reverting && <Loader2 className="size-4 animate-spin" />}
               Revert commit
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Merge confirmation */}
+      <AlertDialog
+        open={mergeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !merging) setMergeTarget(null);
+        }}
+      >
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Merge this pull request?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{mergeTarget?.title}” will be squash-merged into its base branch
+              as a single commit. The branch itself stays untouched.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={merging}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={merging}
+              onClick={(e) => {
+                e.preventDefault();
+                handleMergePr();
+              }}
+            >
+              {merging && <Loader2 className="size-4 animate-spin" />}
+              Merge pull request
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1558,6 +1897,14 @@ function Workspace({
                     title="Commit history"
                   >
                     <History className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenPrs}
+                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+                    title="Pull requests"
+                  >
+                    <GitPullRequest className="size-3.5" />
                   </button>
                   <button
                     type="button"

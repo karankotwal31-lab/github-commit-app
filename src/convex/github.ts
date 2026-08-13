@@ -104,6 +104,71 @@ export const disconnect = mutation({
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .unique();
     if (conn !== null) await ctx.db.delete(conn._id);
+    // Drop the saved workspace so another device doesn't try to restore it.
+    const state = await ctx.db
+      .query("workspaceStates")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    if (state !== null) await ctx.db.delete(state._id);
+  },
+});
+
+/** The user's last workspace (repo, branch, open file, draft, cursor). */
+export const getWorkspaceState = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+    const state = await ctx.db
+      .query("workspaceStates")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    if (state === null) return null;
+    return {
+      repo: state.repo,
+      branch: state.branch,
+      openPath: state.openPath ?? null,
+      draft: state.draft ?? null,
+      cursorLine: state.cursorLine ?? null,
+      cursorColumn: state.cursorColumn ?? null,
+      updatedAt: state.updatedAt,
+    };
+  },
+});
+
+/** Save the user's workspace so another device can continue where they left off. */
+export const saveWorkspaceState = mutation({
+  args: {
+    repo: v.string(),
+    branch: v.string(),
+    openPath: v.optional(v.string()),
+    draft: v.optional(v.string()),
+    cursorLine: v.optional(v.number()),
+    cursorColumn: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const existing = await ctx.db
+      .query("workspaceStates")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    const doc = {
+      userId,
+      repo: args.repo,
+      branch: args.branch,
+      openPath: args.openPath,
+      // Cap the draft so a huge file doesn't bloat the row.
+      draft: args.draft && args.draft.length <= 500_000 ? args.draft : undefined,
+      cursorLine: args.cursorLine,
+      cursorColumn: args.cursorColumn,
+      updatedAt: Date.now(),
+    };
+    if (existing !== null) {
+      await ctx.db.replace(existing._id, doc);
+    } else {
+      await ctx.db.insert("workspaceStates", doc);
+    }
   },
 });
 

@@ -79,6 +79,19 @@ interface GitHubPullRequest {
   number: number;
   title: string;
   html_url: string;
+  user?: { login: string } | null;
+  created_at?: string | null;
+  draft?: boolean;
+  head?: { ref: string } | null;
+  base?: { ref: string } | null;
+  mergeable?: boolean | null;
+  mergeable_state?: string;
+}
+
+interface GitHubMergeResponse {
+  merged?: boolean;
+  message?: string;
+  sha?: string | null;
 }
 
 export interface CommitResult {
@@ -877,5 +890,83 @@ export const createPullRequest = action({
       title: data.title,
       htmlUrl: data.html_url,
     } as PullRequestResult;
+  },
+});
+
+/** List the open pull requests for a repo (most recently updated first). */
+export const listPullRequests = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<GitHubPullRequest[]>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls?state=open&sort=updated&direction=desc&per_page=50`,
+      token,
+    );
+    return data.map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      htmlUrl: pr.html_url,
+      author: pr.user?.login ?? "unknown",
+      createdAt: pr.created_at ?? null,
+      draft: pr.draft ?? false,
+      head: pr.head?.ref ?? "",
+      base: pr.base?.ref ?? "",
+      // null = GitHub is still computing mergeability.
+      mergeable: pr.mergeable ?? null,
+      mergeableState: pr.mergeable_state ?? "",
+    }));
+  },
+});
+
+/**
+ * Merge an open pull request. Refuses cleanly when the PR can't merge (has
+ * conflicts or is still being checked) instead of letting GitHub return an
+ * opaque error.
+ */
+export const mergePullRequest = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    number: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const pr = await githubFetch<GitHubPullRequest>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls/${args.number}`,
+      token,
+    );
+    if (pr.mergeable === false) {
+      throw new Error(
+        "This pull request has conflicts that must be resolved before it can be merged.",
+      );
+    }
+    if (pr.mergeable === null) {
+      throw new Error(
+        "GitHub is still checking whether this pull request can merge — try again in a few seconds.",
+      );
+    }
+    if (pr.draft) {
+      throw new Error("Draft pull requests can't be merged — mark it ready first.");
+    }
+    const data = await githubFetch<GitHubMergeResponse>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls/${args.number}/merge`,
+      token,
+      {
+        method: "PUT",
+        body: JSON.stringify({ merge_method: "squash" }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    if (!data.merged) {
+      throw new Error(data.message ?? "GitHub refused to merge the pull request.");
+    }
+    return {
+      merged: true,
+      sha: data.sha ?? null,
+      message: data.message ?? `Merged pull request #${args.number}`,
+    };
   },
 });
