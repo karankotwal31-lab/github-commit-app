@@ -107,6 +107,24 @@ function RouteSyncer() {
   return null;
 }
 
+/**
+ * GitHub OAuth popup bridge. The authorization flow runs in a popup because
+ * GitHub refuses to render inside the preview iframe. When the Convex
+ * callback redirects that popup back to the app (?github=connected|config|error),
+ * this reports the outcome to the opener frame and closes the popup.
+ */
+function OAuthPopupBridge() {
+  useEffect(() => {
+    if (!window.opener) return;
+    const status = new URLSearchParams(window.location.search).get("github");
+    if (!status) return;
+    window.opener.postMessage({ type: "aria-github-oauth", status }, "*");
+    window.close();
+  }, []);
+
+  return null;
+}
+
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -117,6 +135,7 @@ createRoot(document.getElementById("root")!).render(
       <ConvexAuthProvider client={convex}>
         <BrowserRouter>
           <RouteSyncer />
+          <OAuthPopupBridge />
           <Suspense fallback={<RouteLoading />}>
             <Routes>
               <Route path="/" element={<Landing />} />

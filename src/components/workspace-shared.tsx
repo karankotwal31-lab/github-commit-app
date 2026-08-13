@@ -55,11 +55,51 @@ export function ConnectScreen({
     }
     try {
       const state = await startOAuth({ origin: window.location.origin });
-      window.location.href = githubAuthorizeUrl(state, config.clientId);
+      const url = githubAuthorizeUrl(state, config.clientId);
+      // GitHub's authorize page refuses to render inside the preview iframe
+      // (X-Frame-Options), which blanked the app. Open it in a popup instead
+      // — a top-level window, where GitHub renders fine. The Convex callback
+      // redirects the popup back to the app, which reports the result here
+      // and closes itself.
+      const popup = window.open(
+        url,
+        "aria-github-oauth",
+        "popup,width=620,height=760",
+      );
+      if (!popup) {
+        // Popups blocked (sandboxed preview) — fall back to navigating the
+        // whole tab, which GitHub allows.
+        try {
+          const top = window.top ?? window;
+          top.location.href = url;
+        } catch {
+          window.location.href = url;
+        }
+        return;
+      }
+      toast.info("Authorize Aria in the popup that just opened.");
     } catch (e) {
       toast.error(errorMessage(e));
     }
   };
+
+  // Report the popup's outcome (connected / config / error) back to the
+  // preview frame — the reactive connection query finishes the job.
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type !== "aria-github-oauth") return;
+      const status = event.data.status as string;
+      if (status === "connected") {
+        toast.success("Connected to GitHub");
+      } else if (status === "config") {
+        toast.error("GitHub keys aren't configured yet — see the setup steps.");
+      } else if (status === "error") {
+        toast.error("Couldn't connect to GitHub. Please try again.");
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   return (
     <main className="flex min-h-screen flex-col bg-background text-foreground antialiased">
