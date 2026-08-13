@@ -1,5 +1,10 @@
 import { CodeEditor } from "@/components/CodeEditor";
 import { RuntimeDialog } from "@/components/RuntimeDialog";
+import { BillingDialog } from "@/components/BillingDialog";
+import {
+  ShareWorkspaceDialog,
+  type SharedWorkspaceRow,
+} from "@/components/ShareWorkspaceDialog";
 import {
   Wordmark,
   InputDialog,
@@ -45,6 +50,7 @@ import {
   CircleDot,
   Clock,
   Cpu,
+  Crown,
   ExternalLink,
   Eye,
   FileCode2,
@@ -68,6 +74,7 @@ import {
   Sparkles,
   Trash2,
   Unplug,
+  Users,
   XCircle,
 } from "lucide-react";
 
@@ -305,6 +312,20 @@ export interface WorkspaceViewProps {
     cursorLine: number | null;
     cursorColumn: number | null;
   }> | undefined;
+  billing: {
+    configured: boolean;
+    plan: "free" | "pro";
+    currentPeriodEnd: number | null;
+  } | undefined;
+  billingOpen: boolean;
+  setBillingOpen: (v: boolean) => void;
+  mySharedWorkspaces: SharedWorkspaceRow[] | undefined;
+  handleJoinWorkspace: (code: string) => Promise<boolean>;
+  createSharedWorkspace: (args: {
+    repo: string;
+    branch: string;
+    label?: string;
+  }) => Promise<string>;
   handleDisconnect: () => void;
   handleSignOut: () => void;
   dialog: { kind: "newFile" | "rename" | "branch" } | null;
@@ -452,6 +473,12 @@ export function WorkspaceView(props: WorkspaceViewProps) {
     stageAiChange,
     stageAllAiChanges,
     liveSessions,
+    billing,
+    billingOpen,
+    setBillingOpen,
+    mySharedWorkspaces,
+    handleJoinWorkspace,
+    createSharedWorkspace,
     handleDisconnect,
     handleSignOut,
     dialog,
@@ -463,9 +490,10 @@ export function WorkspaceView(props: WorkspaceViewProps) {
     handleDelete,
   } = props;
 
-  // Local UI state: the Runtime & Plugins dialog (device sensing + plugin
-  // activation prompts). Kept here because it's purely presentational.
+  // Local UI state: the Runtime & Plugins, billing, and team-workspace
+  // dialogs. Kept here because they're purely presentational.
   const [runtimeOpen, setRuntimeOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   const handleOpenHistory = () => {
     setHistoryOpen(true);
@@ -1250,6 +1278,16 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       </AlertDialog>
 
       <RuntimeDialog open={runtimeOpen} onOpenChange={setRuntimeOpen} />
+      <BillingDialog open={billingOpen} onOpenChange={setBillingOpen} />
+      <ShareWorkspaceDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        repo={selectedRepo?.fullName ?? null}
+        branch={currentBranch}
+        onJoin={handleJoinWorkspace}
+        myShared={mySharedWorkspaces}
+        createSharedWorkspace={createSharedWorkspace}
+      />
 
       {/* Top bar */}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 px-4">
@@ -1264,6 +1302,36 @@ export function WorkspaceView(props: WorkspaceViewProps) {
             <Cpu className="size-3.5 text-neutral-500" />
             <span className="hidden text-xs text-neutral-500 sm:inline">
               Runtime
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShareOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100"
+            title="Team workspaces — share the current repo with a code"
+          >
+            <Users className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Share
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setBillingOpen(true)}
+            className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 transition-colors ${
+              billing?.plan === "pro"
+                ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                : "border-neutral-200 hover:bg-neutral-100"
+            }`}
+            title={
+              billing?.configured && billing.plan !== "pro"
+                ? "Upgrade to Aria Pro"
+                : "Aria Pro"
+            }
+          >
+            <Crown className="size-3.5 text-amber-600" />
+            <span className="hidden text-xs font-medium sm:inline">
+              {billing?.configured && billing.plan !== "pro" ? "Upgrade" : "Pro"}
             </span>
           </button>
           {liveSessions && liveSessions.length > 0 && (

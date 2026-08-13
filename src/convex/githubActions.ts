@@ -205,8 +205,10 @@ export const listRepositories = action({
   args: {},
   handler: async (ctx) => {
     const token = await getToken(ctx);
+    // owner + collaborator + organization_member covers personal repos and
+    // every repo the user can access through organizations they belong to.
     const data = await githubFetch<GitHubRepo[]>(
-      `${GITHUB_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`,
+      `${GITHUB_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member`,
       token,
     );
     return data.map((repo) => ({

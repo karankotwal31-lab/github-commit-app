@@ -99,6 +99,9 @@ export function parseUnifiedPatch(patch: string | null): DiffLine[] {
   const lines: DiffLine[] = [];
   if (!patch) return lines;
   const raw = patch.split("\n");
+  // A patch ends with a newline after its last content line; splitting on
+  // "\n" leaves a trailing empty element that is NOT a real context line.
+  if (raw[raw.length - 1] === "") raw.pop();
   let oldLine = 1;
   let newLine = 1;
   for (const line of raw) {

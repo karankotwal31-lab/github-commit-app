@@ -3,6 +3,7 @@ import { type GenericId } from "convex/values";
 import { auth } from "./auth";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { stripeWebhook } from "./stripeWebhook";
 
 const http = httpRouter();
 
@@ -103,6 +104,16 @@ http.route({
 
     return Response.redirect(`${stateDoc.origin ?? siteUrl}/dashboard?github=connected`);
   }),
+});
+
+/**
+ * Stripe webhook — implemented in src/convex/stripeWebhook.ts (it needs the
+ * node runtime to import the Stripe SDK); mounted here as a plain route.
+ */
+http.route({
+  path: "/api/stripe/webhook",
+  method: "POST",
+  handler: stripeWebhook,
 });
 
 export default http;

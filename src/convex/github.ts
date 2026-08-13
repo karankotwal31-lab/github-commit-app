@@ -426,6 +426,97 @@ export const listLiveSessions = query({
 });
 
 // ---------------------------------------------------------------------------
+// Team workspaces: share the current repo + branch with teammates via a code.
+// Everyone joins with their own GitHub connection; drafts and presence stay
+// per-user.
+// ---------------------------------------------------------------------------
+
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
+
+function randomCode(length: number): string {
+  const arr = new Uint32Array(length);
+  crypto.getRandomValues(arr);
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    out += CODE_ALPHABET[arr[i] % CODE_ALPHABET.length];
+  }
+  return out;
+}
+
+/** Create a share code for the current repo + branch. Returns the code. */
+export const createSharedWorkspace = mutation({
+  args: {
+    repo: v.string(),
+    branch: v.string(),
+    label: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    // Collision-resistant: retry a few times if the code already exists.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const code = `ARIA-${randomCode(5)}`;
+      const existing = await ctx.db
+        .query("sharedWorkspaces")
+        .withIndex("by_code", (q) => q.eq("code", code))
+        .unique();
+      if (existing === null) {
+        await ctx.db.insert("sharedWorkspaces", {
+          code,
+          repo: args.repo,
+          branch: args.branch,
+          label: args.label,
+          createdBy: userId,
+          createdAt: Date.now(),
+        });
+        return code;
+      }
+    }
+    throw new Error("Couldn't generate a unique code — try again.");
+  },
+});
+
+/** Resolve a share code to its workspace (repo + branch), or null. */
+export const joinSharedWorkspace = mutation({
+  args: { code: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const normalized = args.code.trim().toUpperCase();
+    if (!normalized) return null;
+    const doc = await ctx.db
+      .query("sharedWorkspaces")
+      .withIndex("by_code", (q) => q.eq("code", normalized))
+      .unique();
+    if (doc === null) return null;
+    return { repo: doc.repo, branch: doc.branch, label: doc.label ?? null };
+  },
+});
+
+/** The share codes this user has created. */
+export const mySharedWorkspaces = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const docs = await ctx.db
+      .query("sharedWorkspaces")
+      .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
+      .collect();
+    return docs
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 20)
+      .map((d) => ({
+        code: d.code,
+        repo: d.repo,
+        branch: d.branch,
+        label: d.label ?? null,
+        createdAt: d.createdAt,
+      }));
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Internal mutations (called from HTTP actions only)
 // ---------------------------------------------------------------------------
 

@@ -95,6 +95,29 @@ const schema = defineSchema(
       cursorColumn: v.optional(v.number()),
       updatedAt: v.number(),
     }).index("by_userId", ["userId"]),
+
+    // Billing: the signed-in user's Stripe subscription state. One row per
+    // user. Empty until Stripe is configured and a checkout completes.
+    billing: defineTable({
+      userId: v.id("users"),
+      plan: v.union(v.literal("free"), v.literal("pro")),
+      stripeCustomerId: v.optional(v.string()),
+      stripeSubscriptionId: v.optional(v.string()),
+      currentPeriodEnd: v.optional(v.number()),
+      updatedAt: v.number(),
+    }).index("by_userId", ["userId"]),
+
+    // Team workspaces: a short join code that points other users at the same
+    // repo + branch. Everyone joins with their own GitHub connection; drafts
+    // and presence stay per-user.
+    sharedWorkspaces: defineTable({
+      code: v.string(), // short join code, e.g. "ARIA-K7Q2"
+      repo: v.string(), // full name, e.g. "owner/name"
+      branch: v.string(),
+      label: v.optional(v.string()),
+      createdBy: v.id("users"),
+      createdAt: v.number(),
+    }).index("by_code", ["code"]).index("by_createdBy", ["createdBy"]),
   },
   {
     schemaValidation: false,

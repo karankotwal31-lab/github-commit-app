@@ -37,7 +37,8 @@ export interface RuntimeProfile {
   standalone: boolean;
 }
 
-function detectOs(ua: string): string {
+/** Pure detection helpers — exported for unit testing. */
+export function detectOs(ua: string): string {
   if (/iphone|ipad|ipod/i.test(ua)) return "iOS";
   if (/android/i.test(ua)) return "Android";
   if (/mac os x|macintosh/i.test(ua)) return "macOS";
@@ -47,7 +48,7 @@ function detectOs(ua: string): string {
   return "Unknown OS";
 }
 
-function detectBrowser(ua: string): string {
+export function detectBrowser(ua: string): string {
   if (/edg\//i.test(ua)) return "Edge";
   if (/chrome\//i.test(ua)) return "Chrome";
   if (/firefox\//i.test(ua)) return "Firefox";
@@ -55,7 +56,7 @@ function detectBrowser(ua: string): string {
   return "Browser";
 }
 
-function detectDeviceType(ua: string, touch: boolean): DeviceType {
+export function detectDeviceType(ua: string, touch: boolean): DeviceType {
   const isMobile =
     /iphone|ipod|android.*mobile|opera mini|iemobile|mobile/i.test(ua);
   const isTablet =
@@ -96,7 +97,7 @@ function detectRuntime(): RuntimeProfile {
   }
 
   const secureContext =
-    typeof window.isSecureContext === "boolean"
+    typeof window !== "undefined" && typeof window.isSecureContext === "boolean"
       ? window.isSecureContext
       : typeof location !== "undefined" && location.protocol === "https:";
 

@@ -1,272 +1,128 @@
-## Overview
+# Aria — a quiet desk for your GitHub
 
-This project uses the following tech stack:
-- Vite
-- Typescript
-- React Router v7 (all imports from `react-router` instead of `react-router-dom`)
-- React 19 (for frontend components)
-- Tailwind v4 (for styling)
-- Shadcn UI (for UI components library)
-- Lucide Icons (for icons)
-- Convex (for backend & database)
-- Convex Auth (for authentication)
-- Framer Motion (for animations)
-- Three js (for 3d models)
+Aria is a browser-based GitHub workspace: browse repositories, edit files in a
+real code editor (Monaco), stage and commit changes, open pull requests, and
+review them — all from one calm, focused interface that works on desktop and
+mobile. It resumes your work across devices, keeps an unsaved-draft vault so
+nothing is ever trapped in a tab, and includes a grounded AI assistant.
 
-All relevant files live in the 'src' directory.
+Built with **Vite + React 19 + TypeScript + Tailwind v4 + shadcn/ui** on the
+frontend and **Convex** (serverless backend + database + auth) on the backend.
+Package manager is **Bun**.
 
-Use bun for the package manager.
+## Features
+
+- **Repository workspace** — browse repos and folders, open files in a
+  Monaco-based editor with syntax highlighting for 30+ languages.
+- **Commit, branch, PR** — stage one file or many, commit atomically, create
+  branches, open and merge pull requests (with conflict/draft guards), revert
+  commits, delete/rename files.
+- **CI status** — a chip on the current branch shows whether the tip build
+  passed, failed, or is running, with a per-check breakdown.
+- **PR review** — open a pull request and inspect every changed file as a
+  unified diff.
+- **Full-text code search** — search the whole repo and jump into any result.
+- **Issues** — a quick list of open issues for the current repo.
+- **Ask Aria (AI)** — a grounded, diff-gated assistant that proposes changes
+  against your actual repository. It never commits — it proposes, you review,
+  stage, and commit. Multi-turn: follow-ups build on earlier requests.
+- **Draft vault** — every unsaved edit is autosaved per (repo, branch, file)
+  and resumable from any device, even after the file was closed or the tab was
+  killed. Committed files are dropped from the vault automatically.
+- **Cross-device continuity** — open Aria on another device and it lands
+  exactly where you left off: repo, branch, folder, open file, unsaved edits,
+  and caret position.
+- **Live presence** — see which of your other devices are in the workspace
+  right now and where.
+- **Secret guardrails** — committing `.env`, private keys, or live tokens is
+  blocked until you explicitly confirm. This applies to manual commits, AI
+  proposals, and multi-file batches.
+- **Runtime sensing + plugins** — Aria detects the device it runs on
+  (desktop/tablet/mobile, OS, browser, connection, capabilities) and
+  transparently activates the capabilities it needs. Every plugin ships inside
+  Aria's own bundle — nothing is downloaded from third parties at runtime and
+  nothing phones home. Open the **Runtime** button in the top bar to see the
+  device profile and per-plugin privacy statements.
+- **Premium billing (optional)** — a Pro subscription unlocks Ask Aria. Billing
+  only activates once Stripe keys are configured; until then everything is
+  unlocked.
 
 ## Setup
 
-This project is set up already and running on a cloud environment, as well as a convex development in the sandbox.
+The project is already wired to a Convex development deployment. To run it
+locally:
 
-## Environment Variables
-
-The project is set up with project specific CONVEX_DEPLOYMENT and VITE_CONVEX_URL environment variables on the client side.
-
-The convex server has a separate set of environment variables that are accessible by the convex backend.
-
-Currently, these variables include auth-specific keys: JWKS, JWT_PRIVATE_KEY, and SITE_URL.
-
-
-# Using Authentication (Important!)
-
-You must follow these conventions when using authentication.
-
-## Auth is already set up.
-
-All convex authentication functions are already set up. The auth currently uses email OTP and anonymous users, but can support more.
-
-The email OTP configuration is defined in `src/convex/auth/emailOtp.ts`. DO NOT MODIFY THIS FILE.
-
-Also, DO NOT MODIFY THESE AUTH FILES: `src/convex/auth.config.ts` and `src/convex/auth.ts`.
-
-## Using Convex Auth on the backend
-
-On the `src/convex/users.ts` file, you can use the `getCurrentUser` function to get the current user's data.
-
-## Using Convex Auth on the frontend
-
-The `/auth` page is already set up to use auth. Navigate to `/auth` for all log in / sign up sequences.
-
-You MUST use this hook to get user data. Never do this yourself without the hook:
-```typescript
-import { useAuth } from "@/hooks/use-auth";
-
-const { isLoading, isAuthenticated, user, signIn, signOut } = useAuth();
+```bash
+bun install
+bun run dev        # Vite dev server
+bun convex dev     # Convex backend (separate terminal)
 ```
 
-## Protected Routes
+## Environment keys
 
-The starter `/dashboard` route is protected with `RequireAuth`, which sends
-signed-out users to `/auth?returnTo=<current route>`. Extend that page for the
-product's authenticated experience, and reuse `RequireAuth` when adding another
-protected route.
+Set these in the Freebuff **Keys/API keys** UI (server-side env vars for
+Convex actions — never commit them):
 
-## Auth Page
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `GITHUB_CLIENT_ID` | ✅ | GitHub OAuth app client id |
+| `GITHUB_CLIENT_SECRET` | ✅ | GitHub OAuth app secret |
+| `OPENROUTER_API_KEY` | For AI | Powers Ask Aria (OpenRouter) |
+| `OPENROUTER_MODEL` | Optional | Override the default free model |
+| `STRIPE_SECRET_KEY` | For billing | Stripe server key (sk_live_/sk_test_) |
+| `STRIPE_WEBHOOK_SECRET` | For billing | Stripe webhook signing secret |
+| `STRIPE_PRICE_ID` | For billing | Recurring price for the Pro plan |
 
-The auth page is defined in `src/pages/Auth.tsx`. Send sign-in and sign-up actions
-to `/auth`.
+The GitHub OAuth callback URL to register in your OAuth app is
+`{your-site}/api/github/callback`. The Stripe webhook endpoint is
+`{your-site}/api/stripe/webhook` (subscribe to `checkout.session.completed`,
+`customer.subscription.updated`, and `customer.subscription.deleted`).
 
-## Authorization
+`VITE_CONVEX_URL` and the auth keys (JWKS, JWT_PRIVATE_KEY, SITE_URL) are
+managed by the platform.
 
-You can perform authorization checks on the frontend and backend.
-
-On the frontend, you can use the `useAuth` hook to get the current user's data and authentication state.
-
-You should also be protecting queries, mutations, and actions at the base level, checking for authorization securely.
-
-## Adding a redirect after auth
-
-The `/auth` route in `src/main.tsx` redirects to `/dashboard` by default. If the
-product's main authenticated route is different, update `redirectAfterAuth` to
-that route. A validated same-origin `returnTo` query parameter takes priority so
-users can resume the protected page they originally requested. Never leave an
-authenticated product redirecting back to the public landing page.
-
-## Complete authenticated products
-
-When the requested product implies accounts, a workspace, a dashboard, or other
-signed-in functionality, the task is not complete with only a landing page and
-auth form. Build the main authenticated experience, protect its route, and verify
-that signing in reaches it.
-
-# Frontend Conventions
-
-You will be using the Vite frontend with React 19, Tailwind v4, and Shadcn UI.
-
-Generally, pages should be in the `src/pages` folder, and components should be in the `src/components` folder.
-
-Shadcn primitives are located in the `src/components/ui` folder and should be used by default.
-
-## Page routing
-
-Your page component should go under the `src/pages` folder.
-
-When adding a page, update the react router configuration in `src/main.tsx` to include the new route you just added.
-
-## Shad CN conventions
-
-Follow these conventions when using Shad CN components, which you should use by default.
-- Remember to use "cursor-pointer" to make the element clickable
-- For title text, use the "tracking-tight font-bold" class to make the text more readable
-- Always make apps MOBILE RESPONSIVE. This is important
-- AVOID NESTED CARDS. Try and not to nest cards, borders, components, etc. Nested cards add clutter and make the app look messy.
-- AVOID SHADOWS. Avoid adding any shadows to components. stick with a thin border without the shadow.
-- Avoid skeletons; instead, use the loader2 component to show a spinning loading state when loading data.
-
-
-## Landing Pages
-
-You must always create good-looking designer-level styles to your application. 
-- Make it well animated and fit a certain "theme", ie neo brutalist, retro, neumorphism, glass morphism, etc
-
-Use known images and emojis from online.
-
-If the user is logged in already, show the get started button to say "Dashboard" or "Profile" instead to take them there.
-
-## Responsiveness and formatting
-
-Make sure pages are wrapped in a container to prevent the width stretching out on wide screens. Always make sure they are centered aligned and not off-center.
-
-Always make sure that your designs are mobile responsive. Verify the formatting to ensure it has correct max and min widths as well as mobile responsiveness.
-
-- Always create sidebars for protected dashboard pages and navigate between pages
-- Always create navbars for landing pages
-- On these bars, the created logo should be clickable and redirect to the index page
-
-## Animating with Framer Motion
-
-You must add animations to components using Framer Motion. It is already installed and configured in the project.
-
-To use it, import the `motion` component from `framer-motion` and use it to wrap the component you want to animate.
-
-
-### Other Items to animate
-- Fade in and Fade Out
-- Slide in and Slide Out animations
-- Rendering animations
-- Button clicks and UI elements
-
-Animate for all components, including on landing page and app pages.
-
-## Three JS Graphics
-
-Your app comes with three js by default. You can use it to create 3D graphics for landing pages, games, etc.
-
-
-## Colors
-
-You can override colors in: `src/index.css`
-
-This uses the oklch color format for tailwind v4.
-
-Always use these color variable names.
-
-Make sure all ui components are set up to be mobile responsive and compatible with both light and dark mode.
-
-Set theme using `dark` or `light` variables at the parent className.
-
-## Styling and Theming
-
-When changing the theme, always change the underlying theme of the shad cn components app-wide under `src/components/ui` and the colors in the index.css file.
-
-Avoid hardcoding in colors unless necessary for a use case, and properly implement themes through the underlying shad cn ui components.
-
-When styling, ensure buttons and clickable items have pointer-click on them (don't by default).
-
-Always follow a set theme style and ensure it is tuned to the user's liking.
-
-## Toasts
-
-You should always use toasts to display results to the user, such as confirmations, results, errors, etc.
-
-Use the shad cn Sonner component as the toaster. For example:
+## Architecture
 
 ```
-import { toast } from "sonner"
-
-import { Button } from "@/components/ui/button"
-export function SonnerDemo() {
-  return (
-    <Button
-      variant="outline"
-      onClick={() =>
-        toast("Event has been created", {
-          description: "Sunday, December 03, 2023 at 9:00 AM",
-          action: {
-            label: "Undo",
-            onClick: () => console.log("Undo"),
-          },
-        })
-      }
-    >
-      Show Toast
-    </Button>
-  )
-}
+Frontend (src/)                  Convex backend (src/convex/)
+├─ pages/Dashboard.tsx           ├─ schema.ts          (tables + indexes)
+│    logic: state, effects,      ├─ github.ts          (connection, OAuth
+│    handlers                     │                      states, workspace,
+├─ components/WorkspaceView.tsx   │                      drafts, presence)
+│    presentational JSX          ├─ githubActions.ts   (GitHub REST API calls)
+├─ components/workspace-shared.tsx ├─ aiActions.ts      (grounded AI proposals)
+├─ components/RuntimeDialog.tsx  ├─ billing.ts         (Stripe checkout/plan)
+├─ lib/ (runtime, pluginManager, ├─ http.ts            (OAuth + Stripe webhooks)
+│    diff, secrets, cursorSync,  └─ auth/              (Convex Auth: OTP +
+│    monaco, github)                                     anonymous)
+└─ main.tsx (router, providers, OAuth popup bridge)
 ```
 
-Remember to import { toast } from "sonner". Usage: `toast("Event has been created.")`
+The workspace follows one request pattern: a click in `WorkspaceView` calls a
+handler in `Dashboard`, which calls a Convex **action**; the action loads the
+user's GitHub token server-side and calls the GitHub REST API; the typed
+result flows back and re-renders the view. Cross-device state (workspace
+restore, drafts, presence) uses reactive Convex **queries**, so changes appear
+on every device automatically.
 
-## Dialogs
+GitHub OAuth runs in a **popup** (GitHub refuses to render inside the preview
+iframe); the callback redirects the popup back to the app, which reports the
+result to the opener and closes itself.
 
-Always ensure your larger dialogs have a scroll in its content to ensure that its content fits the screen size. Make sure that the content is not cut off from the screen.
+## Testing
 
-Ideally, instead of using a new page, use a Dialog instead. 
-
-# Using the Convex backend
-
-You will be implementing the convex backend. Follow your knowledge of convex and the documentation to implement the backend.
-
-## The Convex Schema
-
-You must correctly follow the convex schema implementation.
-
-The schema is defined in `src/convex/schema.ts`.
-
-Do not include the `_id` and `_creationTime` fields in your queries (it is included by default for each table).
-Do not index `_creationTime` as it is indexed for you. Never have duplicate indexes.
-
-
-## Convex Actions: Using CRUD operations
-
-When running anything that involves external connections, you must use a convex action with "use node" at the top of the file.
-
-You cannot have queries or mutations in the same file as a "use node" action file. Thus, you must use pre-built queries and mutations in other files.
-
-You can also use the pre-installed internal crud functions for the database:
-
-```ts
-// in convex/users.ts
-import { crud } from "convex-helpers/server/crud";
-import schema from "./schema.ts";
-
-export const { create, read, update, destroy } = crud(schema, "users");
-
-// in some file, in an action:
-const user = await ctx.runQuery(internal.users.read, { id: userId });
-
-await ctx.runMutation(internal.users.update, {
-  id: userId,
-  patch: {
-    status: "inactive",
-  },
-});
+```bash
+bun test
 ```
 
+Unit tests cover the pure logic: the diff engine (`lib/diff`), secret
+guardrails (`lib/secrets`), device detection (`lib/runtime`), and the plugin
+manager (`lib/pluginManager`).
 
-## Common Convex Mistakes To Avoid
+## Monetization
 
-When using convex, make sure:
-- Document IDs are referenced as `_id` field, not `id`.
-- Document ID types are referenced as `Id<"TableName">`, not `string`.
-- Document object types are referenced as `Doc<"TableName">`.
-- Keep schemaValidation to false in the schema file.
-- You must correctly type your code so that it passes the type checker.
-- You must handle null / undefined cases of your convex queries for both frontend and backend, or else it will throw an error that your data could be null or undefined.
-- Always use the `@/folder` path, with `@/convex/folder/file.ts` syntax for importing convex files.
-- This includes importing generated files like `@/convex/_generated/server`, `@/convex/_generated/api`
-- Remember to import functions like useQuery, useMutation, useAction, etc. from `convex/react`
-- NEVER have return type validators.
+Aria ships with an optional Pro tier. Billing is implemented server-side with
+Stripe (checkout, webhooks, customer portal). When Stripe keys are absent the
+app runs fully unlocked; once configured, Ask Aria becomes a Pro feature.
+Create a Stripe account and price at <https://dashboard.stripe.com>, then add
+the three `STRIPE_*` keys above.

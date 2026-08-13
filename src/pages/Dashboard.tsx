@@ -67,6 +67,18 @@ function Workspace({
   const saveWorkspaceState = useMutation(api.github.saveWorkspaceState);
   const workspaceState = useQuery(api.github.getWorkspaceState);
 
+  // Billing: the user's plan (free/pro). When Stripe isn't configured the app
+  // stays fully unlocked (configured: false) — the Pro gate only activates
+  // once billing keys exist.
+  const billing = useQuery(api.billing.plan);
+  const [billingOpen, setBillingOpen] = useState(false);
+
+  // Team workspaces: share the current repo + branch with teammates via a
+  // short code. Everyone joins with their own GitHub connection.
+  const createSharedWorkspace = useMutation(api.github.createSharedWorkspace);
+  const joinSharedWorkspace = useMutation(api.github.joinSharedWorkspace);
+  const mySharedWorkspaces = useQuery(api.github.mySharedWorkspaces);
+
   // CI status: check runs + legacy status contexts on the branch tip.
   const getBranchChecks = useAction(api.githubActions.getBranchChecks);
   // PR review: files changed by a pull request, with unified diffs.
@@ -660,6 +672,18 @@ function Workspace({
     if (!selectedRepo || !currentBranch) return;
     const instruction = aiInstruction.trim();
     if (!instruction) return;
+    // Pro gate: Ask Aria is the paid feature. Skipped entirely when Stripe
+    // isn't configured, so the app stays fully unlocked until then.
+    if (billing?.configured && billing.plan !== "pro") {
+      setAiError(null);
+      toast.error("Ask Aria is a Pro feature — upgrade to use it.", {
+        action: {
+          label: "Upgrade",
+          onClick: () => setBillingOpen(true),
+        },
+      });
+      return;
+    }
     setAiLoading(true);
     setAiError(null);
     setAiResult(null);
@@ -1036,6 +1060,59 @@ function Workspace({
     setViewMode("edit");
     loadEntries(selectedRepo, name, "");
     if (selectedRepo) loadTreeFiles(selectedRepo, name);
+  };
+
+  /** Join a teammate's shared workspace: switch to its repo + branch. */
+  const handleJoinWorkspace = async (code: string): Promise<boolean> => {
+    if (!repos) return false;
+    let shared: { repo: string; branch: string; label: string | null } | null;
+    try {
+      shared = await joinSharedWorkspace({ code });
+    } catch (e) {
+      toast.error(errorMessage(e));
+      return false;
+    }
+    if (!shared) {
+      toast.error(`No workspace found for ${code}.`);
+      return false;
+    }
+    const repo = repos.find((r) => r.fullName === shared.repo);
+    if (!repo) {
+      toast.error(
+        `You don't have access to ${shared.repo} — ask the owner to add you as a collaborator.`,
+      );
+      return false;
+    }
+    // Same reset pattern as repo selection, but landing on the shared branch.
+    setSelectedRepo(repo);
+    setBranch(shared.branch);
+    setBranches(null);
+    setEntries(null);
+    setOpenFile(null);
+    setIsNewFile(false);
+    setStatus(null);
+    setLastCommit(null);
+    setPrResult(null);
+    setStaged([]);
+    setStagedDiffOpen(null);
+    setAllowSecrets(false);
+    setTreeFiles(null);
+    setSearchQuery("");
+    setSearchOpen(false);
+    setHistoryOpen(false);
+    setHistory(null);
+    setRevertTarget(null);
+    setPrsOpen(false);
+    setPrs(null);
+    setMergeTarget(null);
+    setChecks(null);
+    setPath("");
+    setViewMode("edit");
+    loadEntries(repo, shared.branch, "");
+    loadBranches(repo);
+    loadTreeFiles(repo, shared.branch);
+    toast.success(`Joined ${shared.repo} on ${shared.branch}`);
+    return true;
   };
 
   const filteredRepos = useMemo(() => {
@@ -1668,6 +1745,12 @@ function Workspace({
       stageAiChange={stageAiChange}
       stageAllAiChanges={stageAllAiChanges}
       liveSessions={liveSessions}
+      billing={billing}
+      billingOpen={billingOpen}
+      setBillingOpen={setBillingOpen}
+      mySharedWorkspaces={mySharedWorkspaces}
+      handleJoinWorkspace={handleJoinWorkspace}
+      createSharedWorkspace={createSharedWorkspace}
       handleDisconnect={handleDisconnect}
       handleSignOut={handleSignOut}
       dialog={dialog}
@@ -1691,6 +1774,7 @@ export default function Dashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const githubParam = searchParams.get("github");
+  const billingParam = searchParams.get("billing");
 
   useEffect(() => {
     if (githubParam) {
@@ -1704,6 +1788,19 @@ export default function Dashboard() {
       setSearchParams({}, { replace: true });
     }
   }, [githubParam, setSearchParams]);
+
+  // Billing return toasts: the Stripe checkout/portal redirects back here with
+  // ?billing=success|cancelled. The plan query updates reactively.
+  useEffect(() => {
+    if (billingParam) {
+      if (billingParam === "success") {
+        toast.success("Welcome to Aria Pro!");
+      } else if (billingParam === "cancelled") {
+        toast.info("Checkout cancelled — you're still on Free.");
+      }
+      setSearchParams({}, { replace: true });
+    }
+  }, [billingParam, setSearchParams]);
 
   if (connection === undefined || config === undefined) {
     return (
