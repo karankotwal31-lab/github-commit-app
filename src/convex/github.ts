@@ -268,6 +268,35 @@ export const getDraft = query({
   },
 });
 
+/**
+ * Full draft content for the vault dialog. listDrafts only returns metadata +
+ * preview so the list stays light; this fetches the full copy on demand when
+ * the user actually restores a draft.
+ */
+export const getDraftContent = mutation({
+  args: {
+    repo: v.string(),
+    branch: v.string(),
+    path: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const existing = await ctx.db
+      .query("drafts")
+      .withIndex("by_userKey", (q) =>
+        q.eq("userId", userId).eq("repo", args.repo).eq("branch", args.branch).eq("path", args.path),
+      )
+      .unique();
+    if (existing === null) return null;
+    return {
+      content: existing.content,
+      cursorLine: existing.cursorLine ?? null,
+      cursorColumn: existing.cursorColumn ?? null,
+    };
+  },
+});
+
 /** Vault listing (metadata + preview only — content loads per file). */
 export const listDrafts = query({
   args: {},

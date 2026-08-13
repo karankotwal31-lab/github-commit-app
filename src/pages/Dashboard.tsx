@@ -1,38 +1,7 @@
 import { api } from "@/convex/_generated/api";
-import { CodeEditor } from "@/components/CodeEditor";
 import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  formatDate,
-  formatSize,
-  githubAuthorizeUrl,
-  convexSiteUrl,
   errorMessage,
   ownerOf,
   repoNameOf,
@@ -43,391 +12,14 @@ import {
   type PullRequestResult,
   type Repository,
 } from "@/lib/github";
-import { diffLines, parseUnifiedPatch, type DiffLine } from "@/lib/diff";
 import { secretRisk } from "@/lib/secrets";
-import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import {
-  Archive,
-  ArrowLeft,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  CircleDot,
-  Clock,
-  CornerDownLeft,
-  ExternalLink,
-  FileCode2,
-  FilePlus2,
-  FileSearch,
-  Folder,
-  FolderOpen,
-  GitBranch,
-  GitPullRequest,
-  Github,
-  History,
-  Loader2,
-  Lock,
-  LogOut,
-  MessageSquare,
-  Music2,
-  Pencil,
-  Plus,
-  RefreshCw,
-  RotateCcw,
-  Search,
-  ShieldAlert,
-  Sparkles,
-  Trash2,
-  Unplug,
-  Users,
-  XCircle,
-} from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-
-function Wordmark() {
-  return (
-    <div className="flex items-center gap-1.5">
-      <Music2 className="size-4 text-primary" strokeWidth={2.25} />
-      <span className="text-[15px] font-semibold tracking-tight">Aria</span>
-      <span className="text-[15px] font-semibold tracking-tight text-neutral-400">
-        .
-      </span>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Connect screen
-// ---------------------------------------------------------------------------
-
-function ConnectScreen({
-  config,
-}: {
-  config: {
-    clientIdConfigured: boolean;
-    clientSecretConfigured: boolean;
-    clientId: string | null;
-  };
-}) {
-  const startOAuth = useMutation(api.github.startOAuth);
-  const callbackUrl = `${convexSiteUrl()}/api/github/callback`;
-  const keysReady = config.clientIdConfigured && config.clientSecretConfigured;
-
-  const handleConnect = async () => {
-    if (!config.clientId) {
-      toast.error("GitHub keys aren't configured yet — see the setup steps.");
-      return;
-    }
-    try {
-      const state = await startOAuth({ origin: window.location.origin });
-      window.location.href = githubAuthorizeUrl(state, config.clientId);
-    } catch (e) {
-      toast.error(errorMessage(e));
-    }
-  };
-
-  return (
-    <main className="flex min-h-screen flex-col bg-background text-foreground antialiased">
-      <header className="flex h-16 items-center justify-between border-b border-neutral-200 px-6">
-        <Wordmark />
-        <span className="text-xs text-neutral-400">Not connected</span>
-      </header>
-
-      <div className="flex flex-1 items-center justify-center px-6 py-16">
-        <div className="w-full max-w-md">
-          <div className="mb-8">
-            <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
-              Step 1 of 1
-            </p>
-            <h1 className="mt-4 text-4xl font-semibold tracking-tight">
-              Connect your GitHub
-            </h1>
-            <p className="mt-3 text-sm leading-6 text-neutral-500">
-              Authorize Aria to read your repositories and push commits.
-              It's a one-time handshake — after this, everything happens here.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-3 rounded-lg border border-neutral-200 p-6">
-            <div className="flex items-center gap-3">
-              <span
-                className={`flex size-5 items-center justify-center rounded-full border text-[11px] ${
-                  keysReady
-                    ? "border-neutral-900 bg-neutral-900 text-white"
-                    : "border-neutral-300 text-neutral-400"
-                }`}
-              >
-                {keysReady ? "✓" : "1"}
-              </span>
-              <p className="text-sm text-neutral-700">
-                Add your GitHub OAuth keys to the project
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <span
-                className={`flex size-5 items-center justify-center rounded-full border text-[11px] ${
-                  keysReady
-                    ? "border-neutral-300 text-neutral-400"
-                    : "border-neutral-300 text-neutral-400"
-                }`}
-              >
-                2
-              </span>
-              <p className="text-sm text-neutral-700">Authorize below</p>
-            </div>
-          </div>
-
-          <div className="mt-6 rounded-lg border border-neutral-200 p-5">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
-              Callback URL
-            </p>
-            <p className="mt-2 break-all font-mono text-xs text-neutral-700">
-              {callbackUrl}
-            </p>
-            <p className="mt-3 text-xs leading-5 text-neutral-500">
-              Register an OAuth app at{" "}
-              <a
-                href="https://github.com/settings/developers"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline underline-offset-2 hover:text-neutral-800"
-              >
-                github.com/settings/developers
-              </a>{" "}
-              and use the URL above as the authorization callback. Set{" "}
-              <code className="font-mono text-neutral-700">GITHUB_CLIENT_ID</code>{" "}
-              and{" "}
-              <code className="font-mono text-neutral-700">
-                GITHUB_CLIENT_SECRET
-              </code>{" "}
-              in your project keys.
-            </p>
-          </div>
-
-          <Button
-            type="button"
-            className="mt-6 h-11 w-full gap-2"
-            onClick={handleConnect}
-          >
-            <Github className="size-4" />
-            {keysReady ? "Connect GitHub" : "Connect GitHub (keys pending)"}
-          </Button>
-        </div>
-      </div>
-    </main>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Input dialog (new file / rename / new branch)
-// ---------------------------------------------------------------------------
-
-function InputDialog({
-  open,
-  title,
-  label,
-  placeholder,
-  initial,
-  confirmLabel,
-  busy,
-  onConfirm,
-  onClose,
-}: {
-  open: boolean;
-  title: string;
-  label?: string;
-  placeholder?: string;
-  initial?: string;
-  confirmLabel: string;
-  busy?: boolean;
-  onConfirm: (value: string) => void;
-  onClose: () => void;
-}) {
-  const [value, setValue] = useState(initial ?? "");
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next && !busy) onClose();
-      }}
-    >
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          {label && <p className="text-sm leading-5 text-neutral-500">{label}</p>}
-        </DialogHeader>
-        <Input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder={placeholder}
-          autoFocus
-          spellCheck={false}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && value.trim() && !busy) {
-              onConfirm(value.trim());
-            }
-          }}
-        />
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={!value.trim() || busy}
-            onClick={() => onConfirm(value.trim())}
-          >
-            {busy && <Loader2 className="size-4 animate-spin" />}
-            {confirmLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Diff view
-// ---------------------------------------------------------------------------
-
-function DiffView({ lines }: { lines: DiffLine[] }) {
-  return (
-    <div className="h-full overflow-auto bg-background">
-      <table className="w-full border-collapse font-mono text-sm leading-6">
-        <tbody>
-          {lines.map((line, i) => (
-            <tr
-              key={i}
-              className={
-                line.type === "add"
-                  ? "bg-emerald-50/60"
-                  : line.type === "del"
-                    ? "bg-red-50/60"
-                    : ""
-              }
-            >
-              <td className="w-12 select-none border-r border-neutral-100 px-2 text-right text-xs text-neutral-400">
-                {line.oldLine ?? ""}
-              </td>
-              <td className="w-12 select-none border-r border-neutral-100 px-2 text-right text-xs text-neutral-400">
-                {line.newLine ?? ""}
-              </td>
-              <td
-                className={`whitespace-pre px-3 ${
-                  line.type === "add"
-                    ? "text-emerald-900"
-                    : line.type === "del"
-                      ? "text-red-900"
-                      : "text-neutral-800"
-                }`}
-              >
-                {line.text || " "}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {lines.length === 0 && (
-        <p className="p-6 text-sm text-neutral-400">No changes yet.</p>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Small shared pieces
-// ---------------------------------------------------------------------------
-
-/** Relative time for vault rows and presence, e.g. "3m ago". */
-function timeAgo(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  if (diff < 60_000) return "just now";
-  const minutes = Math.floor(diff / 60_000);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(timestamp).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-}
-
-/** Compact CI chip shown next to the branch selector. */
-function ChecksChip({
-  overall,
-  loading,
-  onClick,
-}: {
-  overall: "none" | "pending" | "failure" | "success" | null;
-  loading: boolean;
-  onClick: () => void;
-}) {
-  const state =
-    overall === "success"
-      ? { dot: "bg-emerald-500", label: "Checks passed", cls: "text-neutral-600" }
-      : overall === "failure"
-        ? { dot: "bg-red-500", label: "Checks failed", cls: "text-red-600" }
-        : overall === "pending"
-          ? { dot: "bg-amber-500 animate-pulse", label: "Checks running", cls: "text-amber-700" }
-          : { dot: "bg-neutral-300", label: "No checks", cls: "text-neutral-400" };
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={loading}
-      className="flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-xs hover:bg-neutral-100"
-      title={
-        overall === null || overall === "none"
-          ? "CI status for this branch"
-          : "View CI checks for this branch"
-      }
-    >
-      {loading ? (
-        <Loader2 className="size-3 animate-spin text-neutral-400" />
-      ) : (
-        <span className={`size-1.5 rounded-full ${state.dot}`} />
-      )}
-      <span className={`truncate ${state.cls}`}>{state.label}</span>
-    </button>
-  );
-}
-
-/**
- * Mounted next to the open file: queries the draft vault for that exact
- * (repo, branch, path) and reports once whether an unsaved copy exists, so
- * the workspace can restore it. Fires exactly once per mount — the parent
- * keys it by path.
- */
-function DraftRestorer({
-  repo,
-  branch,
-  path,
-  onDraft,
-}: {
-  repo: string;
-  branch: string;
-  path: string;
-  onDraft: (draft: {
-    content: string;
-    cursorLine: number | null;
-    cursorColumn: number | null;
-  }) => void;
-}) {
-  const draft = useQuery(api.github.getDraft, { repo, branch, path });
-  const fired = useRef(false);
-  useEffect(() => {
-    if (draft === undefined || fired.current) return;
-    fired.current = true;
-    if (draft) onDraft(draft);
-  }, [draft, onDraft]);
-  return null;
-}
+import { ConnectScreen } from "@/components/workspace-shared";
+import { WorkspaceView } from "@/components/WorkspaceView";
 
 // ---------------------------------------------------------------------------
 // Workspace
@@ -466,6 +58,50 @@ function Workspace({
   const disconnect = useMutation(api.github.disconnect);
   const saveWorkspaceState = useMutation(api.github.saveWorkspaceState);
   const workspaceState = useQuery(api.github.getWorkspaceState);
+
+  // CI status: check runs + legacy status contexts on the branch tip.
+  const getBranchChecks = useAction(api.githubActions.getBranchChecks);
+  // PR review: files changed by a pull request, with unified diffs.
+  const getPullRequestFiles = useAction(api.githubActions.getPullRequestFiles);
+  // Full-text code search inside the repo (GitHub code search API).
+  const searchCode = useAction(api.githubActions.searchCode);
+  // Open issues for the repo.
+  const listIssues = useAction(api.githubActions.listIssues);
+
+  // Draft vault: autosave unsaved edits per (repo, branch, path), drop them
+  // once committed, and list everything for the vault dialog.
+  const saveDraft = useMutation(api.github.saveDraft);
+  const deleteDraft = useMutation(api.github.deleteDraft);
+  const getDraftContent = useMutation(api.github.getDraftContent);
+  const drafts = useQuery(api.github.listDrafts);
+
+  // Live presence: one row per browser tab. This tab heartbeats so other
+  // devices see where it is, and we subscribe to everyone else's sessions.
+  const deviceIdRef = useRef<string>(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `dev-${Math.random().toString(36).slice(2)}`,
+  );
+  const updateLiveSession = useMutation(api.github.updateLiveSession);
+  const clearLiveSession = useMutation(api.github.clearLiveSession);
+  const liveSessions = useQuery(api.github.listLiveSessions, {
+    deviceId: deviceIdRef.current,
+  });
+  const deviceLabel = useMemo(() => {
+    if (typeof navigator === "undefined") return "Device";
+    const ua = navigator.userAgent;
+    const mobile = /iPhone|iPad|Android/i.test(ua);
+    const browser = ua.includes("Edg")
+      ? "Edge"
+      : ua.includes("Chrome")
+        ? "Chrome"
+        : ua.includes("Firefox")
+          ? "Firefox"
+          : ua.includes("Safari")
+            ? "Safari"
+            : "Browser";
+    return `${browser} · ${mobile ? "Mobile" : "Desktop"}`;
+  }, []);
 
   const [repos, setRepos] = useState<Repository[] | null>(null);
   const [reposLoading, setReposLoading] = useState(true);
@@ -590,6 +226,81 @@ function Workspace({
     title: string;
   } | null>(null);
   const [merging, setMerging] = useState(false);
+
+  // CI status: the branch tip's check runs + status contexts, and the dialog
+  // that breaks them down.
+  const [checksOpen, setChecksOpen] = useState(false);
+  const [checks, setChecks] = useState<{
+    sha: string;
+    overall: "none" | "pending" | "failure" | "success";
+    checkRuns: Array<{
+      name: string;
+      status: string;
+      conclusion: string | null;
+      detailsUrl: string | null;
+    }>;
+    statusContexts: Array<{
+      context: string;
+      state: string;
+      description: string | null;
+      targetUrl: string | null;
+    }>;
+  } | null>(null);
+  const [checksLoading, setChecksLoading] = useState(false);
+  const [checksError, setChecksError] = useState<string | null>(null);
+
+  // Draft vault dialog (listDrafts is a reactive query — see `drafts`).
+  const [vaultOpen, setVaultOpen] = useState(false);
+
+  // Multi-turn AI: the running conversation (user asks + assistant summaries),
+  // sent back into aiSuggest so follow-ups build on earlier turns.
+  const [aiHistory, setAiHistory] = useState<
+    Array<{ role: "user" | "assistant"; content: string }>
+  >([]);
+
+  // PR review: the pull request under review plus its changed files.
+  const [prReview, setPrReview] = useState<{
+    number: number;
+    title: string;
+  } | null>(null);
+  const [prFiles, setPrFiles] = useState<
+    Array<{
+      filename: string;
+      status: string;
+      additions: number;
+      deletions: number;
+      patch: string | null;
+    }> | null
+  >(null);
+  const [prFilesLoading, setPrFilesLoading] = useState(false);
+  const [prFilesError, setPrFilesError] = useState<string | null>(null);
+  const [expandedPrFile, setExpandedPrFile] = useState<string | null>(null);
+
+  // Full-text code search within the repo.
+  const [codeSearchOpen, setCodeSearchOpen] = useState(false);
+  const [codeQuery, setCodeQuery] = useState("");
+  const [codeResults, setCodeResults] = useState<
+    Array<{ path: string; name: string; htmlUrl: string }> | null
+  >(null);
+  const [codeSearchLoading, setCodeSearchLoading] = useState(false);
+  const [codeSearchError, setCodeSearchError] = useState<string | null>(null);
+
+  // Open issues for the repo.
+  const [issuesOpen, setIssuesOpen] = useState(false);
+  const [issues, setIssues] = useState<
+    Array<{
+      number: number;
+      title: string;
+      htmlUrl: string;
+      author: string;
+      createdAt: string | null;
+      comments: number;
+      body: string | null;
+      labels: string[];
+    }> | null
+  >(null);
+  const [issuesLoading, setIssuesLoading] = useState(false);
+  const [issuesError, setIssuesError] = useState<string | null>(null);
 
   // Cross-device continuity: guards so the restore doesn't clobber state the
   // user is actively changing. The caret itself lives in the shared cursor
@@ -719,11 +430,6 @@ function Workspace({
     }
   }, [selectedRepo, currentBranch, getCommitHistory]);
 
-  const handleOpenHistory = () => {
-    setHistoryOpen(true);
-    loadHistory();
-  };
-
   // Cross-device continuity: once both the repo list and the saved workspace
   // are ready, restore repo + branch + open file + draft + caret exactly where
   // the user left off on the other device. Runs exactly once. The restore is
@@ -756,6 +462,7 @@ function Workspace({
       setRevertTarget(null);
       setPrsOpen(false);
       setPrs(null);
+      setChecks(null);
       setPath(saved.path ?? "");
       setViewMode("edit");
       loadEntries(repo, saved.branch, saved.path ?? "");
@@ -813,6 +520,8 @@ function Workspace({
 
   // Cross-device continuity: persist the workspace (debounced) so the other
   // device can pick up where this one left off. Skipped while restoring.
+  // The same tick writes the draft vault row for the open file, so any
+  // unsaved edit is resumable from any device (not just the last workspace).
   useEffect(() => {
     if (restoringRef.current) return;
     if (!selectedRepo || !currentBranch) return;
@@ -832,6 +541,19 @@ function Workspace({
       }).catch(() => {
         // Best-effort persistence — never interrupt the workspace for it.
       });
+      // Draft vault: only files that actually have unsaved work.
+      if (openFile && (isNewFile || dirty)) {
+        void saveDraft({
+          repo: selectedRepo.fullName,
+          branch: currentBranch,
+          path: openFile.path,
+          content: editorContent,
+          cursorLine: getCursorSync()?.line,
+          cursorColumn: getCursorSync()?.column,
+        }).catch(() => {
+          // Best-effort persistence — never interrupt the workspace for it.
+        });
+      }
     }, 600);
     return () => clearTimeout(timer);
   }, [
@@ -842,7 +564,50 @@ function Workspace({
     isNewFile,
     editorContent,
     saveWorkspaceState,
+    saveDraft,
   ]);
+
+  // Live presence: keep the freshest workspace context in a ref (updated on
+  // every render), heartbeat it every 15s so other devices see this tab, and
+  // remove the session when the workspace unmounts.
+  const presenceRef = useRef<{
+    repo: string | null;
+    branch: string | null;
+    path: string | null;
+    cursorLine: number | null;
+    cursorColumn: number | null;
+  }>({ repo: null, branch: null, path: null, cursorLine: null, cursorColumn: null });
+  useEffect(() => {
+    presenceRef.current = {
+      repo: selectedRepo?.fullName ?? null,
+      branch: currentBranch,
+      path: openFile?.path ?? path ?? null,
+      cursorLine: getCursorSync()?.line ?? null,
+      cursorColumn: getCursorSync()?.column ?? null,
+    };
+  });
+  useEffect(() => {
+    const beat = () => {
+      const p = presenceRef.current;
+      void updateLiveSession({
+        deviceId: deviceIdRef.current,
+        label: deviceLabel,
+        repo: p.repo ?? undefined,
+        branch: p.branch ?? undefined,
+        path: p.path ?? undefined,
+        cursorLine: p.cursorLine ?? undefined,
+        cursorColumn: p.cursorColumn ?? undefined,
+      }).catch(() => {
+        // Presence is best-effort — never interrupt the workspace for it.
+      });
+    };
+    beat();
+    const timer = setInterval(beat, 15_000);
+    return () => {
+      clearInterval(timer);
+      void clearLiveSession({ deviceId: deviceIdRef.current }).catch(() => {});
+    };
+  }, [updateLiveSession, clearLiveSession, deviceLabel]);
 
   const handleRevert = async () => {
     if (!revertTarget || !selectedRepo || !currentBranch) return;
@@ -905,14 +670,238 @@ function Workspace({
           openFile && !isNewFile
             ? { path: openFile.path, content: editorContent }
             : undefined,
+        // Multi-turn: send the running conversation so follow-ups build on
+        // earlier turns instead of starting from scratch.
+        history: aiHistory,
       });
       setAiResult(result);
+      setAiHistory((prev) => [
+        ...prev,
+        { role: "user", content: instruction },
+        { role: "assistant", content: result.explanation },
+      ]);
     } catch (e) {
       setAiError(errorMessage(e));
     } finally {
       setAiLoading(false);
     }
   };
+
+  /** Load the branch tip's CI checks (check runs + status contexts). */
+  const loadChecks = useCallback(async () => {
+    if (!selectedRepo || !currentBranch) return;
+    setChecksLoading(true);
+    setChecksError(null);
+    try {
+      const data = await getBranchChecks({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        branch: currentBranch,
+      });
+      setChecks(data);
+    } catch (e) {
+      setChecksError(errorMessage(e));
+    } finally {
+      setChecksLoading(false);
+    }
+  }, [selectedRepo, currentBranch, getBranchChecks]);
+
+  /**
+   * Restore a draft from the vault: fetch its full content, switch to its
+   * repo/branch if needed, open the file, and load the unsaved content +
+   * caret back into the editor.
+   */
+  const restoreDraft = async (draft: {
+    repo: string;
+    branch: string;
+    path: string;
+  }) => {
+    if (!repos) return;
+    const repo = repos.find((r) => r.fullName === draft.repo);
+    if (!repo) {
+      toast.error(
+        `${draft.repo} is no longer accessible — can't restore the draft.`,
+      );
+      return;
+    }
+    let draftData: {
+      content: string;
+      cursorLine: number | null;
+      cursorColumn: number | null;
+    } | null = null;
+    try {
+      draftData = await getDraftContent({
+        repo: draft.repo,
+        branch: draft.branch,
+        path: draft.path,
+      });
+    } catch (e) {
+      toast.error(errorMessage(e));
+      return;
+    }
+    if (!draftData) {
+      toast.error("That draft no longer exists.");
+      return;
+    }
+    setVaultOpen(false);
+    const repoChanged = selectedRepo?.fullName !== draft.repo;
+    if (repoChanged) {
+      setSelectedRepo(repo);
+      setBranch(draft.branch);
+      setBranches(null);
+      setEntries(null);
+      setOpenFile(null);
+      setIsNewFile(false);
+      setStatus(null);
+      setLastCommit(null);
+      setPrResult(null);
+      setStaged([]);
+      setStagedDiffOpen(null);
+      setAllowSecrets(false);
+      setTreeFiles(null);
+      setSearchQuery("");
+      setSearchOpen(false);
+      setHistoryOpen(false);
+      setHistory(null);
+      setRevertTarget(null);
+      setPrsOpen(false);
+      setPrs(null);
+      setMergeTarget(null);
+      setChecks(null);
+      setPath("");
+      setViewMode("edit");
+      loadEntries(repo, draft.branch, "");
+      loadBranches(repo);
+      loadTreeFiles(repo, draft.branch);
+    } else if (draft.branch !== currentBranch) {
+      handleSwitchBranch(draft.branch);
+    }
+    // Open the file and load the draft on top of it.
+    const requestId = ++fileRequestRef.current;
+    setFileLoading(true);
+    setStatus(null);
+    setCursorSync(null);
+    try {
+      const data = await getFile({
+        owner: ownerOf(repo.fullName),
+        repo: repoNameOf(repo.fullName),
+        path: draft.path,
+        branch: draft.branch,
+      });
+      if (requestId !== fileRequestRef.current) return;
+      setOpenFile({ ...data, path: draft.path });
+      setIsNewFile(false);
+    } catch {
+      // The file doesn't exist in the repo yet — the draft is a new file.
+      if (requestId !== fileRequestRef.current) return;
+      setOpenFile({
+        content: "",
+        sha: "",
+        size: 0,
+        truncated: false,
+        path: draft.path,
+      });
+      setIsNewFile(true);
+    } finally {
+      if (requestId === fileRequestRef.current) setFileLoading(false);
+    }
+    setEditorContent(draftData.content);
+    if (draftData.cursorLine && draftData.cursorColumn) {
+      setCursorSync({ line: draftData.cursorLine, column: draftData.cursorColumn });
+    }
+    toast.success(`Restored draft — ${draft.path}`);
+  };
+
+  /** Open the review dialog for a pull request and load its changed files. */
+  const openPrReview = async (pr: { number: number; title: string }) => {
+    if (!selectedRepo) return;
+    setPrsOpen(false);
+    setPrReview(pr);
+    setPrFiles(null);
+    setPrFilesError(null);
+    setExpandedPrFile(null);
+    setPrFilesLoading(true);
+    try {
+      const files = await getPullRequestFiles({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        number: pr.number,
+      });
+      setPrFiles(files);
+    } catch (e) {
+      setPrFilesError(errorMessage(e));
+    } finally {
+      setPrFilesLoading(false);
+    }
+  };
+
+  /** Run a full-text code search against the current repo. */
+  const runCodeSearch = async () => {
+    if (!selectedRepo || !codeQuery.trim()) return;
+    setCodeSearchLoading(true);
+    setCodeSearchError(null);
+    try {
+      const results = await searchCode({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        query: codeQuery.trim(),
+      });
+      setCodeResults(results);
+    } catch (e) {
+      setCodeSearchError(errorMessage(e));
+    } finally {
+      setCodeSearchLoading(false);
+    }
+  };
+
+  /** Open a code-search result in the editor (on the current branch). */
+  const handleCodeResultSelect = async (path: string) => {
+    if (!selectedRepo || !currentBranch) return;
+    setCodeSearchOpen(false);
+    setCodeQuery("");
+    setCodeResults(null);
+    const requestId = ++fileRequestRef.current;
+    setFileLoading(true);
+    setStatus(null);
+    setCursorSync(null);
+    try {
+      const data = await getFile({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        path,
+        branch: currentBranch,
+      });
+      if (requestId !== fileRequestRef.current) return;
+      setOpenFile({ ...data, path });
+      setEditorContent(data.content);
+      setIsNewFile(false);
+      setLastCommit(null);
+      setPrResult(null);
+    } catch (e) {
+      if (requestId !== fileRequestRef.current) return;
+      setStatus({ kind: "err", text: errorMessage(e) });
+    } finally {
+      if (requestId === fileRequestRef.current) setFileLoading(false);
+    }
+  };
+
+  /** Load open issues for the current repo. */
+  const loadIssues = useCallback(async () => {
+    if (!selectedRepo) return;
+    setIssuesLoading(true);
+    setIssuesError(null);
+    try {
+      const data = await listIssues({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+      });
+      setIssues(data);
+    } catch (e) {
+      setIssuesError(errorMessage(e));
+    } finally {
+      setIssuesLoading(false);
+    }
+  }, [selectedRepo, listIssues]);
 
   const stageAiChange = (change: {
     path: string;
@@ -983,6 +972,7 @@ function Workspace({
     setPrsOpen(false);
     setPrs(null);
     setMergeTarget(null);
+    setChecks(null);
     setPath("");
     setViewMode("edit");
     loadEntries(repo, repo.defaultBranch, "");
@@ -1012,6 +1002,7 @@ function Workspace({
     setPrsOpen(false);
     setPrs(null);
     setMergeTarget(null);
+    setChecks(null);
     setPath("");
     setViewMode("edit");
   };
@@ -1037,6 +1028,7 @@ function Workspace({
     setPrsOpen(false);
     setPrs(null);
     setMergeTarget(null);
+    setChecks(null);
     setPath("");
     setViewMode("edit");
     loadEntries(selectedRepo, name, "");
@@ -1064,11 +1056,6 @@ function Workspace({
   const pathSegments = useMemo(
     () => (path ? path.split("/") : []),
     [path],
-  );
-
-  const stagedPathSet = useMemo(
-    () => new Set(staged.map((f) => f.path)),
-    [staged],
   );
 
   const handleOpenEntry = async (entry: DirEntry) => {
@@ -1299,6 +1286,14 @@ function Workspace({
         setStaged([]);
         setStagedDiffOpen(null);
         setAllowSecrets(false);
+        // Drop the committed files from the draft vault.
+        for (const f of staged) {
+          void deleteDraft({
+            repo: selectedRepo.fullName,
+            branch: currentBranch,
+            path: f.path,
+          }).catch(() => {});
+        }
       } catch (e) {
         setStatus({ kind: "err", text: errorMessage(e) });
       } finally {
@@ -1360,6 +1355,12 @@ function Workspace({
         });
       }
       setAllowSecrets(false);
+      // Drop the committed file from the draft vault.
+      void deleteDraft({
+        repo: selectedRepo.fullName,
+        branch: currentBranch,
+        path: openFile.path,
+      }).catch(() => {});
     } catch (e) {
       setStatus({ kind: "err", text: errorMessage(e) });
     } finally {
@@ -1436,11 +1437,6 @@ function Workspace({
     }
   }, [selectedRepo, listPullRequests]);
 
-  const handleOpenPrs = () => {
-    setPrsOpen(true);
-    loadPullRequests();
-  };
-
   const handleMergePr = async () => {
     if (!selectedRepo || !mergeTarget) return;
     setMerging(true);
@@ -1503,6 +1499,7 @@ function Workspace({
     setPrsOpen(false);
     setPrs(null);
     setMergeTarget(null);
+    setChecks(null);
     setPath("");
   };
 
@@ -1532,1178 +1529,152 @@ function Workspace({
   const openFileIsStaged =
     openFile !== null && staged.some((f) => f.path === openFile.path);
 
-  const diff = useMemo(
-    () => (openFile ? diffLines(openFile.content, editorContent) : []),
-    [openFile, editorContent],
-  );
-
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground antialiased">
-      {/* Pull requests — open PRs with merge */}
-      <Dialog open={prsOpen} onOpenChange={setPrsOpen}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Pull requests</DialogTitle>
-          </DialogHeader>
-          <div className="flex items-center justify-between gap-2">
-            <p className="truncate font-mono text-xs text-neutral-500">
-              {selectedRepo?.name}
-            </p>
-            <button
-              type="button"
-              onClick={loadPullRequests}
-              className="flex shrink-0 items-center gap-1 text-xs text-neutral-500 hover:text-neutral-900"
-            >
-              <RefreshCw className="size-3" />
-              Refresh
-            </button>
-          </div>
-          <div className="max-h-[24rem] overflow-auto">
-            {prsLoading && !prs ? (
-              <div className="flex items-center justify-center gap-2 py-8 text-xs text-neutral-400">
-                <Loader2 className="size-3.5 animate-spin" />
-                Loading pull requests…
-              </div>
-            ) : prsError ? (
-              <p className="py-6 text-center text-xs text-red-600">{prsError}</p>
-            ) : prs?.length === 0 ? (
-              <p className="py-6 text-center text-xs text-neutral-400">
-                No open pull requests.
-              </p>
-            ) : (
-              <ul className="divide-y divide-neutral-100">
-                {prs?.map((pr) => (
-                  <li key={pr.number} className="py-3">
-                    <div className="flex items-start gap-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-neutral-800">
-                          {pr.title}
-                        </p>
-                        <p className="mt-0.5 truncate text-xs text-neutral-500">
-                          #{pr.number} · {pr.author} ·{" "}
-                          <span className="font-mono">{pr.head}</span>
-                          {" → "}
-                          <span className="font-mono">{pr.base}</span>
-                        </p>
-                        {pr.draft && (
-                          <span className="mt-1 inline-block rounded border border-neutral-300 px-1 py-0.5 text-[10px] uppercase tracking-wide text-neutral-500">
-                            Draft
-                          </span>
-                        )}
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 shrink-0 gap-1 text-xs"
-                        disabled={pr.draft || pr.mergeable === false || pr.mergeable === null}
-                        title={
-                          pr.draft
-                            ? "Draft pull requests can't be merged"
-                            : pr.mergeable === false
-                              ? "Has conflicts — resolve them before merging"
-                              : pr.mergeable === null
-                                ? "GitHub is still checking mergeability"
-                                : "Merge this pull request"
-                        }
-                        onClick={() =>
-                          setMergeTarget({ number: pr.number, title: pr.title })
-                        }
-                      >
-                        <GitPullRequest className="size-3" />
-                        Merge
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Ask Aria — the grounded AI assistant */}
-      <Dialog open={aiOpen} onOpenChange={setAiOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Ask Aria</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3">
-            <textarea
-              value={aiInstruction}
-              onChange={(e) => setAiInstruction(e.target.value)}
-              placeholder="What should I change? For example: “Add input validation to the signup form” or “Fix the race condition in the file loader.”"
-              rows={3}
-              spellCheck={false}
-              className="w-full resize-none rounded-md border border-neutral-200 bg-background p-3 font-mono text-sm leading-6 text-neutral-900 outline-none focus:border-neutral-400"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  if (!aiLoading && aiInstruction.trim()) handleAiAsk();
-                }
-              }}
-            />
-            <p className="text-xs leading-5 text-neutral-400">
-              Aria reads the current branch and{" "}
-              {openFile && !isNewFile ? (
-                <span className="font-mono text-neutral-500">
-                  {openFile.path}
-                </span>
-              ) : (
-                "no open file"
-              )}
-              . It proposes changes you review and stage — nothing is committed
-              automatically.
-            </p>
-            <Button
-              type="button"
-              className="h-9 w-full gap-1.5"
-              onClick={handleAiAsk}
-              disabled={aiLoading || !aiInstruction.trim()}
-            >
-              {aiLoading ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Sparkles className="size-4" />
-              )}
-              {aiLoading ? "Thinking…" : "Propose changes"}
-            </Button>
-            {aiError && (
-              <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
-                {aiError}
-              </p>
-            )}
-            {aiResult && (
-              <div className="flex flex-col gap-3">
-                <p className="text-sm leading-6 text-neutral-700">
-                  {aiResult.explanation}
-                </p>
-                <div className="max-h-72 overflow-auto rounded-lg border border-neutral-200">
-                  <ul className="divide-y divide-neutral-100">
-                    {aiResult.changes.map((change) => (
-                      <li key={change.path} className="p-3">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`shrink-0 rounded px-1 font-mono text-[10px] font-semibold ${
-                              change.action === "create"
-                                ? "bg-emerald-50 text-emerald-900"
-                                : "bg-amber-50 text-amber-900"
-                            }`}
-                          >
-                            {change.action === "create" ? "A" : "M"}
-                          </span>
-                          <span className="min-w-0 flex-1 truncate font-mono text-sm text-neutral-800">
-                            {change.path}
-                          </span>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-7 shrink-0 gap-1 text-xs"
-                            onClick={() => stageAiChange(change)}
-                          >
-                            <Plus className="size-3" />
-                            Stage
-                          </Button>
-                        </div>
-                        <div className="mt-2 max-h-48 overflow-auto rounded border border-neutral-100">
-                          <DiffView
-                            lines={diffLines(
-                              change.originalContent,
-                              change.content,
-                            )}
-                          />
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-                <Button
-                  type="button"
-                  className="h-9 w-full gap-1.5"
-                  onClick={stageAllAiChanges}
-                >
-                  <Plus className="size-4" />
-                  Stage all {aiResult.changes.length} change
-                  {aiResult.changes.length > 1 ? "s" : ""}
-                </Button>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Revert confirmation */}
-      <AlertDialog
-        open={revertTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !reverting) setRevertTarget(null);
-        }}
-      >
-        <AlertDialogContent className="max-w-sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Revert this commit?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Aria will apply the reverse of “{revertTarget?.message}” as a new
-              commit on {currentBranch}. The original commit stays in history —
-              nothing is deleted.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={reverting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={reverting}
-              onClick={(e) => {
-                e.preventDefault();
-                handleRevert();
-              }}
-            >
-              {reverting && <Loader2 className="size-4 animate-spin" />}
-              Revert commit
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Merge confirmation */}
-      <AlertDialog
-        open={mergeTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !merging) setMergeTarget(null);
-        }}
-      >
-        <AlertDialogContent className="max-w-sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Merge this pull request?</AlertDialogTitle>
-            <AlertDialogDescription>
-              “{mergeTarget?.title}” will be squash-merged into its base branch
-              as a single commit. The branch itself stays untouched.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={merging}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={merging}
-              onClick={(e) => {
-                e.preventDefault();
-                handleMergePr();
-              }}
-            >
-              {merging && <Loader2 className="size-4 animate-spin" />}
-              Merge pull request
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Top bar */}
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 px-4">
-        <Wordmark />
-        <div className="flex items-center gap-3">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-neutral-100"
-              >
-                {connection.avatar ? (
-                  <img
-                    src={connection.avatar}
-                    alt=""
-                    className="size-6 rounded-full border border-neutral-200"
-                  />
-                ) : (
-                  <span className="flex size-6 items-center justify-center rounded-full bg-neutral-900 text-[11px] font-medium text-white">
-                    {(connection.login ?? "?").slice(0, 1).toUpperCase()}
-                  </span>
-                )}
-                <span className="font-medium text-neutral-800">
-                  @{connection.login ?? "github"}
-                </span>
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem
-                className="cursor-pointer"
-                onClick={handleDisconnect}
-              >
-                <Unplug className="mr-2 size-4" />
-                Disconnect GitHub
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="cursor-pointer"
-                onClick={handleSignOut}
-              >
-                <LogOut className="mr-2 size-4" />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </header>
-
-      {/* Body */}
-      <div className="flex min-h-0 flex-1">
-        {/* Repos */}
-        <aside
-          className={cn(
-            "shrink-0 flex-col border-r border-neutral-200",
-            mobileView === "repos"
-              ? "max-md:flex max-md:w-full"
-              : "max-md:hidden",
-            "md:flex md:w-64",
-          )}
-        >
-          <div className="flex items-center justify-between px-4 pt-4">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
-              Repositories
-            </p>
-            <button
-              type="button"
-              onClick={loadRepos}
-              className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
-              title="Refresh"
-            >
-              <RefreshCw className={`size-3.5 ${reposLoading ? "animate-spin" : ""}`} />
-            </button>
-          </div>
-          <div className="px-3 py-3">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-neutral-400" />
-              <Input
-                value={repoQuery}
-                onChange={(e) => setRepoQuery(e.target.value)}
-                placeholder="Filter"
-                className="h-8 pl-8 text-sm"
-              />
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-            {reposLoading && !repos ? (
-              <div className="flex items-center justify-center py-10">
-                <Loader2 className="size-4 animate-spin text-neutral-400" />
-              </div>
-            ) : reposError ? (
-              <p className="px-2 py-4 text-xs text-red-600">{reposError}</p>
-            ) : (
-              <ul className="space-y-0.5">
-                {filteredRepos.map((repo) => {
-                  const active = selectedRepo?.fullName === repo.fullName;
-                  return (
-                    <li key={repo.fullName}>
-                      <button
-                        type="button"
-                        onClick={() => handleSelectRepo(repo)}
-                        className={`w-full rounded-md px-2.5 py-2 text-left transition-colors ${
-                          active
-                            ? "bg-neutral-900 text-white"
-                            : "hover:bg-neutral-100"
-                        }`}
-                      >
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <p
-                            className={`truncate font-mono text-sm ${
-                              active ? "text-white" : "text-neutral-900"
-                            }`}
-                          >
-                            {repo.name}
-                          </p>
-                          {repo.private && (
-                            <Lock
-                              className={cn(
-                                "size-3 shrink-0",
-                                active ? "text-neutral-400" : "text-neutral-300",
-                              )}
-                            />
-                          )}
-                        </div>
-                        <p
-                          className={`mt-0.5 truncate text-xs ${
-                            active ? "text-neutral-300" : "text-neutral-400"
-                          }`}
-                        >
-                          {repo.defaultBranch} · {formatDate(repo.updatedAt)}
-                        </p>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        </aside>
-
-        {/* Files */}
-        <aside
-          className={cn(
-            "shrink-0 flex-col border-r border-neutral-200",
-            mobileView === "files"
-              ? "max-md:flex max-md:w-full"
-              : "max-md:hidden",
-            "md:flex md:w-72",
-          )}
-        >
-          <div className="flex items-center gap-1 px-4 pt-4">
-            {selectedRepo ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleBackToRepos}
-                  className="mr-1 rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
-                  title="Back to repositories"
-                >
-                  <ArrowLeft className="size-3.5" />
-                </button>
-                <p className="truncate font-mono text-sm font-medium text-neutral-900">
-                  {selectedRepo.name}
-                </p>
-                <div className="ml-auto flex items-center gap-0.5">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="flex max-w-32 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs text-neutral-500 hover:bg-neutral-100"
-                        title="Switch branch"
-                      >
-                        <GitBranch className="size-3 shrink-0" />
-                        <span className="truncate">{currentBranch}</span>
-                        <ChevronDown className="size-3 shrink-0" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="end"
-                      className="max-h-72 w-52 overflow-y-auto"
-                    >
-                      {branchesLoading && !branches && (
-                        <DropdownMenuItem disabled>
-                          <Loader2 className="mr-2 size-3 animate-spin" />
-                          Loading branches…
-                        </DropdownMenuItem>
-                      )}
-                      {branches?.map((b) => (
-                        <DropdownMenuItem
-                          key={b.name}
-                          onClick={() => handleSwitchBranch(b.name)}
-                          className="cursor-pointer font-mono text-sm"
-                        >
-                          {b.name}
-                        </DropdownMenuItem>
-                      ))}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onClick={() => setDialog({ kind: "branch" })}
-                        className="cursor-pointer text-sm"
-                      >
-                        <Plus className="mr-2 size-3.5" />
-                        Create branch…
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  <button
-                    type="button"
-                    onClick={() => setSearchOpen(true)}
-                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
-                    title="Jump to file (⌘K)"
-                  >
-                    <Search className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleOpenHistory}
-                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
-                    title="Commit history"
-                  >
-                    <History className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleOpenPrs}
-                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
-                    title="Pull requests"
-                  >
-                    <GitPullRequest className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAiInstruction("");
-                      setAiResult(null);
-                      setAiError(null);
-                      setAiOpen(true);
-                    }}
-                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
-                    title="Ask Aria"
-                  >
-                    <Sparkles className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDialog({ kind: "newFile" })}
-                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
-                    title="New file"
-                  >
-                    <FilePlus2 className="size-3.5" />
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
-                Files
-              </p>
-            )}
-          </div>
-
-          {selectedRepo && currentBranch && (
-            <div className="flex items-center gap-1 px-4 pt-2 text-[13px]">
-              <button
-                type="button"
-                onClick={() => {
-                  setPath("");
-                  loadEntries(selectedRepo, currentBranch, "");
-                }}
-                className={`truncate font-mono hover:underline ${
-                  path === "" ? "text-neutral-900" : "text-neutral-500"
-                }`}
-              >
-                {selectedRepo.name}
-              </button>
-              {pathSegments.map((segment, i) => (
-                <span key={i} className="flex min-w-0 items-center gap-1">
-                  <ChevronRight className="size-3 shrink-0 text-neutral-300" />
-                  <button
-                    type="button"
-                    onClick={() => handleBreadcrumb(i)}
-                    className={`truncate font-mono hover:underline ${
-                      i === pathSegments.length - 1
-                        ? "text-neutral-900"
-                        : "text-neutral-500"
-                    }`}
-                  >
-                    {segment}
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-            {!selectedRepo ? (
-              <p className="px-3 py-6 text-sm text-neutral-400">
-                Select a repository to browse its files.
-              </p>
-            ) : entriesLoading && !entries ? (
-              <div className="flex items-center justify-center py-10">
-                <Loader2 className="size-4 animate-spin text-neutral-400" />
-              </div>
-            ) : entriesError ? (
-              <p className="px-3 py-4 text-xs text-red-600">{entriesError}</p>
-            ) : (
-              <ul className="space-y-0.5">
-                {path !== "" && (
-                  <li>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const parent = pathSegments.slice(0, -1).join("/");
-                        setPath(parent);
-                        if (selectedRepo && currentBranch) {
-                          loadEntries(selectedRepo, currentBranch, parent);
-                        }
-                      }}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-neutral-500 hover:bg-neutral-100"
-                    >
-                      <FolderOpen className="size-4 shrink-0" />
-                      <span className="truncate">..</span>
-                    </button>
-                  </li>
-                )}
-                {sortedEntries.map((entry) => (
-                  <li key={entry.path}>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenEntry(entry)}
-                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left hover:bg-neutral-100"
-                    >
-                      {entry.type === "dir" ? (
-                        <Folder className="size-4 shrink-0 text-neutral-400" />
-                      ) : (
-                        <FileCode2 className="size-4 shrink-0 text-neutral-400" />
-                      )}
-                      <span className="min-w-0 flex-1 truncate font-mono text-sm text-neutral-800">
-                        {entry.name}
-                      </span>
-                      {entry.type === "file" && stagedPathSet.has(entry.path) && (
-                        <span
-                          className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                          title="Staged"
-                        />
-                      )}
-                      {entry.type === "file" && (
-                        <span className="shrink-0 text-xs text-neutral-400">
-                          {formatSize(entry.size)}
-                        </span>
-                      )}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </aside>
-
-        {/* Editor */}
-        <main
-          className={cn(
-            "min-w-0 flex-1 flex-col bg-background",
-            mobileView === "editor" ? "max-md:flex" : "max-md:hidden",
-            "md:flex",
-          )}
-        >
-          {openFile ? (
-            <>
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-200 px-4">
-                <div className="flex min-w-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setOpenFile(null)}
-                    className="mr-1 rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 md:hidden"
-                    title="Back to files"
-                  >
-                    <ArrowLeft className="size-4" />
-                  </button>
-                  <FileCode2 className="size-4 shrink-0 text-neutral-400" />
-                  <p className="truncate font-mono text-sm text-neutral-900">
-                    {openFile.path}
-                  </p>
-                  {isNewFile && (
-                    <span className="shrink-0 rounded border border-neutral-300 px-1 py-0.5 text-[11px] uppercase tracking-wide text-neutral-500">
-                      New
-                    </span>
-                  )}
-                  {openFileIsStaged && (
-                    <span className="shrink-0 rounded border border-emerald-200 bg-emerald-50 px-1 py-0.5 text-[11px] uppercase tracking-wide text-emerald-900">
-                      Staged
-                    </span>
-                  )}
-                  {dirty && (
-                    <span className="size-1.5 shrink-0 rounded-full bg-neutral-900" />
-                  )}
-                </div>
-                <div className="flex shrink-0 items-center gap-3">
-                  <div className="flex items-center rounded-md border border-neutral-200 p-0.5 text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setViewMode("edit")}
-                      className={`rounded px-2 py-0.5 transition-colors ${
-                        viewMode === "edit"
-                          ? "bg-neutral-900 text-white"
-                          : "text-neutral-500 hover:bg-neutral-100"
-                      }`}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setViewMode("diff")}
-                      className={`rounded px-2 py-0.5 transition-colors ${
-                        viewMode === "diff"
-                          ? "bg-neutral-900 text-white"
-                          : "text-neutral-500 hover:bg-neutral-100"
-                      }`}
-                    >
-                      Diff
-                    </button>
-                  </div>
-                  {!isNewFile && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => setDialog({ kind: "rename" })}
-                        title="Rename"
-                        className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800"
-                      >
-                        <Pencil className="size-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDeleteOpen(true)}
-                        title="Delete"
-                        className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-red-600"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </button>
-                    </>
-                  )}
-                  <span className="hidden font-mono text-xs text-neutral-400 sm:inline">
-                    {currentBranch}
-                  </span>
-                  {dirty && (
-                    <button
-                      type="button"
-                      onClick={() => setEditorContent(openFile.content)}
-                      className="text-xs text-neutral-500 hover:text-neutral-900"
-                    >
-                      Discard
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="min-h-0 flex-1">
-                {fileLoading ? (
-                  <div className="flex h-full items-center justify-center">
-                    <Loader2 className="size-4 animate-spin text-neutral-400" />
-                  </div>
-                ) : viewMode === "diff" ? (
-                  <DiffView lines={diff} />
-                ) : (
-                  <CodeEditor
-                    key={openFile?.path ?? "editor"}
-                    path={openFile?.path ?? ""}
-                    value={editorContent}
-                    onChange={setEditorContent}
-                  />
-                )}
-              </div>
-
-              <div className="shrink-0 border-t border-neutral-200 p-3">
-                {status && (
-                  <p
-                    className={`mb-2 text-xs ${
-                      status.kind === "ok" ? "text-neutral-700" : "text-red-600"
-                    }`}
-                  >
-                    {status.text}
-                  </p>
-                )}
-                {lastCommit &&
-                  selectedRepo &&
-                  currentBranch &&
-                  currentBranch !== selectedRepo.defaultBranch &&
-                  !prResult && (
-                    <div className="mb-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="gap-1.5 text-xs"
-                        onClick={handleOpenPr}
-                        disabled={prOpen}
-                      >
-                        {prOpen ? (
-                          <Loader2 className="size-3 animate-spin" />
-                        ) : (
-                          <GitPullRequest className="size-3" />
-                        )}
-                        Open pull request → {selectedRepo.defaultBranch}
-                      </Button>
-                    </div>
-                  )}
-                {prResult && (
-                  <p className="mb-2 text-xs text-neutral-700">
-                    <a
-                      href={prResult.htmlUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline underline-offset-2 hover:text-neutral-900"
-                    >
-                      Pull request #{prResult.number} — {prResult.title}
-                    </a>
-                  </p>
-                )}
-                {staged.length > 0 && (
-                  <div className="mb-3 overflow-hidden rounded-lg border border-neutral-200 bg-white">
-                    <div className="flex items-center justify-between border-b border-neutral-100 px-3 py-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
-                        Changes · {staged.length}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setStaged([]);
-                          setStagedDiffOpen(null);
-                          setAllowSecrets(false);
-                        }}
-                        className="text-xs text-neutral-500 hover:text-neutral-900"
-                      >
-                        Clear all
-                      </button>
-                    </div>
-                    <ul className="max-h-48 divide-y divide-neutral-100 overflow-auto">
-                      {staged.map((f) => (
-                        <li key={f.path}>
-                          <div className="flex items-center gap-2 px-3 py-1.5">
-                            <span
-                              className={`shrink-0 rounded px-1 font-mono text-[10px] font-semibold ${
-                                f.action === "create"
-                                  ? "bg-emerald-50 text-emerald-900"
-                                  : "bg-amber-50 text-amber-900"
-                              }`}
-                            >
-                              {f.action === "create" ? "A" : "M"}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setStagedDiffOpen(
-                                  stagedDiffOpen === f.path ? null : f.path,
-                                )
-                              }
-                              className="min-w-0 flex-1 truncate text-left font-mono text-xs text-neutral-800 hover:text-neutral-900"
-                              title={stagedDiffOpen === f.path ? "Hide diff" : "Show diff"}
-                            >
-                              {f.path}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleUnstage(f.path)}
-                              className="shrink-0 text-xs text-neutral-400 hover:text-red-600"
-                            >
-                              Unstage
-                            </button>
-                          </div>
-                          {stagedDiffOpen === f.path && (
-                            <div className="max-h-48 overflow-auto border-t border-neutral-100">
-                              <DiffView lines={diffLines(f.originalContent, f.content)} />
-                            </div>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {staged.length > 0 && openFile && dirty && !openFileIsStaged && (
-                  <p className="mb-2 text-xs text-neutral-500">
-                    The open file has unstaged edits — stage it to include it in
-                    this commit.
-                  </p>
-                )}
-
-                {flaggedSecretPaths.length > 0 && (
-                  <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
-                    <p className="flex items-start gap-2 text-xs text-amber-900">
-                      <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
-                      <span>
-                        Aria blocked this commit:{" "}
-                        <span className="font-mono">
-                          {flaggedSecretPaths.join(", ")}
-                        </span>{" "}
-                        {flaggedSecretPaths.length > 1
-                          ? "look like they contain secrets."
-                          : "looks like it contains secrets."}
-                      </span>
-                    </p>
-                    <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-xs text-amber-900">
-                      <input
-                        type="checkbox"
-                        checked={allowSecrets}
-                        onChange={(e) => setAllowSecrets(e.target.checked)}
-                        className="size-3.5 accent-amber-700"
-                      />
-                      I've reviewed these files — commit them anyway
-                    </label>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={commitMessage}
-                    onChange={(e) => setCommitMessage(e.target.value)}
-                    placeholder={
-                      staged.length > 0
-                        ? `Commit message (${staged.length} file${staged.length > 1 ? "s" : ""})`
-                        : isNewFile
-                          ? "Commit message (creates the file)"
-                          : "Commit message"
-                    }
-                    className="h-9 flex-1 font-mono text-sm"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        if (canCommit) handleCommit();
-                      }
-                    }}
-                  />
-                  {(dirty || isNewFile) && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-9 shrink-0 gap-1.5"
-                      onClick={handleStage}
-                      disabled={committing}
-                      title="Add this file to the staged changes"
-                    >
-                      <Plus className="size-4" />
-                      {openFileIsStaged ? "Re-stage" : "Stage"}
-                    </Button>
-                  )}
-                  <Button
-                    type="button"
-                    className="h-9 shrink-0 gap-1.5"
-                    onClick={handleCommit}
-                    disabled={committing || !canCommit}
-                  >
-                    {committing ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Github className="size-4" />
-                    )}
-                    {staged.length > 0
-                      ? `Commit ${staged.length}`
-                      : isNewFile
-                        ? "Create"
-                        : "Commit"}
-                  </Button>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="relative flex h-full flex-col items-center justify-center overflow-hidden px-6 text-center">
-              <div
-                aria-hidden
-                className="pointer-events-none absolute inset-0 bg-[radial-gradient(50%_40%_at_50%_35%,rgba(0,0,0,0.03),transparent)]"
-              />
-              <div className="relative w-full max-w-sm">
-                {selectedRepo ? (
-                  <>
-                    <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-neutral-200 bg-white shadow-sm">
-                      <FileCode2 className="size-4 text-neutral-500" />
-                    </div>
-                    <p className="mt-4 text-lg font-medium text-neutral-800">
-                      Select a file to edit
-                    </p>
-                    <p className="mt-1.5 text-[15px] leading-7 text-neutral-500">
-                      Pick a text file from the browser, or create a new one.
-                      Changes commit to{" "}
-                      <span className="font-mono text-neutral-600">
-                        {currentBranch}
-                      </span>
-                      .
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-neutral-200 bg-white shadow-sm">
-                      <Github className="size-4 text-neutral-500" />
-                    </div>
-                    <p className="mt-4 text-lg font-medium text-neutral-800">
-                      Welcome back, @{connection.login}
-                    </p>
-                    <p className="mt-1.5 text-[15px] leading-7 text-neutral-500">
-                      Pick a repository from the list to start browsing and
-                      editing files.
-                    </p>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </main>
-      </div>
-
-      {/* ⌘K quick-jump to any file in the branch */}
-      <Dialog
-        open={searchOpen}
-        onOpenChange={(open) => {
-          setSearchOpen(open);
-          if (!open) setSearchQuery("");
-        }}
-      >
-        <DialogContent className="top-[18%] sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Jump to file</DialogTitle>
-          </DialogHeader>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-neutral-400" />
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Type a file name…"
-              className="h-10 pl-8 font-mono text-sm"
-              autoFocus
-            />
-          </div>
-          <div className="max-h-72 overflow-auto">
-            {treeFilesLoading && !treeFiles ? (
-              <div className="flex items-center justify-center gap-2 py-6 text-xs text-neutral-400">
-                <Loader2 className="size-3.5 animate-spin" />
-                Loading files…
-              </div>
-            ) : searchResults.length === 0 ? (
-              <p className="py-6 text-center text-xs text-neutral-400">
-                {searchQuery
-                  ? "No files match that name."
-                  : "Type to filter every file in this branch."}
-              </p>
-            ) : (
-              <ul className="divide-y divide-neutral-100">
-                {searchResults.map((file) => (
-                  <li key={file.path}>
-                    <button
-                      type="button"
-                      onClick={() => handleSearchSelect(file.path)}
-                      className="flex w-full items-center gap-2 rounded px-1 py-1.5 text-left hover:bg-neutral-100"
-                    >
-                      <FileCode2 className="size-3.5 shrink-0 text-neutral-400" />
-                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-800">
-                        {file.path}
-                      </span>
-                      <span className="shrink-0 text-[11px] text-neutral-400">
-                        {formatSize(file.size)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Commit history + revert */}
-      <Dialog
-        open={historyOpen}
-        onOpenChange={(open) => {
-          setHistoryOpen(open);
-          if (!open) setRevertTarget(null);
-        }}
-      >
-        <DialogContent className="top-[10%] sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Commit history</DialogTitle>
-          </DialogHeader>
-          <div className="flex items-center justify-between gap-2">
-            <p className="truncate font-mono text-xs text-neutral-500">
-              {selectedRepo?.name} · {currentBranch}
-            </p>
-            <button
-              type="button"
-              onClick={loadHistory}
-              className="flex shrink-0 items-center gap-1 text-xs text-neutral-500 hover:text-neutral-900"
-            >
-              <RefreshCw className="size-3" />
-              Refresh
-            </button>
-          </div>
-          <div className="max-h-[24rem] overflow-auto">
-            {historyLoading && !history ? (
-              <div className="flex items-center justify-center gap-2 py-8 text-xs text-neutral-400">
-                <Loader2 className="size-3.5 animate-spin" />
-                Loading history…
-              </div>
-            ) : historyError ? (
-              <p className="py-6 text-center text-xs text-red-600">{historyError}</p>
-            ) : history?.length === 0 ? (
-              <p className="py-6 text-center text-xs text-neutral-400">
-                No commits on this branch yet.
-              </p>
-            ) : (
-              <ul className="divide-y divide-neutral-100">
-                {history?.map((c) => (
-                  <li key={c.sha} className="flex items-start gap-3 py-2.5">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-neutral-800">
-                        {c.message}
-                      </p>
-                      <p className="mt-0.5 truncate text-xs text-neutral-500">
-                        {c.author} · {formatDate(c.date)} ·{" "}
-                        <span className="font-mono text-neutral-600">
-                          {c.sha.slice(0, 7)}
-                        </span>
-                      </p>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 shrink-0 gap-1 text-xs"
-                      onClick={() =>
-                        setRevertTarget({ sha: c.sha, message: c.message })
-                      }
-                      title="Create a new commit that undoes this one"
-                    >
-                      <RotateCcw className="size-3" />
-                      Revert
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Input dialog: new file / rename / new branch */}
-      <InputDialog
-        key={dialog?.kind ?? "closed"}
-        open={dialog !== null}
-        title={
-          dialog?.kind === "newFile"
-            ? "New file"
-            : dialog?.kind === "rename"
-              ? "Rename file"
-              : "New branch"
-        }
-        label={
-          dialog?.kind === "newFile"
-            ? "Path of the new file, relative to the repository root."
-            : dialog?.kind === "rename"
-              ? "New path for this file, relative to the repository root."
-              : `Branching off ${currentBranch}. The new branch gets everything that's on the current one.`
-        }
-        placeholder={
-          dialog?.kind === "newFile"
-            ? "src/new-file.ts"
-            : dialog?.kind === "rename"
-              ? "src/renamed.ts"
-              : "feature/my-change"
-        }
-        initial={dialog?.kind === "rename" ? openFile?.path ?? "" : ""}
-        confirmLabel={
-          dialog?.kind === "newFile"
-            ? "Create"
-            : dialog?.kind === "rename"
-              ? "Rename"
-              : "Create branch"
-        }
-        busy={dialogBusy}
-        onConfirm={handleDialogConfirm}
-        onClose={() => {
-          if (!dialogBusy) setDialog(null);
-        }}
-      />
-
-      {/* Delete confirmation */}
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent className="max-w-sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Delete {openFile?.path}?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              This commits a deletion on {currentBranch}. It can always be
-              restored from Git history.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={deleting}
-              onClick={(e) => {
-                e.preventDefault();
-                handleDelete();
-              }}
-              className="bg-red-600 text-white hover:bg-red-700"
-            >
-              {deleting && <Loader2 className="size-4 animate-spin" />}
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
+    <WorkspaceView
+      connection={connection}
+      currentBranch={currentBranch}
+      mobileView={mobileView}
+      reposLoading={reposLoading}
+      reposError={reposError}
+      repoQuery={repoQuery}
+      setRepoQuery={setRepoQuery}
+      selectedRepo={selectedRepo}
+      loadRepos={loadRepos}
+      handleSelectRepo={handleSelectRepo}
+      handleBackToRepos={handleBackToRepos}
+      filteredRepos={filteredRepos}
+      entries={entries}
+      entriesLoading={entriesLoading}
+      entriesError={entriesError}
+      sortedEntries={sortedEntries}
+      path={path}
+      setPath={setPath}
+      pathSegments={pathSegments}
+      handleOpenEntry={handleOpenEntry}
+      handleBreadcrumb={handleBreadcrumb}
+      loadEntries={loadEntries}
+      branches={branches}
+      branchesLoading={branchesLoading}
+      handleSwitchBranch={handleSwitchBranch}
+      setDialog={setDialog}
+      openFile={openFile}
+      setOpenFile={setOpenFile}
+      isNewFile={isNewFile}
+      editorContent={editorContent}
+      setEditorContent={setEditorContent}
+      viewMode={viewMode}
+      setViewMode={setViewMode}
+      fileLoading={fileLoading}
+      dirty={dirty}
+      openFileIsStaged={openFileIsStaged}
+      status={status}
+      lastCommit={lastCommit}
+      prResult={prResult}
+      handleOpenPr={handleOpenPr}
+      prOpen={prOpen}
+      staged={staged}
+      setStaged={setStaged}
+      stagedDiffOpen={stagedDiffOpen}
+      setStagedDiffOpen={setStagedDiffOpen}
+      handleUnstage={handleUnstage}
+      flaggedSecretPaths={flaggedSecretPaths}
+      allowSecrets={allowSecrets}
+      setAllowSecrets={setAllowSecrets}
+      commitMessage={commitMessage}
+      setCommitMessage={setCommitMessage}
+      canCommit={canCommit}
+      handleCommit={handleCommit}
+      handleStage={handleStage}
+      committing={committing}
+      searchOpen={searchOpen}
+      setSearchOpen={setSearchOpen}
+      searchQuery={searchQuery}
+      setSearchQuery={setSearchQuery}
+      treeFilesLoading={treeFilesLoading}
+      treeFiles={treeFiles}
+      searchResults={searchResults}
+      handleSearchSelect={handleSearchSelect}
+      historyOpen={historyOpen}
+      setHistoryOpen={setHistoryOpen}
+      historyLoading={historyLoading}
+      history={history}
+      historyError={historyError}
+      loadHistory={loadHistory}
+      revertTarget={revertTarget}
+      setRevertTarget={setRevertTarget}
+      reverting={reverting}
+      handleRevert={handleRevert}
+      prsOpen={prsOpen}
+      setPrsOpen={setPrsOpen}
+      prs={prs}
+      prsLoading={prsLoading}
+      prsError={prsError}
+      loadPullRequests={loadPullRequests}
+      openPrReview={openPrReview}
+      mergeTarget={mergeTarget}
+      setMergeTarget={setMergeTarget}
+      merging={merging}
+      handleMergePr={handleMergePr}
+      checksOpen={checksOpen}
+      setChecksOpen={setChecksOpen}
+      checks={checks}
+      checksLoading={checksLoading}
+      checksError={checksError}
+      loadChecks={loadChecks}
+      vaultOpen={vaultOpen}
+      setVaultOpen={setVaultOpen}
+      drafts={drafts}
+      restoreDraft={restoreDraft}
+      prReview={prReview}
+      setPrReview={setPrReview}
+      prFiles={prFiles}
+      setPrFiles={setPrFiles}
+      prFilesLoading={prFilesLoading}
+      prFilesError={prFilesError}
+      expandedPrFile={expandedPrFile}
+      setExpandedPrFile={setExpandedPrFile}
+      codeSearchOpen={codeSearchOpen}
+      setCodeSearchOpen={setCodeSearchOpen}
+      codeQuery={codeQuery}
+      setCodeQuery={setCodeQuery}
+      codeResults={codeResults}
+      setCodeResults={setCodeResults}
+      codeSearchLoading={codeSearchLoading}
+      codeSearchError={codeSearchError}
+      setCodeSearchError={setCodeSearchError}
+      runCodeSearch={runCodeSearch}
+      handleCodeResultSelect={handleCodeResultSelect}
+      issuesOpen={issuesOpen}
+      setIssuesOpen={setIssuesOpen}
+      issues={issues}
+      issuesLoading={issuesLoading}
+      issuesError={issuesError}
+      loadIssues={loadIssues}
+      aiOpen={aiOpen}
+      setAiOpen={setAiOpen}
+      aiHistory={aiHistory}
+      setAiHistory={setAiHistory}
+      aiInstruction={aiInstruction}
+      setAiInstruction={setAiInstruction}
+      aiLoading={aiLoading}
+      aiError={aiError}
+      setAiError={setAiError}
+      aiResult={aiResult}
+      setAiResult={setAiResult}
+      handleAiAsk={handleAiAsk}
+      stageAiChange={stageAiChange}
+      stageAllAiChanges={stageAllAiChanges}
+      liveSessions={liveSessions}
+      handleDisconnect={handleDisconnect}
+      handleSignOut={handleSignOut}
+      dialog={dialog}
+      dialogBusy={dialogBusy}
+      handleDialogConfirm={handleDialogConfirm}
+      deleteOpen={deleteOpen}
+      setDeleteOpen={setDeleteOpen}
+      deleting={deleting}
+      handleDelete={handleDelete}
+    />
   );
 }
 
