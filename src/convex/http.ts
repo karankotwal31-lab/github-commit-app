@@ -10,7 +10,7 @@ const http = httpRouter();
 auth.addHttpRoutes(http);
 
 const GITHUB_API = "https://api.github.com";
-const USER_AGENT = "commit-app";
+const USER_AGENT = "aria";
 
 /**
  * GitHub redirects here after the user authorizes. Exchanges the code for an

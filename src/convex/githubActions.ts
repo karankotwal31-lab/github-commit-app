@@ -7,7 +7,7 @@ import { v } from "convex/values";
 import { anySecretRisk } from "../lib/secrets";
 
 const GITHUB_API = "https://api.github.com";
-const USER_AGENT = "commit-app";
+const USER_AGENT = "aria";
 
 interface GitHubRepo {
   full_name: string;

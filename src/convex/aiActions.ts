@@ -7,7 +7,7 @@ import { v } from "convex/values";
 import { anySecretRisk } from "../lib/secrets";
 
 const GITHUB_API = "https://api.github.com";
-const USER_AGENT = "commit-app";
+const USER_AGENT = "aria";
 const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
 
 // Pay-per-token by default; swap via OPENROUTER_MODEL (e.g. a paid model once
