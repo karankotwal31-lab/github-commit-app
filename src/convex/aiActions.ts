@@ -12,7 +12,10 @@ const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
 
 // Pay-per-token by default; swap via OPENROUTER_MODEL (e.g. a paid model once
 // subscribers fund it). The ":free" suffix is OpenRouter's free tier.
-const DEFAULT_MODEL = "deepseek/deepseek-chat:free";
+// Note: free-model availability changes — if this model stops working, set
+// OPENROUTER_MODEL in project keys to a current :free model from
+// https://openrouter.ai/models (filter by ":free").
+const DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
 
 const MAX_CONTEXT_FILES = 5;
 const MAX_FILE_BYTES = 200_000;
