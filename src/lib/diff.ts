@@ -89,3 +89,38 @@ export function diffLines(oldText: string, newText: string): DiffLine[] {
   }
   return lines;
 }
+
+/**
+ * Parse a GitHub unified-diff patch (the `patch` field of a PR file) into the
+ * same DiffLine shape the editor's diff view renders, so PR reviews reuse the
+ * existing green/red table.
+ */
+export function parseUnifiedPatch(patch: string | null): DiffLine[] {
+  const lines: DiffLine[] = [];
+  if (!patch) return lines;
+  const raw = patch.split("\n");
+  let oldLine = 1;
+  let newLine = 1;
+  for (const line of raw) {
+    if (line.startsWith("@@")) {
+      // @@ -oldStart[,oldCount] +newStart[,newCount] @@ ...
+      const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (m) {
+        oldLine = parseInt(m[1], 10);
+        newLine = parseInt(m[2], 10);
+      }
+      continue;
+    }
+    if (line.startsWith("\\")) continue; // "\ No newline at end of file"
+    const body = line.length > 1 ? line.slice(1) : "";
+    if (line.startsWith("+")) {
+      lines.push({ type: "add", oldLine: null, newLine: newLine++, text: body });
+    } else if (line.startsWith("-")) {
+      lines.push({ type: "del", oldLine: oldLine++, newLine: null, text: body });
+    } else {
+      // context (" ") or a stray header line — show as unchanged.
+      lines.push({ type: "same", oldLine: oldLine++, newLine: newLine++, text: body });
+    }
+  }
+  return lines;
+}

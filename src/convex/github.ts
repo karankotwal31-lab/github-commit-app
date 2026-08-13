@@ -176,6 +176,216 @@ export const saveWorkspaceState = mutation({
 });
 
 // ---------------------------------------------------------------------------
+// Draft vault
+// ---------------------------------------------------------------------------
+
+const DRAFT_MAX_CHARS = 500_000;
+const DRAFT_SNIPPET_CHARS = 240;
+
+/** Save an unsaved draft for a (repo, branch, path). Upserts by key. */
+export const saveDraft = mutation({
+  args: {
+    repo: v.string(),
+    branch: v.string(),
+    path: v.string(),
+    content: v.string(),
+    cursorLine: v.optional(v.number()),
+    cursorColumn: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const existing = await ctx.db
+      .query("drafts")
+      .withIndex("by_userKey", (q) =>
+        q.eq("userId", userId).eq("repo", args.repo).eq("branch", args.branch).eq("path", args.path),
+      )
+      .unique();
+    const doc = {
+      userId,
+      repo: args.repo,
+      branch: args.branch,
+      path: args.path,
+      content: args.content.length <= DRAFT_MAX_CHARS ? args.content : args.content.slice(0, DRAFT_MAX_CHARS),
+      cursorLine: args.cursorLine,
+      cursorColumn: args.cursorColumn,
+      updatedAt: Date.now(),
+    };
+    if (existing !== null) {
+      await ctx.db.replace(existing._id, doc);
+    } else {
+      await ctx.db.insert("drafts", doc);
+    }
+  },
+});
+
+/** Drop a draft after it's been committed (or deliberately discarded). */
+export const deleteDraft = mutation({
+  args: {
+    repo: v.string(),
+    branch: v.string(),
+    path: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const existing = await ctx.db
+      .query("drafts")
+      .withIndex("by_userKey", (q) =>
+        q.eq("userId", userId).eq("repo", args.repo).eq("branch", args.branch).eq("path", args.path),
+      )
+      .unique();
+    if (existing !== null) await ctx.db.delete(existing._id);
+  },
+});
+
+/** Full draft content for a single file. */
+export const getDraft = query({
+  args: {
+    repo: v.string(),
+    branch: v.string(),
+    path: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+    const existing = await ctx.db
+      .query("drafts")
+      .withIndex("by_userKey", (q) =>
+        q.eq("userId", userId).eq("repo", args.repo).eq("branch", args.branch).eq("path", args.path),
+      )
+      .unique();
+    if (existing === null) return null;
+    return {
+      repo: existing.repo,
+      branch: existing.branch,
+      path: existing.path,
+      content: existing.content,
+      cursorLine: existing.cursorLine ?? null,
+      cursorColumn: existing.cursorColumn ?? null,
+      updatedAt: existing.updatedAt,
+    };
+  },
+});
+
+/** Vault listing (metadata + preview only — content loads per file). */
+export const listDrafts = query({
+  args: {},
+  handler: async (ctx): Promise<
+    Array<{
+      repo: string;
+      branch: string;
+      path: string;
+      preview: string;
+      updatedAt: number;
+    }>
+  > => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const drafts = await ctx.db
+      .query("drafts")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    return drafts
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 200)
+      .map((d) => ({
+        repo: d.repo,
+        branch: d.branch,
+        path: d.path,
+        preview:
+          d.content.slice(0, DRAFT_SNIPPET_CHARS).replace(/\s+/g, " ").trim() ||
+          "(empty draft)",
+        updatedAt: d.updatedAt,
+      }));
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Live presence (which devices are in the workspace right now)
+// ---------------------------------------------------------------------------
+
+const SESSION_TTL_MS = 60_000; // a session is stale after a minute of silence
+
+/** Heartbeat: upsert this tab's session so other devices see it. */
+export const updateLiveSession = mutation({
+  args: {
+    deviceId: v.string(),
+    label: v.string(),
+    repo: v.optional(v.string()),
+    branch: v.optional(v.string()),
+    path: v.optional(v.string()),
+    cursorLine: v.optional(v.number()),
+    cursorColumn: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const existing = await ctx.db
+      .query("liveSessions")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .filter((q) => q.eq(q.field("deviceId"), args.deviceId))
+      .unique();
+    const doc = {
+      userId,
+      deviceId: args.deviceId,
+      label: args.label,
+      repo: args.repo,
+      branch: args.branch,
+      path: args.path,
+      cursorLine: args.cursorLine,
+      cursorColumn: args.cursorColumn,
+      updatedAt: Date.now(),
+    };
+    if (existing !== null) {
+      await ctx.db.replace(existing._id, doc);
+    } else {
+      await ctx.db.insert("liveSessions", doc);
+    }
+  },
+});
+
+/** Remove this tab's session (on unmount / sign-out). */
+export const clearLiveSession = mutation({
+  args: { deviceId: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return;
+    const existing = await ctx.db
+      .query("liveSessions")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .filter((q) => q.eq(q.field("deviceId"), args.deviceId))
+      .unique();
+    if (existing !== null) await ctx.db.delete(existing._id);
+  },
+});
+
+/** Other live devices (excluding this tab), fresher than a minute. */
+export const listLiveSessions = query({
+  args: { deviceId: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return [];
+    const now = Date.now();
+    const sessions = await ctx.db
+      .query("liveSessions")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    return sessions
+      .filter((s) => s.deviceId !== args.deviceId && now - s.updatedAt < SESSION_TTL_MS)
+      .map((s) => ({
+        deviceId: s.deviceId,
+        label: s.label,
+        repo: s.repo ?? null,
+        branch: s.branch ?? null,
+        path: s.path ?? null,
+        cursorLine: s.cursorLine ?? null,
+        cursorColumn: s.cursorColumn ?? null,
+      }));
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Internal mutations (called from HTTP actions only)
 // ---------------------------------------------------------------------------
 

@@ -205,12 +205,26 @@ export const aiSuggest = action({
     openFile: v.optional(
       v.object({ path: v.string(), content: v.string() }),
     ),
+    // Multi-turn: the previous exchanges in this conversation, newest last.
+    history: v.optional(
+      v.array(
+        v.object({
+          role: v.union(v.literal("user"), v.literal("assistant")),
+          content: v.string(),
+        }),
+      ),
+    ),
   },
   handler: async (ctx, args) => {
     const instruction = args.instruction.trim().slice(0, MAX_INSTRUCTION_CHARS);
     if (!instruction) {
       throw new Error("Describe what you'd like Aria to change.");
     }
+    // Keep the conversation bounded so long sessions stay cheap.
+    const history = (args.history ?? []).slice(-8).map((h) => ({
+      role: h.role,
+      content: h.content.slice(0, 2000),
+    }));
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       throw new Error(
@@ -282,7 +296,9 @@ Rules:
 - Make the smallest set of changes that fully satisfies the request. Never reformat unrelated code, never touch unrelated files.
 - Never propose .env files, credentials, private keys, tokens, or anything secret-looking.
 - If the request is ambiguous, choose the most sensible interpretation and say so in the explanation.
-- If the request is impossible or would require destructive actions (deleting files, rewriting history), reply with an explanation and an empty changes array.`;
+- If the request is impossible or would require destructive actions (deleting files, rewriting history), reply with an explanation and an empty changes array.
+
+If the conversation history is not empty, this is a follow-up to earlier requests. You are continuing the same editing session: honor earlier context, build on (or fix) the changes you already proposed, and never repeat changes you already made unless the user asks you to change them again. The "changes" array must still contain the complete final contents of every file you touch in this turn.`;
 
     const userPrompt = `Repository: ${args.owner}/${args.repo} (branch: ${args.branch})
 ${openFileHint}
@@ -293,10 +309,11 @@ ${fileList}
 File contents read so far:
 ${contextBlock}
 
-The developer's request:
+${history.length > 0 ? "Earlier in this conversation:\n" + history.map((h) => `${h.role === "user" ? "The developer asked" : "You replied"}: ${h.content}`).join("\n\n") + "\n\n" : ""}The developer's latest request:
 ${instruction}`;
 
-    // 4. Call the model.
+    // 4. Call the model with the conversation history so follow-ups build on
+    //    earlier turns instead of starting from scratch.
     const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
     let data: {
       choices?: Array<{ message?: { content?: string } }>;
@@ -315,6 +332,7 @@ ${instruction}`;
           temperature: 0.2,
           messages: [
             { role: "system", content: systemPrompt },
+            ...history.map((h) => ({ role: h.role, content: h.content })),
             { role: "user", content: userPrompt },
           ],
         }),

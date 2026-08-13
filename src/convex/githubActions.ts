@@ -94,6 +94,35 @@ interface GitHubMergeResponse {
   sha?: string | null;
 }
 
+interface GitHubCheckRun {
+  name?: string | null;
+  status?: string | null;
+  conclusion?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  details_url?: string | null;
+  app?: { name?: string | null } | null;
+}
+
+interface GitHubCommitStatus {
+  state?: string | null;
+  context?: string | null;
+  description?: string | null;
+  target_url?: string | null;
+}
+
+interface GitHubIssue {
+  number: number;
+  title: string;
+  html_url: string;
+  user?: { login: string } | null;
+  created_at?: string | null;
+  comments?: number;
+  pull_request?: unknown;
+  body?: string | null;
+  labels?: Array<{ name: string }>;
+}
+
 export interface CommitResult {
   sha: string | null;
   message: string;
@@ -968,5 +997,196 @@ export const mergePullRequest = action({
       sha: data.sha ?? null,
       message: data.message ?? `Merged pull request #${args.number}`,
     };
+  },
+});
+
+/**
+ * CI status for a branch: the combined result of GitHub check runs and
+ * legacy commit statuses on the branch tip. Powers the "did my commit pass?"
+ * chip and the verified-agent gate (don't merge a red build).
+ */
+export const getBranchChecks = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    branch: v.string(),
+  },
+  handler: async (ctx, args): Promise<{
+    sha: string;
+    overall: "none" | "pending" | "failure" | "success";
+    checkRuns: Array<{
+      name: string;
+      status: string;
+      conclusion: string | null;
+      detailsUrl: string | null;
+    }>;
+    statusContexts: Array<{
+      context: string;
+      state: string;
+      description: string | null;
+      targetUrl: string | null;
+    }>;
+  }> => {
+    const token = await getToken(ctx);
+    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+
+    // Branch tip commit.
+    const commit = await githubFetch<GitHubCommitItem>(
+      `${repoUrl}/commits/${encodeURIComponent(args.branch)}`,
+      token,
+    );
+    const sha = commit.sha;
+
+    // Check runs (GitHub Actions and other apps).
+    let checkRuns: Array<{
+      name: string;
+      status: string;
+      conclusion: string | null;
+      detailsUrl: string | null;
+    }> = [];
+    try {
+      const checks = await githubFetch<{ check_runs: GitHubCheckRun[] }>(
+        `${repoUrl}/commits/${sha}/check-runs?per_page=50`,
+        token,
+      );
+      checkRuns = (checks.check_runs ?? []).map((c) => ({
+        name: c.name ?? c.app?.name ?? "check",
+        status: c.status ?? "",
+        conclusion: c.conclusion ?? null,
+        detailsUrl: c.details_url ?? null,
+      }));
+    } catch {
+      // Some repos have no checks — that's fine.
+    }
+
+    // Legacy commit status contexts.
+    let statusContexts: Array<{
+      context: string;
+      state: string;
+      description: string | null;
+      targetUrl: string | null;
+    }> = [];
+    try {
+      const status = await githubFetch<{ statuses: GitHubCommitStatus[] }>(
+        `${repoUrl}/commits/${sha}/status`,
+        token,
+      );
+      statusContexts = (status.statuses ?? []).map((s) => ({
+        context: s.context ?? "",
+        state: s.state ?? "",
+        description: s.description ?? null,
+        targetUrl: s.target_url ?? null,
+      }));
+    } catch {
+      // No status contexts either.
+    }
+
+    const failedConclusions = new Set([
+      "failure",
+      "timed_out",
+      "cancelled",
+      "action_required",
+    ]);
+    const anyFailure =
+      statusContexts.some((s) => s.state === "failure") ||
+      checkRuns.some((c) => c.conclusion !== null && failedConclusions.has(c.conclusion));
+    const anyPending =
+      statusContexts.some((s) => s.state === "pending") ||
+      checkRuns.some((c) => c.status === "in_progress" || c.status === "queued");
+
+    let overall: "none" | "pending" | "failure" | "success";
+    if (statusContexts.length === 0 && checkRuns.length === 0) {
+      overall = "none";
+    } else if (anyFailure) {
+      overall = "failure";
+    } else if (anyPending) {
+      overall = "pending";
+    } else {
+      overall = "success";
+    }
+
+    return { sha, overall, checkRuns, statusContexts };
+  },
+});
+
+/** Files changed by a pull request, with unified-diff patches for review. */
+export const getPullRequestFiles = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    number: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<
+      Array<{
+        filename: string;
+        status: string;
+        additions: number;
+        deletions: number;
+        patch?: string;
+      }>
+    >(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls/${args.number}/files?per_page=100`,
+      token,
+    );
+    return data.map((f) => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions ?? 0,
+      deletions: f.deletions ?? 0,
+      patch: f.patch ?? null,
+    }));
+  },
+});
+
+/** Full-text code search inside a repo (GitHub code search API). */
+export const searchCode = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    query: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const q = `${args.query.trim()} repo:${args.owner}/${args.repo}`;
+    const data = await githubFetch<{
+      items: Array<{ path: string; name: string; html_url: string }>;
+    }>(
+      `${GITHUB_API}/search/code?q=${encodeURIComponent(q)}&per_page=20`,
+      token,
+    );
+    return (data.items ?? []).map((i) => ({
+      path: i.path,
+      name: i.name,
+      htmlUrl: i.html_url,
+    }));
+  },
+});
+
+/** Open issues for a repo (pull requests excluded). */
+export const listIssues = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<GitHubIssue[]>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/issues?state=open&sort=updated&direction=desc&per_page=50`,
+      token,
+    );
+    return data
+      .filter((issue) => !issue.pull_request)
+      .map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        htmlUrl: issue.html_url,
+        author: issue.user?.login ?? "unknown",
+        createdAt: issue.created_at ?? null,
+        comments: issue.comments ?? 0,
+        body: issue.body ?? null,
+        labels: (issue.labels ?? []).map((l) => l.name),
+      }));
   },
 });

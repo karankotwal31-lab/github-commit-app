@@ -64,6 +64,37 @@ const schema = defineSchema(
       cursorColumn: v.optional(v.number()),
       updatedAt: v.number(),
     }).index("by_userId", ["userId"]),
+
+    // Draft vault: an unsaved copy of every file the user has edited, keyed
+    // by (repo, branch, path), so no work is ever trapped in one browser tab
+    // and anything can be resumed from any device.
+    drafts: defineTable({
+      userId: v.id("users"),
+      repo: v.string(), // full name, e.g. "owner/name"
+      branch: v.string(),
+      path: v.string(),
+      content: v.string(), // capped server-side
+      cursorLine: v.optional(v.number()),
+      cursorColumn: v.optional(v.number()),
+      updatedAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userKey", ["userId", "repo", "branch", "path"]),
+
+    // Live presence: one row per open browser tab, updated as the user moves
+    // between repos/files and types. The reactive query shows which other
+    // devices are in the workspace right now (and where they are).
+    liveSessions: defineTable({
+      userId: v.id("users"),
+      deviceId: v.string(), // per-tab id, regenerated on each load
+      label: v.string(), // human label, e.g. "Chrome · Desktop"
+      repo: v.optional(v.string()),
+      branch: v.optional(v.string()),
+      path: v.optional(v.string()),
+      cursorLine: v.optional(v.number()),
+      cursorColumn: v.optional(v.number()),
+      updatedAt: v.number(),
+    }).index("by_userId", ["userId"]),
   },
   {
     schemaValidation: false,
