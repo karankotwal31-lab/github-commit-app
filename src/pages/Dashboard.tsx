@@ -43,16 +43,23 @@ import {
   type PullRequestResult,
   type Repository,
 } from "@/lib/github";
-import { diffLines, type DiffLine } from "@/lib/diff";
+import { diffLines, parseUnifiedPatch, type DiffLine } from "@/lib/diff";
 import { secretRisk } from "@/lib/secrets";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
+  Archive,
   ArrowLeft,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CircleDot,
+  Clock,
+  CornerDownLeft,
+  ExternalLink,
   FileCode2,
   FilePlus2,
+  FileSearch,
   Folder,
   FolderOpen,
   GitBranch,
@@ -62,6 +69,7 @@ import {
   Loader2,
   Lock,
   LogOut,
+  MessageSquare,
   Music2,
   Pencil,
   Plus,
@@ -72,6 +80,8 @@ import {
   Sparkles,
   Trash2,
   Unplug,
+  Users,
+  XCircle,
 } from "lucide-react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -326,6 +336,97 @@ function DiffView({ lines }: { lines: DiffLine[] }) {
       )}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Small shared pieces
+// ---------------------------------------------------------------------------
+
+/** Relative time for vault rows and presence, e.g. "3m ago". */
+function timeAgo(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  if (diff < 60_000) return "just now";
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(timestamp).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** Compact CI chip shown next to the branch selector. */
+function ChecksChip({
+  overall,
+  loading,
+  onClick,
+}: {
+  overall: "none" | "pending" | "failure" | "success" | null;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  const state =
+    overall === "success"
+      ? { dot: "bg-emerald-500", label: "Checks passed", cls: "text-neutral-600" }
+      : overall === "failure"
+        ? { dot: "bg-red-500", label: "Checks failed", cls: "text-red-600" }
+        : overall === "pending"
+          ? { dot: "bg-amber-500 animate-pulse", label: "Checks running", cls: "text-amber-700" }
+          : { dot: "bg-neutral-300", label: "No checks", cls: "text-neutral-400" };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={loading}
+      className="flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-xs hover:bg-neutral-100"
+      title={
+        overall === null || overall === "none"
+          ? "CI status for this branch"
+          : "View CI checks for this branch"
+      }
+    >
+      {loading ? (
+        <Loader2 className="size-3 animate-spin text-neutral-400" />
+      ) : (
+        <span className={`size-1.5 rounded-full ${state.dot}`} />
+      )}
+      <span className={`truncate ${state.cls}`}>{state.label}</span>
+    </button>
+  );
+}
+
+/**
+ * Mounted next to the open file: queries the draft vault for that exact
+ * (repo, branch, path) and reports once whether an unsaved copy exists, so
+ * the workspace can restore it. Fires exactly once per mount — the parent
+ * keys it by path.
+ */
+function DraftRestorer({
+  repo,
+  branch,
+  path,
+  onDraft,
+}: {
+  repo: string;
+  branch: string;
+  path: string;
+  onDraft: (draft: {
+    content: string;
+    cursorLine: number | null;
+    cursorColumn: number | null;
+  }) => void;
+}) {
+  const draft = useQuery(api.github.getDraft, { repo, branch, path });
+  const fired = useRef(false);
+  useEffect(() => {
+    if (draft === undefined || fired.current) return;
+    fired.current = true;
+    if (draft) onDraft(draft);
+  }, [draft, onDraft]);
+  return null;
 }
 
 // ---------------------------------------------------------------------------
