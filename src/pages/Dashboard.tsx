@@ -21,6 +21,14 @@ import { useNavigate, useSearchParams } from "react-router";
 import { ConnectScreen } from "@/components/workspace-shared";
 import { WorkspaceView } from "@/components/WorkspaceView";
 
+// Per-tab device id for live presence. Module-scope so it is generated once
+// per page load (not on every render — keeps the component pure) and stays
+// stable for the lifetime of this tab.
+const DEVICE_ID =
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
 // ---------------------------------------------------------------------------
 // Workspace
 // ---------------------------------------------------------------------------
@@ -77,15 +85,10 @@ function Workspace({
 
   // Live presence: one row per browser tab. This tab heartbeats so other
   // devices see where it is, and we subscribe to everyone else's sessions.
-  const deviceIdRef = useRef<string>(
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `dev-${Math.random().toString(36).slice(2)}`,
-  );
   const updateLiveSession = useMutation(api.github.updateLiveSession);
   const clearLiveSession = useMutation(api.github.clearLiveSession);
   const liveSessions = useQuery(api.github.listLiveSessions, {
-    deviceId: deviceIdRef.current,
+    deviceId: DEVICE_ID,
   });
   const deviceLabel = useMemo(() => {
     if (typeof navigator === "undefined") return "Device";
@@ -590,7 +593,7 @@ function Workspace({
     const beat = () => {
       const p = presenceRef.current;
       void updateLiveSession({
-        deviceId: deviceIdRef.current,
+        deviceId: DEVICE_ID,
         label: deviceLabel,
         repo: p.repo ?? undefined,
         branch: p.branch ?? undefined,
@@ -605,7 +608,7 @@ function Workspace({
     const timer = setInterval(beat, 15_000);
     return () => {
       clearInterval(timer);
-      void clearLiveSession({ deviceId: deviceIdRef.current }).catch(() => {});
+      void clearLiveSession({ deviceId: DEVICE_ID }).catch(() => {});
     };
   }, [updateLiveSession, clearLiveSession, deviceLabel]);
 

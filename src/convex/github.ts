@@ -370,6 +370,17 @@ export const updateLiveSession = mutation({
       await ctx.db.replace(existing._id, doc);
     } else {
       await ctx.db.insert("liveSessions", doc);
+      // A brand-new tab means something else may have gone stale (closed tab,
+      // crashed browser, refresh). Prune this user's silent sessions so the
+      // table doesn't accumulate one row per tab that was ever opened.
+      const stale = await ctx.db
+        .query("liveSessions")
+        .withIndex("by_userId", (q) => q.eq("userId", userId))
+        .filter((q) => q.lt(q.field("updatedAt"), Date.now() - SESSION_TTL_MS))
+        .collect();
+      for (const session of stale) {
+        await ctx.db.delete(session._id);
+      }
     }
   },
 });

@@ -88,11 +88,13 @@ function Carousel({
 
   React.useEffect(() => {
     if (!api || !setApi) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- vendored shadcn pattern: report the Embla instance to the parent exactly once on mount.
     setApi(api)
   }, [api, setApi])
 
   React.useEffect(() => {
     if (!api) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- vendored shadcn pattern: fire the initial onSelect exactly once when the Embla instance mounts.
     onSelect(api)
     api.on("reInit", onSelect)
     api.on("select", onSelect)
