@@ -1,13 +1,18 @@
 // Bundled Monaco setup for Vite: wires the npm-installed monaco-editor into
 // @monaco-editor/react and registers web workers so the editor works offline
 // in the app bundle (no CDN dependency).
+//
+// NOTE: monaco-editor >= 0.56 maps deep imports through its "exports" field
+// ("monaco-editor/editor/editor.worker" -> "esm/vs/editor/editor.worker.js"),
+// so the old "monaco-editor/esm/vs/..." paths no longer resolve. Use the
+// prefixed paths below.
 import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
-import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
-import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+import editorWorker from "monaco-editor/editor/editor.worker?worker";
+import jsonWorker from "monaco-editor/language/json/json.worker?worker";
+import cssWorker from "monaco-editor/language/css/css.worker?worker";
+import htmlWorker from "monaco-editor/language/html/html.worker?worker";
+import tsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 
 (self as unknown as { MonacoEnvironment: unknown }).MonacoEnvironment = {
   getWorker(_moduleId: string, label: string) {
