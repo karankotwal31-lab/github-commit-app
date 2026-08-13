@@ -1,4 +1,5 @@
 import { api } from "@/convex/_generated/api";
+import { CodeEditor } from "@/components/CodeEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -67,6 +68,7 @@ import {
   RotateCcw,
   Search,
   ShieldAlert,
+  Sparkles,
   Trash2,
   Unplug,
 } from "lucide-react";
@@ -356,6 +358,7 @@ function Workspace({
   const listTreeFiles = useAction(api.githubActions.listTreeFiles);
   const getCommitHistory = useAction(api.githubActions.getCommitHistory);
   const revertCommit = useAction(api.githubActions.revertCommit);
+  const aiSuggest = useAction(api.aiActions.aiSuggest);
   const disconnect = useMutation(api.github.disconnect);
 
   const [repos, setRepos] = useState<Repository[] | null>(null);
@@ -440,6 +443,23 @@ function Workspace({
     | null
   >(null);
   const [reverting, setReverting] = useState(false);
+
+  // The AI assistant: a grounded, diff-gated proposal flow. The agent never
+  // commits — it proposes changes that the user reviews and stages through
+  // the normal staging pipeline.
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiResult, setAiResult] = useState<{
+    explanation: string;
+    changes: Array<{
+      path: string;
+      action: "update" | "create";
+      content: string;
+      originalContent: string;
+    }>;
+  } | null>(null);
 
   const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
 
@@ -606,6 +626,67 @@ function Workspace({
     } finally {
       setReverting(false);
     }
+  };
+
+  const handleAiAsk = async () => {
+    if (!selectedRepo || !currentBranch) return;
+    const instruction = aiInstruction.trim();
+    if (!instruction) return;
+    setAiLoading(true);
+    setAiError(null);
+    setAiResult(null);
+    try {
+      const result = await aiSuggest({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        branch: currentBranch,
+        instruction,
+        openFile:
+          openFile && !isNewFile
+            ? { path: openFile.path, content: editorContent }
+            : undefined,
+      });
+      setAiResult(result);
+    } catch (e) {
+      setAiError(errorMessage(e));
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const stageAiChange = (change: {
+    path: string;
+    action: "update" | "create";
+    content: string;
+    originalContent: string;
+  }) => {
+    const risk = secretRisk(change.path, change.content);
+    if (risk.risky) {
+      toast.warning(
+        "This proposed file looks like it contains secrets — Aria will ask you to confirm before committing it.",
+      );
+    }
+    setStaged((prev) => [
+      ...prev.filter((f) => f.path !== change.path),
+      {
+        path: change.path,
+        originalContent: change.originalContent,
+        content: change.content,
+        sha: "",
+        action: change.action,
+      },
+    ]);
+    toast.success(`Staged ${change.path}`);
+  };
+
+  const stageAllAiChanges = () => {
+    if (!aiResult) return;
+    for (const change of aiResult.changes) stageAiChange(change);
+    const n = aiResult.changes.length;
+    setAiOpen(false);
+    toast.success(
+      `Staged ${n} change${n > 1 ? "s" : ""} — review the diffs before committing`,
+    );
   };
 
   // ⌘K / Ctrl+K opens the file quick-jump.
@@ -1115,6 +1196,117 @@ function Workspace({
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground antialiased">
+      {/* Ask Aria — the grounded AI assistant */}
+      <Dialog open={aiOpen} onOpenChange={setAiOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Ask Aria</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <textarea
+              value={aiInstruction}
+              onChange={(e) => setAiInstruction(e.target.value)}
+              placeholder="What should I change? For example: “Add input validation to the signup form” or “Fix the race condition in the file loader.”"
+              rows={3}
+              spellCheck={false}
+              className="w-full resize-none rounded-md border border-neutral-200 bg-background p-3 font-mono text-sm leading-6 text-neutral-900 outline-none focus:border-neutral-400"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  if (!aiLoading && aiInstruction.trim()) handleAiAsk();
+                }
+              }}
+            />
+            <p className="text-xs leading-5 text-neutral-400">
+              Aria reads the current branch and{" "}
+              {openFile && !isNewFile ? (
+                <span className="font-mono text-neutral-500">
+                  {openFile.path}
+                </span>
+              ) : (
+                "no open file"
+              )}
+              . It proposes changes you review and stage — nothing is committed
+              automatically.
+            </p>
+            <Button
+              type="button"
+              className="h-9 w-full gap-1.5"
+              onClick={handleAiAsk}
+              disabled={aiLoading || !aiInstruction.trim()}
+            >
+              {aiLoading ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Sparkles className="size-4" />
+              )}
+              {aiLoading ? "Thinking…" : "Propose changes"}
+            </Button>
+            {aiError && (
+              <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+                {aiError}
+              </p>
+            )}
+            {aiResult && (
+              <div className="flex flex-col gap-3">
+                <p className="text-sm leading-6 text-neutral-700">
+                  {aiResult.explanation}
+                </p>
+                <div className="max-h-72 overflow-auto rounded-lg border border-neutral-200">
+                  <ul className="divide-y divide-neutral-100">
+                    {aiResult.changes.map((change) => (
+                      <li key={change.path} className="p-3">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`shrink-0 rounded px-1 font-mono text-[10px] font-semibold ${
+                              change.action === "create"
+                                ? "bg-emerald-50 text-emerald-900"
+                                : "bg-amber-50 text-amber-900"
+                            }`}
+                          >
+                            {change.action === "create" ? "A" : "M"}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate font-mono text-sm text-neutral-800">
+                            {change.path}
+                          </span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 shrink-0 gap-1 text-xs"
+                            onClick={() => stageAiChange(change)}
+                          >
+                            <Plus className="size-3" />
+                            Stage
+                          </Button>
+                        </div>
+                        <div className="mt-2 max-h-48 overflow-auto rounded border border-neutral-100">
+                          <DiffView
+                            lines={diffLines(
+                              change.originalContent,
+                              change.content,
+                            )}
+                          />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <Button
+                  type="button"
+                  className="h-9 w-full gap-1.5"
+                  onClick={stageAllAiChanges}
+                >
+                  <Plus className="size-4" />
+                  Stage all {aiResult.changes.length} change
+                  {aiResult.changes.length > 1 ? "s" : ""}
+                </Button>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Revert confirmation */}
       <AlertDialog
         open={revertTarget !== null}
@@ -1369,6 +1561,19 @@ function Workspace({
                   </button>
                   <button
                     type="button"
+                    onClick={() => {
+                      setAiInstruction("");
+                      setAiResult(null);
+                      setAiError(null);
+                      setAiOpen(true);
+                    }}
+                    className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+                    title="Ask Aria"
+                  >
+                    <Sparkles className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setDialog({ kind: "newFile" })}
                     className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
                     title="New file"
@@ -1588,13 +1793,11 @@ function Workspace({
                 ) : viewMode === "diff" ? (
                   <DiffView lines={diff} />
                 ) : (
-                  <textarea
+                  <CodeEditor
+                    key={openFile?.path ?? "editor"}
+                    path={openFile?.path ?? ""}
                     value={editorContent}
-                    onChange={(e) => setEditorContent(e.target.value)}
-                    spellCheck={false}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    className="h-full w-full resize-none bg-background p-4 font-mono text-sm leading-6 text-neutral-900 outline-none"
+                    onChange={setEditorContent}
                   />
                 )}
               </div>
