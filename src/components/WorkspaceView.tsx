@@ -1,4 +1,5 @@
 import { CodeEditor } from "@/components/CodeEditor";
+import { RuntimeDialog } from "@/components/RuntimeDialog";
 import {
   Wordmark,
   InputDialog,
@@ -34,7 +35,7 @@ import {
 import { formatDate, formatSize, type Repository } from "@/lib/github";
 import { diffLines, parseUnifiedPatch } from "@/lib/diff";
 import { cn } from "@/lib/utils";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Archive,
   ArrowLeft,
@@ -43,6 +44,7 @@ import {
   ChevronRight,
   CircleDot,
   Clock,
+  Cpu,
   ExternalLink,
   Eye,
   FileCode2,
@@ -460,6 +462,10 @@ export function WorkspaceView(props: WorkspaceViewProps) {
     deleting,
     handleDelete,
   } = props;
+
+  // Local UI state: the Runtime & Plugins dialog (device sensing + plugin
+  // activation prompts). Kept here because it's purely presentational.
+  const [runtimeOpen, setRuntimeOpen] = useState(false);
 
   const handleOpenHistory = () => {
     setHistoryOpen(true);
@@ -1243,10 +1249,23 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         </AlertDialogContent>
       </AlertDialog>
 
+      <RuntimeDialog open={runtimeOpen} onOpenChange={setRuntimeOpen} />
+
       {/* Top bar */}
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 px-4">
         <Wordmark />
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setRuntimeOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100"
+            title="Runtime & plugins — what Aria detected on this device"
+          >
+            <Cpu className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Runtime
+            </span>
+          </button>
           {liveSessions && liveSessions.length > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
