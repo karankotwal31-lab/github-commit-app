@@ -496,6 +496,10 @@ function Workspace({
   const restoredRef = useRef(false);
   const restoringRef = useRef(false);
 
+  // Stale-response guard: every file-open bumps this counter, so a slow older
+  // request can't clobber the file the user just opened.
+  const fileRequestRef = useRef(0);
+
   const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
 
   // On mobile the workspace is a single drill-down screen; desktop shows all
@@ -651,11 +655,16 @@ function Workspace({
       setRevertTarget(null);
       setPrsOpen(false);
       setPrs(null);
-      setPath("");
+      setPath(saved.path ?? "");
       setViewMode("edit");
-      loadEntries(repo, saved.branch, "");
+      loadEntries(repo, saved.branch, saved.path ?? "");
       loadBranches(repo);
       loadTreeFiles(repo, saved.branch);
+      toast.success(
+        saved.openPath
+          ? `Resumed ${saved.repo} on ${saved.branch} — ${saved.openPath} is open${saved.draft ? ", with your unsaved edits" : ""}.`
+          : `Resumed ${saved.repo} on ${saved.branch}.`,
+      );
       if (saved.openPath) {
         const openPath = saved.openPath;
         void (async () => {
@@ -712,6 +721,7 @@ function Workspace({
       void saveWorkspaceState({
         repo: selectedRepo.fullName,
         branch: currentBranch,
+        path,
         openPath: openFile?.path,
         // Only persist content that differs from what's committed — a clean
         // file shouldn't resurrect stale edits on the other device.
@@ -726,6 +736,7 @@ function Workspace({
   }, [
     selectedRepo,
     currentBranch,
+    path,
     openFile,
     isNewFile,
     editorContent,
@@ -966,6 +977,7 @@ function Workspace({
       loadEntries(selectedRepo, currentBranch, entry.path);
       return;
     }
+    const requestId = ++fileRequestRef.current;
     setFileLoading(true);
     setStatus(null);
     setCursorSync(null);
@@ -976,15 +988,17 @@ function Workspace({
         path: entry.path,
         branch: currentBranch,
       });
+      if (requestId !== fileRequestRef.current) return;
       setOpenFile({ ...data, path: entry.path });
       setEditorContent(data.content);
       setIsNewFile(false);
       setLastCommit(null);
       setPrResult(null);
     } catch (e) {
+      if (requestId !== fileRequestRef.current) return;
       setStatus({ kind: "err", text: errorMessage(e) });
     } finally {
-      setFileLoading(false);
+      if (requestId === fileRequestRef.current) setFileLoading(false);
     }
   };
 
@@ -1001,6 +1015,7 @@ function Workspace({
     if (!selectedRepo || !currentBranch) return;
     setSearchOpen(false);
     setSearchQuery("");
+    const requestId = ++fileRequestRef.current;
     setFileLoading(true);
     setStatus(null);
     setCursorSync(null);
@@ -1011,15 +1026,17 @@ function Workspace({
         path,
         branch: currentBranch,
       });
+      if (requestId !== fileRequestRef.current) return;
       setOpenFile({ ...data, path });
       setEditorContent(data.content);
       setIsNewFile(false);
       setLastCommit(null);
       setPrResult(null);
     } catch (e) {
+      if (requestId !== fileRequestRef.current) return;
       setStatus({ kind: "err", text: errorMessage(e) });
     } finally {
-      setFileLoading(false);
+      if (requestId === fileRequestRef.current) setFileLoading(false);
     }
   };
 

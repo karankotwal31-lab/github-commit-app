@@ -127,6 +127,7 @@ export const getWorkspaceState = query({
     return {
       repo: state.repo,
       branch: state.branch,
+      path: state.path ?? null,
       openPath: state.openPath ?? null,
       draft: state.draft ?? null,
       cursorLine: state.cursorLine ?? null,
@@ -141,6 +142,7 @@ export const saveWorkspaceState = mutation({
   args: {
     repo: v.string(),
     branch: v.string(),
+    path: v.optional(v.string()),
     openPath: v.optional(v.string()),
     draft: v.optional(v.string()),
     cursorLine: v.optional(v.number()),
@@ -157,6 +159,7 @@ export const saveWorkspaceState = mutation({
       userId,
       repo: args.repo,
       branch: args.branch,
+      path: args.path,
       openPath: args.openPath,
       // Cap the draft so a huge file doesn't bloat the row.
       draft: args.draft && args.draft.length <= 500_000 ? args.draft : undefined,

@@ -6,6 +6,7 @@ import {
   GitCommitHorizontal,
   GitPullRequest,
   Lock,
+  MonitorSmartphone,
   Music2,
   Plus,
 } from "lucide-react";
@@ -51,9 +52,9 @@ const FEATURES = [
     body: "Commit on a branch and open a PR straight from the desk — title filled in, link ready.",
   },
   {
-    icon: GitCommitHorizontal,
-    title: "One quiet workspace",
-    body: "No cloning, no terminals, no tabs. Every repository you own or collaborate on, in one place.",
+    icon: MonitorSmartphone,
+    title: "Continue anywhere",
+    body: "Start an edit on your desktop and finish it on your phone. Aria remembers the repo, branch, open file, unsaved changes, and cursor — wherever you left off.",
   },
   {
     icon: Lock,
@@ -77,7 +78,7 @@ const SAMPLE_COMMITS = [
   },
   {
     sha: "4c5d6e7",
-    message: "Allow creating branches from the picker",
+    message: "Resume the phone draft on the desk",
     file: "src/pages/Dashboard.tsx",
     when: "yesterday",
   },
@@ -270,7 +271,8 @@ export default function Landing() {
               Aria is a quiet workspace for your GitHub — browse any
               repository, switch branches, create, rename, and delete files,
               review the diff, and push changes or open a pull request without
-              ever leaving the page.
+              ever leaving the page. Start an edit on your desktop and finish
+              it on your phone — Aria picks up right where you left off.
             </p>
             <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row">
               <Link
