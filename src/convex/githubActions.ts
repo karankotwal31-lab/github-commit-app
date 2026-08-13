@@ -51,6 +51,30 @@ interface GitHubRef {
   object: { sha: string };
 }
 
+interface GitHubCommitItem {
+  sha: string;
+  html_url: string;
+  commit: {
+    message: string;
+    author: { name: string | null; date: string | null } | null;
+  };
+  parents?: Array<{ sha: string }>;
+  tree?: { sha: string };
+}
+
+interface GitHubTreeEntry {
+  path: string;
+  type: string;
+  mode?: string;
+  sha?: string | null;
+}
+
+interface CompareFile {
+  filename: string;
+  previous_filename?: string;
+  status: string;
+}
+
 interface GitHubPullRequest {
   number: number;
   title: string;
@@ -425,6 +449,206 @@ export const listTreeFiles = action({
       .filter((entry) => entry.type === "blob")
       .map((entry) => ({ path: entry.path, size: entry.size ?? 0 }))
       .sort((a, b) => a.path.localeCompare(b.path));
+  },
+});
+
+/**
+ * List the recent commit history of a branch (newest first).
+ */
+export const getCommitHistory = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    branch: v.string(),
+    perPage: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const perPage = Math.min(Math.max(args.perPage ?? 50, 1), 100);
+    const data = await githubFetch<GitHubCommitItem[]>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/commits?sha=${encodeURIComponent(
+        args.branch,
+      )}&per_page=${perPage}`,
+      token,
+    );
+    return data.map((c) => ({
+      sha: c.sha,
+      message: c.commit.message,
+      author: c.commit.author?.name ?? "unknown",
+      date: c.commit.author?.date ?? null,
+      htmlUrl: c.html_url,
+    }));
+  },
+});
+
+/**
+ * Revert a commit by creating a new commit that applies its exact reverse,
+ * built with the Git Data API (tree entries → commit → fast-forward ref).
+ * The original commit stays in history untouched.
+ */
+export const revertCommit = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    branch: v.string(),
+    commitSha: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+
+    // 1. The commit being reverted, its message, and its parent.
+    const commit = await githubFetch<GitHubCommitItem>(
+      `${repoUrl}/commits/${args.commitSha}`,
+      token,
+    );
+    const parents = commit.parents ?? [];
+    if (parents.length === 0) {
+      throw new Error(
+        "This is the repository's first commit — it can't be reverted.",
+      );
+    }
+    if (parents.length > 1) {
+      throw new Error(
+        "Merge commits can't be reverted from Aria — revert each branch's changes separately.",
+      );
+    }
+    const parentSha = parents[0].sha;
+
+    // 2. The current branch tip.
+    const ref = await githubFetch<GitHubRef>(
+      `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
+      token,
+    );
+    const headSha = ref.object.sha;
+
+    // 3. Which files the target commit touched.
+    const compare = await githubFetch<{ files?: CompareFile[] }>(
+      `${repoUrl}/compare/${parentSha}...${args.commitSha}`,
+      token,
+    );
+    const files = compare.files ?? [];
+    if (files.length === 0) {
+      throw new Error(
+        "That commit didn't change any files — nothing to revert.",
+      );
+    }
+
+    // 4. The parent tree holds the original blob sha + mode for every path,
+    //    so restoring a file needs no content round-trips.
+    const parentTree = await githubFetch<{ tree: GitHubTreeEntry[] }>(
+      `${repoUrl}/git/trees/${parentSha}?recursive=1`,
+      token,
+    );
+    const parentBlobByPath = new Map<string, { sha: string; mode: string }>();
+    for (const entry of parentTree.tree) {
+      if (entry.type === "blob" && entry.sha) {
+        parentBlobByPath.set(entry.path, {
+          sha: entry.sha,
+          mode: entry.mode ?? "100644",
+        });
+      }
+    }
+
+    // 5. The head commit's tree is the base the reversed changes build on.
+    const headCommit = await githubFetch<GitHubCommitItem>(
+      `${repoUrl}/git/commits/${headSha}`,
+      token,
+    );
+    if (!headCommit.tree?.sha) {
+      throw new Error("Couldn't resolve the current branch tree.");
+    }
+
+    // 6. Build the reverse patch as tree entries:
+    //    - added/copied → delete the file that appeared
+    //    - modified/removed → restore the original content
+    //    - renamed → restore the old path, delete the new one
+    const entries: Array<{
+      path: string;
+      mode: string;
+      type: "blob";
+      sha: string | null;
+    }> = [];
+    const touched = new Set<string>();
+    for (const file of files) {
+      const status = file.status;
+      const newPath = file.filename;
+      const oldPath = file.previous_filename ?? file.filename;
+      if (status === "added" || status === "copied") {
+        if (!touched.has(newPath)) {
+          entries.push({ path: newPath, mode: "100644", type: "blob", sha: null });
+          touched.add(newPath);
+        }
+      } else if (status === "changed") {
+        throw new Error(
+          `${newPath} is a submodule change — Aria can't revert that.`,
+        );
+      } else {
+        // modified / removed / renamed → restore the original path.
+        const restorePath = status === "renamed" ? oldPath : newPath;
+        const original = parentBlobByPath.get(restorePath);
+        if (!original) {
+          throw new Error(
+            `Couldn't find the original version of ${restorePath} to restore.`,
+          );
+        }
+        if (!touched.has(restorePath)) {
+          entries.push({
+            path: restorePath,
+            mode: original.mode,
+            type: "blob",
+            sha: original.sha,
+          });
+          touched.add(restorePath);
+        }
+        if (status === "renamed" && !touched.has(newPath)) {
+          entries.push({ path: newPath, mode: "100644", type: "blob", sha: null });
+          touched.add(newPath);
+        }
+      }
+    }
+
+    // 7. New tree on top of the current tip.
+    const newTree = await githubFetch<{ sha: string }>(
+      `${repoUrl}/git/trees`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({ base_tree: headCommit.tree.sha, tree: entries }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+    // 8. The revert commit, then fast-forward the branch ref.
+    const message = `Revert "${commit.commit.message.split("\n")[0]}"\n\nThis reverts commit ${args.commitSha}.`;
+    const newCommit = await githubFetch<GitHubCommitItem>(
+      `${repoUrl}/git/commits`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          message,
+          tree: newTree.sha,
+          parents: [headSha],
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    await githubFetch<GitHubRef>(
+      `${repoUrl}/git/refs/heads/${encodeURIComponent(args.branch)}`,
+      token,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ sha: newCommit.sha, force: false }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+    return {
+      sha: newCommit.sha,
+      message,
+      htmlUrl: newCommit.html_url,
+    } as CommitResult;
   },
 });
 

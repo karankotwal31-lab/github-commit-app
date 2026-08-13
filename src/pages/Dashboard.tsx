@@ -56,6 +56,7 @@ import {
   GitBranch,
   GitPullRequest,
   Github,
+  History,
   Loader2,
   Lock,
   LogOut,
@@ -63,6 +64,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   ShieldAlert,
   Trash2,
@@ -352,6 +354,8 @@ function Workspace({
   const createPullRequest = useAction(api.githubActions.createPullRequest);
   const commitChanges = useAction(api.githubActions.commitChanges);
   const listTreeFiles = useAction(api.githubActions.listTreeFiles);
+  const getCommitHistory = useAction(api.githubActions.getCommitHistory);
+  const revertCommit = useAction(api.githubActions.revertCommit);
   const disconnect = useMutation(api.github.disconnect);
 
   const [repos, setRepos] = useState<Repository[] | null>(null);
@@ -416,6 +420,26 @@ function Workspace({
   const [treeFilesLoading, setTreeFilesLoading] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Commit history + revert: the branch's recent commits, and the commit
+  // currently queued for reverting.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<
+    Array<{
+      sha: string;
+      message: string;
+      author: string;
+      date: string | null;
+      htmlUrl: string;
+    }> | null
+  >(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [revertTarget, setRevertTarget] = useState<
+    | { sha: string; message: string }
+    | null
+  >(null);
+  const [reverting, setReverting] = useState(false);
 
   const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
 
@@ -517,6 +541,73 @@ function Workspace({
     [listTreeFiles],
   );
 
+  const loadHistory = useCallback(async () => {
+    if (!selectedRepo || !currentBranch) return;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const data = await getCommitHistory({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        branch: currentBranch,
+      });
+      setHistory(data);
+    } catch (e) {
+      setHistoryError(errorMessage(e));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [selectedRepo, currentBranch, getCommitHistory]);
+
+  const handleOpenHistory = () => {
+    setHistoryOpen(true);
+    loadHistory();
+  };
+
+  const handleRevert = async () => {
+    if (!revertTarget || !selectedRepo || !currentBranch) return;
+    setReverting(true);
+    try {
+      const result = await revertCommit({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        branch: currentBranch,
+        commitSha: revertTarget.sha,
+      });
+      toast.success(
+        `Reverted ${revertTarget.sha.slice(0, 7)} → ${result.sha.slice(0, 7)} on ${currentBranch}`,
+      );
+      setRevertTarget(null);
+      setHistoryOpen(false);
+      setHistory(null);
+      setLastCommit(null);
+      setPrResult(null);
+      // Refresh the file tree and any open file so the workspace matches the
+      // new branch tip.
+      loadEntries(selectedRepo, currentBranch, path);
+      if (openFile && !isNewFile) {
+        try {
+          const data = await getFile({
+            owner: ownerOf(selectedRepo.fullName),
+            repo: repoNameOf(selectedRepo.fullName),
+            path: openFile.path,
+            branch: currentBranch,
+          });
+          setOpenFile({ ...data, path: openFile.path });
+          setEditorContent(data.content);
+        } catch {
+          // The revert may have removed this file — close it gracefully.
+          setOpenFile(null);
+          setEditorContent("");
+        }
+      }
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setReverting(false);
+    }
+  };
+
   // ⌘K / Ctrl+K opens the file quick-jump.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -545,6 +636,9 @@ function Workspace({
     setTreeFiles(null);
     setSearchQuery("");
     setSearchOpen(false);
+    setHistoryOpen(false);
+    setHistory(null);
+    setRevertTarget(null);
     setPath("");
     setViewMode("edit");
     loadEntries(repo, repo.defaultBranch, "");
@@ -568,6 +662,9 @@ function Workspace({
     setTreeFiles(null);
     setSearchQuery("");
     setSearchOpen(false);
+    setHistoryOpen(false);
+    setHistory(null);
+    setRevertTarget(null);
     setPath("");
     setViewMode("edit");
   };
@@ -587,6 +684,9 @@ function Workspace({
     setTreeFiles(null);
     setSearchQuery("");
     setSearchOpen(false);
+    setHistoryOpen(false);
+    setHistory(null);
+    setRevertTarget(null);
     setPath("");
     setViewMode("edit");
     loadEntries(selectedRepo, name, "");
