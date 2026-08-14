@@ -13,6 +13,7 @@ import {
   type Repository,
 } from "@/lib/github";
 import { secretRisk } from "@/lib/secrets";
+import { clearPrDraft, readPrDraft } from "@/lib/prDraft";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 import { useAction, useMutation, useQuery } from "convex/react";
@@ -1583,14 +1584,19 @@ function Workspace({
     if (!selectedRepo || !lastCommit || !currentBranch) return;
     setPrOpen(true);
     try {
+      // An AI review may have staged a title/body draft (per-device) — use it
+      // when present, otherwise fall back to the commit message as the title.
+      const draft = readPrDraft();
       const result = await createPullRequest({
         owner: ownerOf(selectedRepo.fullName),
         repo: repoNameOf(selectedRepo.fullName),
-        title: lastCommit.message,
+        title: draft?.title || lastCommit.message,
+        body: draft?.body || undefined,
         head: currentBranch,
         base: selectedRepo.defaultBranch,
       });
       setPrResult(result);
+      clearPrDraft();
       toast.success(`Pull request #${result.number} opened`);
     } catch (e) {
       toast.error(errorMessage(e));

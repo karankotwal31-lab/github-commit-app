@@ -5,6 +5,7 @@
   <meta charset="UTF-8" />
   <link rel="icon" type="image/svg+xml" href="/logo.svg" />
   <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/logo.svg" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Aria — a calm, browser-based GitHub workspace. Edit, commit, and ship from any device." />
   <meta name="theme-color" content="#72D0D0" />
@@ -20,6 +21,23 @@
   <meta name="twitter:card" content="summary" />
 
   <title>Aria — a quiet desk for your GitHub</title>
+
+  <!-- PWA: register the network-only service worker on production hosts only
+       (never on the dev/preview environment) so users get installability. -->
+  <script>
+    if (
+      "serviceWorker" in navigator &&
+      location.protocol === "https:" &&
+      !location.hostname.endsWith(".vly.sh") &&
+      location.hostname !== "localhost"
+    ) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").catch(() => {
+          /* Installability is progressive — failure is harmless. */
+        });
+      });
+    }
+  </script>
 </head>
 
 

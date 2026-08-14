@@ -9,11 +9,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { api } from "@/convex/_generated/api";
 import { useAction, useQuery } from "convex/react";
+import { toast } from "sonner";
 import { errorMessage } from "@/lib/github";
+import { savePrDraft } from "@/lib/prDraft";
 import {
   AlertTriangle,
   Check,
   Copy,
+  GitPullRequest,
   Loader2,
   ScanSearch,
   Sparkles,
@@ -189,6 +192,26 @@ export function AiReviewDialog({
                     {result.review || "No review summary returned."}
                   </p>
                 </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full gap-1.5"
+                  onClick={() => {
+                    if (!result.prTitle) return;
+                    savePrDraft({
+                      title: result.prTitle,
+                      body: result.prBody,
+                      savedAt: Date.now(),
+                    });
+                    toast.success(
+                      "Saved — your next pull request will use this title & description.",
+                    );
+                  }}
+                >
+                  <GitPullRequest className="size-4" />
+                  Use for pull request
+                </Button>
 
                 <div>
                   <div className="flex items-center justify-between">
