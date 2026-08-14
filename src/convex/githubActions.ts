@@ -203,6 +203,59 @@ async function getToken(ctx: ActionCtx): Promise<string> {
   return connection.token;
 }
 
+/**
+ * Free-tier repo gate — enforced at the action layer, never by UI hiding.
+ * Public repos are free; on the Free plan at most one private repo may be
+ * opened. Paid plans (and dev mode with no Stripe keys) are unrestricted.
+ * Every repo opened through the workspace is recorded in `connectedRepos`.
+ */
+async function ensureRepoAccess(
+  ctx: ActionCtx,
+  owner: string,
+  repo: string,
+  token: string,
+): Promise<void> {
+  const userId = await getAuthUserId(ctx);
+  if (userId === null) throw new Error("You are not signed in.");
+  const full = `${owner}/${repo}`;
+  // Dev mode: no billing keys → fully unlocked (mirrors billing.ts).
+  const configured = !!(
+    process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID
+  );
+  if (!configured) {
+    await ctx.runMutation(internal.github.trackRepo, {
+      repo: full,
+      isPrivate: true,
+    }).catch(() => undefined);
+    return;
+  }
+  const meta = await githubFetch<{ private: boolean }>(
+    `${GITHUB_API}/repos/${owner}/${repo}`,
+    token,
+  );
+  if (!meta.private) return; // public repos are free for everyone
+  const billing = await ctx.runQuery(internal.billing.planForUser, { userId });
+  if (billing.plan !== "free") {
+    await ctx.runMutation(internal.github.trackRepo, {
+      repo: full,
+      isPrivate: true,
+    });
+    return;
+  }
+  const privateCount = await ctx.runQuery(internal.github.countPrivateRepos, {
+    userId,
+  });
+  if (privateCount >= 1) {
+    throw new Error(
+      "The Free plan includes 1 private repository — upgrade to Pro for unlimited private repos.",
+    );
+  }
+  await ctx.runMutation(internal.github.trackRepo, {
+    repo: full,
+    isPrivate: true,
+  });
+}
+
 export const listRepositories = action({
   args: {},
   handler: async (ctx) => {
@@ -233,6 +286,8 @@ export const listContents = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    // Free-tier gate: opening a repo is the choke point for repo access.
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const url = `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
       args.path,
     )}?ref=${encodeURIComponent(args.branch)}`;
@@ -1662,5 +1717,128 @@ export const listIssues = action({
         body: issue.body ?? null,
         labels: (issue.labels ?? []).map((l) => l.name),
       }));
+  },
+});
+
+interface GitHubInboxIssue {
+  number: number;
+  title: string;
+  html_url: string;
+  updated_at: string | null;
+  pull_request?: { url?: string } | null;
+  repository?: { full_name: string } | null;
+  repository_url?: string | null;
+  head?: { sha: string } | null;
+}
+
+/** "https://api.github.com/repos/owner/name" → "owner/name". */
+function repoFromUrl(url: string | null | undefined): string {
+  if (!url) return "";
+  const match = url.match(/\/repos\/([^/]+\/[^/]+)/);
+  return match ? match[1] : url.replace(/^https?:\/\/api\.github\.com\/repos\//, "");
+}
+
+/**
+ * Unified cross-repo inbox (Pro): PRs awaiting the user's review and issues
+ * assigned to them, aggregated across every repo/org they can access — one
+ * feed instead of per-repo digging. CI state is attached to review PRs so a
+ * failing check is visible before opening anything.
+ */
+export const getInbox = action({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    // Pro gate — enforced at the action layer, never by UI hiding. Skipped in
+    // dev mode (no Stripe keys) so the app stays fully unlocked until then.
+    if (process.env.STRIPE_SECRET_KEY) {
+      const billing = await ctx.runQuery(internal.billing.planForUser, {
+        userId,
+      });
+      if (billing.plan === "free") {
+        throw new Error(
+          "The unified inbox is a Pro feature — upgrade to see activity across all your repositories.",
+        );
+      }
+    }
+    const token = await getToken(ctx);
+    const conn: {
+      token: string;
+      login: string;
+      name: string | null;
+      avatar: string | null;
+    } | null = await ctx.runQuery(internal.github.connectionForUser, {
+      userId,
+    });
+    const login: string = conn?.login ?? "";
+
+    // 1. Everything assigned to me and open, across all repos.
+    const assigned = await githubFetch<GitHubInboxIssue[]>(
+      `${GITHUB_API}/user/issues?filter=assigned&state=open&sort=updated&direction=desc&per_page=50`,
+      token,
+    );
+
+    // 2. PRs waiting on my review.
+    const awaiting: { items: GitHubInboxIssue[] } | null =
+      login !== ""
+        ? await githubFetch<{ items: GitHubInboxIssue[] }>(
+            `${GITHUB_API}/search/issues?q=${encodeURIComponent(
+              `is:open is:pr review-requested:${login}`,
+            )}&sort=updated&order=desc&per_page=30`,
+            token,
+          )
+        : null;
+
+    // 3. CI state for the PRs awaiting review (bounded — one status call each).
+    const prs = (awaiting?.items ?? []).slice(0, 8);
+    const awaitingReview = await Promise.all(
+      prs.map(async (pr): Promise<{
+        repo: string;
+        number: number;
+        title: string;
+        htmlUrl: string;
+        ci: "success" | "failure" | "pending" | "unknown";
+        updatedAt: string | null;
+      }> => {
+        const repoFull = repoFromUrl(pr.repository_url);
+        const [owner, repo] = repoFull.split("/");
+        let ci: "success" | "failure" | "pending" | "unknown" = "unknown";
+        if (pr.head?.sha && owner && repo) {
+          try {
+            const status = await githubFetch<{ state: string }>(
+              `${GITHUB_API}/repos/${owner}/${repo}/commits/${pr.head.sha}/status`,
+              token,
+            );
+            ci =
+              status.state === "success"
+                ? "success"
+                : status.state === "failure"
+                  ? "failure"
+                  : "pending";
+          } catch {
+            // CI unknown — keep "unknown" and move on.
+          }
+        }
+        return {
+          repo: repoFull,
+          number: pr.number,
+          title: pr.title,
+          htmlUrl: pr.html_url,
+          ci,
+          updatedAt: pr.updated_at ?? null,
+        };
+      }),
+    );
+
+    const assignedItems = assigned.slice(0, 30).map((item) => ({
+      repo: item.repository?.full_name ?? repoFromUrl(item.repository_url),
+      number: item.number,
+      title: item.title,
+      htmlUrl: item.html_url,
+      isPr: !!item.pull_request,
+      updatedAt: item.updated_at ?? null,
+    }));
+
+    return { awaitingReview, assigned: assignedItems };
   },
 });

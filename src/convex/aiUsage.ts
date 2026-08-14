@@ -83,6 +83,68 @@ export const usageForUser = internalQuery({
   },
 });
 
+/**
+ * Team/Enterprise admin overview: seats, AI usage trend, and the recent audit
+ * trail. Gated server-side — non-Team plans get `authorized: false` and the
+ * UI shows nothing, never by hiding alone.
+ */
+export const adminOverview = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return { authorized: false as const };
+    const billingRow = await ctx.db
+      .query("billing")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    const plan = billingRow?.plan ?? "free";
+    if (plan !== "team" && plan !== "enterprise") {
+      return { authorized: false as const };
+    }
+
+    // Usage trend: last 6 calendar months.
+    const now = new Date();
+    const periods: string[] = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      periods.push(periodKey(d));
+    }
+    const usageRows = await ctx.db
+      .query("aiUsage")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const byPeriod = new Map(usageRows.map((r) => [r.period, r.count]));
+    const usageTrend = periods.map((period) => ({
+      period,
+      count: byPeriod.get(period) ?? 0,
+    }));
+    const totalUsed = usageRows.reduce((n, r) => n + r.count, 0);
+
+    const auditRows = await ctx.db
+      .query("auditLogs")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const recentAudit = auditRows
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 20)
+      .map((a) => ({
+        action: a.action,
+        repo: a.repo ?? null,
+        detail: a.detail ?? null,
+        createdAt: a.createdAt,
+      }));
+
+    return {
+      authorized: true as const,
+      plan,
+      seats: billingRow?.seats ?? null,
+      totalUsed,
+      usageTrend,
+      recentAudit,
+    };
+  },
+});
+
 /** Server-side increment after a successful AI call. */
 export const recordAiUse = internalMutation({
   args: { userId: v.id("users") },

@@ -459,3 +459,181 @@ ${instruction}`;
     };
   },
 });
+
+interface CompareFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+}
+
+/**
+ * AI review pass (Pro+): diffs the branch against a base and returns a
+ * grounded review with risk flags plus a ready-to-use PR title/description.
+ * Never auto-applied — the developer decides. Metered against the plan's
+ * monthly quota like every other Ask Aria call.
+ */
+export const aiReviewBranch = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    branch: v.string(),
+    base: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    // Pro+ gate — enforced at the action layer, never by UI hiding. Skipped in
+    // dev mode (no Stripe keys) so the app stays fully unlocked until then.
+    if (process.env.STRIPE_SECRET_KEY) {
+      const billing = await ctx.runQuery(internal.billing.planForUser, {
+        userId,
+      });
+      if (billing.plan === "free" || billing.plan === "pro") {
+        throw new Error(
+          "AI review is a Pro+ feature — upgrade to review branches before you push.",
+        );
+      }
+    }
+    // Same monthly quota metering as Ask Aria.
+    const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
+    if (usage.quota !== null && usage.used >= usage.quota) {
+      throw new Error(
+        "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
+      );
+    }
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+      );
+    }
+    const token = await getToken(ctx);
+    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+
+    // The diff to review: branch vs. base (cap size so the request stays cheap).
+    const compare = await githubFetch<{
+      ahead_by: number;
+      files: CompareFile[];
+    }>(
+      `${repoUrl}/compare/${encodeURIComponent(
+        args.base,
+      )}...${encodeURIComponent(args.branch)}`,
+      token,
+    );
+    let diffChars = 0;
+    const diffBlock: string[] = [];
+    for (const file of compare.files.slice(0, 40)) {
+      if (diffChars > 120_000) break;
+      const patch = file.patch ?? "(binary or too large to diff — see raw file)";
+      const chunk = patch.slice(0, Math.max(0, 120_000 - diffChars));
+      diffChars += chunk.length;
+      diffBlock.push(
+        `--- ${file.filename} (${file.status}, +${file.additions}/-${file.deletions}) ---\n${chunk}`,
+      );
+    }
+    const diffText = diffBlock.join("\n\n") || "(no file changes found)";
+    const changedFiles = compare.files.map((f) => f.filename);
+    const addedLines = compare.files.reduce((n, f) => n + f.additions, 0);
+    const deletedLines = compare.files.reduce((n, f) => n + f.deletions, 0);
+
+    const systemPrompt = `You are Aria, an expert senior engineer reviewing a pull request for a solo developer. You reply with ONLY a JSON object — no markdown, no code fences — in exactly this shape:
+{
+  "review": "2-5 plain sentences assessing correctness, style, and whether this is safe to merge. No markdown.",
+  "risks": ["One line per real risk — e.g. large deletions, config/auth changes, secrets, no tests touched, breaking API changes. Empty array if none."],
+  "prTitle": "A concise conventional commit-style title, max 72 chars.",
+  "prBody": "A short markdown PR description: what changed, why, and a Risks section listing the flags."
+}
+
+Rules:
+- Review ONLY what is in the diff. Do not invent issues outside the changes.
+- Flag, in order of importance: deleted lines or files that look destructive, changes to auth/config/.env-adjacent files, anything secret-looking, and missing tests when tests would matter.
+- Be honest and specific. If the branch is clean, say so and keep risks minimal.`;
+
+    const userPrompt = `Repository: ${args.owner}/${args.repo}\nBase: ${args.base} → Branch: ${args.branch} (${compare.ahead_by} commits ahead, +${addedLines}/-${deletedLines} across ${changedFiles.length} files)\n\nChanged files:\n${changedFiles.join("\n") || "(none)"}\n\nDiff:\n${diffText}`;
+
+    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
+    let data: {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    };
+    try {
+      const res = await fetch(OPENROUTER_API, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "X-Title": "Aria",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        }),
+      });
+      data = (await res.json()) as typeof data;
+      if (!res.ok) {
+        const detail = data?.error?.message ?? `HTTP ${res.status}`;
+        throw new Error(
+          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
+        );
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
+        throw e;
+      }
+      throw new Error(
+        "Couldn't reach the AI provider — check your network and try again.",
+      );
+    }
+
+    const reply = data?.choices?.[0]?.message?.content ?? "";
+    if (!reply.trim()) {
+      throw new Error("The AI replied with nothing — try again or rephrase.");
+    }
+    const parsed = extractJson(reply) as {
+      review?: unknown;
+      risks?: unknown;
+      prTitle?: unknown;
+      prBody?: unknown;
+    } | null;
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error(
+        "The AI's response couldn't be understood — try again or rephrase.",
+      );
+    }
+
+    // Metering + audit: this counts against the plan's monthly quota.
+    await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await ctx.runMutation(internal.aiUsage.logAudit, {
+      userId,
+      action: "ai.review",
+      repo: `${args.owner}/${args.repo}`,
+      detail: `${args.branch} vs ${args.base}`,
+    });
+
+    return {
+      review:
+        typeof parsed.review === "string" ? parsed.review.slice(0, 2000) : "",
+      risks: Array.isArray(parsed.risks)
+        ? parsed.risks.filter((r): r is string => typeof r === "string").slice(0, 10)
+        : [],
+      prTitle:
+        typeof parsed.prTitle === "string"
+          ? parsed.prTitle.slice(0, 100)
+          : "",
+      prBody:
+        typeof parsed.prBody === "string" ? parsed.prBody.slice(0, 4000) : "",
+      stats: {
+        aheadBy: compare.ahead_by,
+        files: changedFiles.length,
+        addedLines,
+        deletedLines,
+      },
+    };
+  },
+});

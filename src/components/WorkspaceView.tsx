@@ -11,6 +11,10 @@ import { RuntimeDialog } from "@/components/RuntimeDialog";
 import { LocalGitDialog } from "@/components/LocalGitDialog";
 import { BillingDialog } from "@/components/BillingDialog";
 import { AiUsageMeter } from "@/components/AiUsageMeter";
+import { RepoUsageBadge } from "@/components/RepoUsageBadge";
+import { InboxDialog } from "@/components/InboxDialog";
+import { AiReviewDialog } from "@/components/AiReviewDialog";
+import { AdminDialog } from "@/components/AdminDialog";
 import { PLAN_BY_ID } from "@/lib/plans";
 import {
   ShareWorkspaceDialog,
@@ -55,6 +59,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   Archive,
   ArrowLeft,
+  Bell,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -82,6 +87,8 @@ import {
   RefreshCw,
   Rocket,
   RotateCcw,
+  ScanSearch,
+  ShieldCheck,
   Search,
   ShieldAlert,
   Sparkles,
@@ -566,6 +573,9 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [runtimeOpen, setRuntimeOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [localOpen, setLocalOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
 
   // Mobile editor: visual-viewport height (so the keyboard never clips the
   // canvas), focus mode (collapse everything but the code while typing) and
@@ -1436,6 +1446,15 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       />
       <RuntimeDialog open={runtimeOpen} onOpenChange={setRuntimeOpen} />
       <BillingDialog open={billingOpen} onOpenChange={setBillingOpen} />
+      <InboxDialog open={inboxOpen} onOpenChange={setInboxOpen} />
+      <AiReviewDialog
+        open={reviewOpen}
+        onOpenChange={setReviewOpen}
+        owner={selectedRepo?.fullName.split("/")[0] ?? ""}
+        repo={selectedRepo?.fullName.split("/")[1] ?? ""}
+        branch={currentBranch ?? ""}
+      />
+      <AdminDialog open={adminOpen} onOpenChange={setAdminOpen} />
       <ShareWorkspaceDialog
         open={shareOpen}
         onOpenChange={setShareOpen}
@@ -1524,6 +1543,44 @@ export function WorkspaceView(props: WorkspaceViewProps) {
               Share
             </span>
           </button>
+          <button
+            type="button"
+            onClick={() => setInboxOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100"
+            title="Unified inbox — PRs and issues across all your repos"
+          >
+            <Bell className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Inbox
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setReviewOpen(true)}
+            disabled={!selectedRepo || !currentBranch}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100 disabled:opacity-40"
+            title="AI review — review the branch before you push"
+          >
+            <ScanSearch className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Review
+            </span>
+          </button>
+          {billing?.configured &&
+            (billing.plan === "team" || billing.plan === "enterprise") && (
+              <button
+                type="button"
+                onClick={() => setAdminOpen(true)}
+                className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100"
+                title="Admin console — seats, usage, audit"
+              >
+                <ShieldCheck className="size-3.5 text-neutral-500" />
+                <span className="hidden text-xs text-neutral-500 sm:inline">
+                  Admin
+                </span>
+              </button>
+            )}
+          <RepoUsageBadge onUpgrade={() => setBillingOpen(true)} />
           <button
             type="button"
             onClick={() => setBillingOpen(true)}

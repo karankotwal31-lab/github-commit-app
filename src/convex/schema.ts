@@ -158,6 +158,18 @@ const schema = defineSchema(
       .index("by_userId", ["userId"])
       .index("by_createdAt", ["createdAt"]),
 
+    // Free-tier repo gate: the private repos a user has opened in Aria.
+    // Free plans may track at most one private repo (public repos are free);
+    // the limit is enforced server-side in the repo-loading actions.
+    connectedRepos: defineTable({
+      userId: v.id("users"),
+      repo: v.string(), // full name, e.g. "owner/name"
+      private: v.boolean(),
+      updatedAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userRepo", ["userId", "repo"]),
+
     // Team workspaces: a short join code that points other users at the same
     // repo + branch. Everyone joins with their own GitHub connection; drafts
     // and presence stay per-user.

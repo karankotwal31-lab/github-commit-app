@@ -1,6 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { v, type GenericId } from "convex/values";
+import { type PlanId } from "../lib/plans";
 
 const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -568,6 +569,89 @@ export const mySharedWorkspaces = query({
         label: d.label ?? null,
         createdAt: d.createdAt,
       }));
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Free-tier repo gate: track which private repos the user opened and surface
+// usage against the plan's limit (Free = 1 private repo). Enforcement lives
+// in the repo-loading actions (githubActions) via countPrivateRepos.
+// ---------------------------------------------------------------------------
+
+/** Record that the user opened a repo in the workspace (server-side only). */
+export const trackRepo = internalMutation({
+  args: { repo: v.string(), isPrivate: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const existing = await ctx.db
+      .query("connectedRepos")
+      .withIndex("by_userRepo", (q) =>
+        q.eq("userId", userId).eq("repo", args.repo),
+      )
+      .unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        private: args.isPrivate,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("connectedRepos", {
+        userId,
+        repo: args.repo,
+        private: args.isPrivate,
+        updatedAt: Date.now(),
+      });
+    }
+  },
+});
+
+/** The user's private-repo usage vs. their plan's limit (Free = 1). */
+export const repoUsage = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) {
+      return {
+        configured: false,
+        plan: "free" as PlanId,
+        privateRepos: 0,
+        limit: null,
+      };
+    }
+    // Mirrors billing.ts: billing is "configured" only when keys AND a price
+    // exist, so dev mode (keys absent) stays fully unlocked.
+    const configured = !!(
+      process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID
+    );
+    const billingRow = await ctx.db
+      .query("billing")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    const plan: PlanId = billingRow?.plan ?? "free";
+    const rows = await ctx.db
+      .query("connectedRepos")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const privateRepos = rows.filter((r) => r.private).length;
+    return {
+      configured,
+      plan,
+      privateRepos,
+      limit: configured && plan === "free" ? 1 : null,
+    };
+  },
+});
+
+/** Internal: how many private repos the user has opened (for the gate). */
+export const countPrivateRepos = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("connectedRepos")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .collect();
+    return rows.filter((r) => r.private).length;
   },
 });
 
