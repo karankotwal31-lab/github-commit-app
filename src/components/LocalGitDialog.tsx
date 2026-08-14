@@ -333,7 +333,7 @@ export function LocalGitDialog({
     }
   };
 
-  const handlePush = async () => {
+  const handlePush = async (force = false) => {
     setPushing(true);
     setPushNote(null);
     try {
@@ -342,15 +342,16 @@ export function LocalGitDialog({
         repo,
         branch,
         allowSecrets: pushConfirm,
+        force,
         onProgress: () => {},
       });
       setPushConfirm(false);
       setPushNote(
         result.pushed === 0
           ? "Already up to date — nothing to push."
-          : `Pushed ${result.pushed} commit${result.pushed > 1 ? "s" : ""} to GitHub${result.replayed ? " (replayed onto the current tip — ancestry may differ from local after a rebase)" : ""}${result.skippedBinary.length > 0 ? `. Skipped binary files: ${result.skippedBinary.join(", ")}` : ""}`,
+          : `Pushed ${result.pushed} commit${result.pushed > 1 ? "s" : ""} to GitHub${result.replayed ? " (history rewritten — GitHub's branch had diverged and was force-pushed)" : ""}${result.skippedBinary.length > 0 ? `. Skipped binary files: ${result.skippedBinary.join(", ")}` : ""}`,
       );
-      toast.success("Pushed to GitHub");
+      toast.success(force ? "Force-pushed to GitHub" : "Pushed to GitHub");
       onRefresh();
     } catch (e) {
       const message = errorMessage(e);
@@ -361,10 +362,20 @@ export function LocalGitDialog({
             label: "Push anyway",
             onClick: () => {
               setPushConfirm(true);
-              void handlePush();
+              void handlePush(force);
             },
           },
         });
+      } else if (/diverged|rewrite history/i.test(message) && !force) {
+        toast.warning(
+          "Your local branch has diverged from GitHub — pushing now would rewrite GitHub's history on that branch.",
+          {
+            action: {
+              label: "Force push",
+              onClick: () => void handlePush(true),
+            },
+          },
+        );
       } else {
         toast.error(message);
       }

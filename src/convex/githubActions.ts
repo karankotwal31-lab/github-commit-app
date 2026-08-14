@@ -918,6 +918,8 @@ const pushFileValidator = v.object({
   content: v.optional(v.string()), // utf-8 text (small files)
   contentBase64: v.optional(v.string()), // raw bytes (binary files)
   uploadId: v.optional(v.id("blobUploads")), // chunked upload (large files)
+  // Submodule pin — tree entry mode 160000, no blob content.
+  gitlink: v.optional(v.string()),
 });
 type PushFile = {
   path: string;
@@ -925,6 +927,7 @@ type PushFile = {
   content?: string;
   contentBase64?: string;
   uploadId?: Id<"blobUploads">;
+  gitlink?: string;
 };
 
 /** A small utf-8 sample of a file's content for the secret-risk check. */
@@ -946,7 +949,7 @@ async function filePayloadBase64(
   ctx: ActionCtx,
   file: PushFile,
 ): Promise<string | null> {
-  if (file.action === "delete") return null;
+  if (file.action === "delete" || file.gitlink !== undefined) return null;
   if (file.content !== undefined) {
     return Buffer.from(file.content, "utf8").toString("base64");
   }
@@ -1026,9 +1029,15 @@ async function createGitHubCommit(
     payloads.set(file.path, await filePayloadBase64(ctx, file));
   }
   try {
-    // Create a blob for every changed file (deletes need no blob).
+    // Create a blob for every changed file. Deletes and submodule pins need
+    // no blob — gitlinks (mode 160000) carry a commit SHA directly.
     const blobShas = new Map<string, string>();
+    const gitlinkShas = new Map<string, string>();
     for (const file of args.files) {
+      if (file.gitlink !== undefined) {
+        gitlinkShas.set(file.path, file.gitlink);
+        continue;
+      }
       const payload = payloads.get(file.path);
       if (payload === null) continue;
       const blob = await githubFetch<{ sha: string }>(
@@ -1043,8 +1052,9 @@ async function createGitHubCommit(
       blobShas.set(file.path, blob.sha);
     }
 
-    // Rebuild the tree from the base commit: keep untouched blobs, swap in
-    // the new ones, and null out deleted paths (sha: null deletes).
+    // Rebuild the tree from the base commit: keep untouched blobs and
+    // submodule pins (type "commit", mode 160000), swap in the new ones, and
+    // null out deleted paths (sha: null deletes).
     const baseTree = await githubFetch<{
       sha: string;
       tree: Array<{
@@ -1058,32 +1068,51 @@ async function createGitHubCommit(
     const deleted = new Set(
       args.files.filter((f) => f.action === "delete").map((f) => f.path),
     );
+    const changed = new Set([
+      ...blobShas.keys(),
+      ...gitlinkShas.keys(),
+      ...deleted,
+    ]);
     const tree: Array<{
       path: string;
       mode: string;
-      type: "blob";
+      type: "blob" | "commit";
       sha: string | null;
     }> = baseTree.tree
-      .filter(
-        (entry) =>
-          entry.type === "blob" &&
-          !blobShas.has(entry.path) &&
-          !deleted.has(entry.path),
-      )
+      .filter((entry) => entry.type !== "tree" && !changed.has(entry.path))
       .map((entry) => ({
         path: entry.path,
-        mode: entry.mode ?? "100644",
-        type: "blob" as const,
+        mode: entry.type === "commit" ? "160000" : entry.mode ?? "100644",
+        type: entry.type === "commit" ? ("commit" as const) : ("blob" as const),
         sha: entry.sha ?? "",
       }));
     for (const file of args.files) {
+      if (file.gitlink !== undefined) {
+        // Write the pinned submodule SHA directly as a gitlink entry.
+        tree.push({
+          path: file.path,
+          mode: "160000",
+          type: "commit" as const,
+          sha: file.gitlink,
+        });
+        continue;
+      }
       const sha = blobShas.get(file.path);
       if (sha) {
         tree.push({ path: file.path, mode: "100644", type: "blob" as const, sha });
       }
     }
     for (const path of deleted) {
-      tree.push({ path, mode: "100644", type: "blob" as const, sha: null });
+      // Match the deleted entry's kind so removing a submodule pin is written
+      // as a gitlink delete, not a blob delete.
+      const base = baseTree.tree.find((e) => e.path === path);
+      const gitlink = base?.type === "commit";
+      tree.push({
+        path,
+        mode: gitlink ? "160000" : "100644",
+        type: gitlink ? ("commit" as const) : ("blob" as const),
+        sha: null,
+      });
     }
 
     const newTree = await githubFetch<{ sha: string }>(
@@ -1207,10 +1236,12 @@ export const pushCommits = action({
       parents: v.array(v.string()),
       authorName: v.optional(v.string()),
       authorEmail: v.optional(v.string()),
-      authorDate: v.optional(v.string()),
+      // Nullable for parity with the in-browser engine's commit interface;
+      // null is normalized away before the GitHub API call.
+      authorDate: v.optional(v.union(v.string(), v.null())),
       committerName: v.optional(v.string()),
       committerEmail: v.optional(v.string()),
-      committerDate: v.optional(v.string()),
+      committerDate: v.optional(v.union(v.string(), v.null())),
       files: v.array(pushFileValidator),
     }),
   },
