@@ -315,7 +315,7 @@ export interface WorkspaceViewProps {
   }> | undefined;
   billing: {
     configured: boolean;
-    plan: "free" | "pro";
+    plan: "free" | "pro" | "pro_plus" | "team" | "enterprise";
     currentPeriodEnd: number | null;
   } | undefined;
   billingOpen: boolean;
@@ -1348,14 +1348,14 @@ export function WorkspaceView(props: WorkspaceViewProps) {
                 : "border-neutral-200 hover:bg-neutral-100"
             }`}
             title={
-              billing?.configured && billing.plan !== "pro"
+              billing?.configured && billing.plan === "free"
                 ? "Upgrade to Aria Pro"
                 : "Aria Pro"
             }
           >
             <Crown className="size-3.5 text-amber-600" />
             <span className="hidden text-xs font-medium sm:inline">
-              {billing?.configured && billing.plan !== "pro" ? "Upgrade" : "Pro"}
+              {billing?.configured && billing.plan === "free" ? "Upgrade" : "Pro"}
             </span>
           </button>
           {liveSessions && liveSessions.length > 0 && (

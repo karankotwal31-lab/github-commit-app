@@ -672,9 +672,10 @@ function Workspace({
     if (!selectedRepo || !currentBranch) return;
     const instruction = aiInstruction.trim();
     if (!instruction) return;
-    // Pro gate: Ask Aria is the paid feature. Skipped entirely when Stripe
-    // isn't configured, so the app stays fully unlocked until then.
-    if (billing?.configured && billing.plan !== "pro") {
+    // Pro gate: Ask Aria is the paid feature (any paid tier unlocks it).
+    // Skipped entirely when Stripe isn't configured, so the app stays fully
+    // unlocked until then.
+    if (billing?.configured && billing.plan === "free") {
       setAiError(null);
       toast.error("Ask Aria is a Pro feature — upgrade to use it.", {
         action: {

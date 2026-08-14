@@ -576,6 +576,10 @@ export function LocalGitDialog({
   const riskyStaged = (statusRows ?? []).filter((r) => r.staged && /secret|env|key/i.test(r.path)).length;
 
   const lanes = useMemo(() => layoutLanes(graph), [graph]);
+  const maxLane = useMemo(() => {
+    if (lanes.size === 0) return 0;
+    return Math.max(...lanes.values());
+  }, [lanes]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -877,7 +881,7 @@ export function LocalGitDialog({
                               )}
                             >
                               <svg
-                                width={Math.max(lanes.size, 2) * 14}
+                                width={(maxLane + 2) * 14}
                                 height={26}
                                 className="shrink-0"
                               >
