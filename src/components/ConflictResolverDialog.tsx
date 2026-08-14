@@ -25,8 +25,10 @@ import {
   Loader2,
   Pencil,
   RotateCcw,
+  Sparkles,
   X,
 } from "lucide-react";
+import { AiConflictProposal } from "@/components/AiConflictProposal";
 
 type HunkChoice = "ours" | "theirs" | "base" | string[];
 
@@ -37,6 +39,8 @@ interface FileState {
   saved: boolean;
   editing: boolean;
   customText: string;
+  /** Which hunk (index into activeChunks) has an open AI proposal. */
+  proposalHunk: number | null;
 }
 
 const LINE_CLASS = "whitespace-pre-wrap break-all font-mono text-[11px] leading-5";
@@ -122,6 +126,7 @@ export function ConflictResolverDialog({
           saved: false,
           editing: false,
           customText: "",
+          proposalHunk: null,
         })),
       );
       setActiveFile(files[0]?.path ?? null);
@@ -538,11 +543,66 @@ export function ConflictResolverDialog({
                               >
                                 Base
                               </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                  "h-6 px-2 text-[10px]",
+                                  activeState?.proposalHunk === index &&
+                                    "bg-teal-100 text-teal-800",
+                                )}
+                                onClick={() =>
+                                  setFileStates((prev) =>
+                                    prev.map((f) =>
+                                      f.path === activeFile
+                                        ? {
+                                            ...f,
+                                            proposalHunk:
+                                              f.proposalHunk === index
+                                                ? null
+                                                : index,
+                                          }
+                                        : f,
+                                    ),
+                                  )
+                                }
+                              >
+                                <Sparkles className="mr-1 size-3 text-teal-600" />
+                                AI
+                              </Button>
                             </div>
                           </div>
                           <HunkRow lines={chunk.base} tone="base" />
                           <HunkRow lines={chunk.ours} tone="ours" />
                           <HunkRow lines={chunk.theirs} tone="theirs" />
+                          {activeState?.proposalHunk === index && (
+                            <AiConflictProposal
+                              path={activeFile}
+                              base={chunk.base.join("\n")}
+                              ours={chunk.ours.join("\n")}
+                              theirs={chunk.theirs.join("\n")}
+                              onApply={(resolution) => {
+                                setChoice(activeFile, index, resolution.split("\n"));
+                                setFileStates((prev) =>
+                                  prev.map((f) =>
+                                    f.path === activeFile
+                                      ? { ...f, proposalHunk: null }
+                                      : f,
+                                  ),
+                                );
+                              }}
+                              onDismiss={() =>
+                                setFileStates((prev) =>
+                                  prev.map((f) =>
+                                    f.path === activeFile
+                                      ? { ...f, proposalHunk: null }
+                                      : f,
+                                  ),
+                                )
+                              }
+                            />
+                          )}
                         </div>
                       ))}
                     </div>

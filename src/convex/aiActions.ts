@@ -774,3 +774,133 @@ Rules:
     return { message };
   },
 });
+
+/**
+ * AI conflict-resolution proposal (Ask Aria pool): given the three sides of a
+ * single conflicted hunk, propose a merged resolution plus the rationale.
+ * Proposes only — the developer reviews and applies it. Metered against the
+ * plan's monthly quota like every other AI call.
+ */
+export const aiResolveConflict = action({
+  args: {
+    path: v.string(),
+    base: v.string(),
+    ours: v.string(),
+    theirs: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    // Same monthly quota gate as Ask Aria (enforced at the action layer).
+    const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
+    if (usage.quota !== null && usage.used >= usage.quota) {
+      throw new Error(
+        "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
+      );
+    }
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+      );
+    }
+
+    const cap = (s: string, n: number) =>
+      s.split("\n").slice(0, n).join("\n");
+    const base = cap(args.base, 250);
+    const ours = cap(args.ours, 250);
+    const theirs = cap(args.theirs, 250);
+
+    const systemPrompt = `You are Aria, an expert engineer resolving a git merge conflict for a developer. You reply with ONLY a JSON object — no markdown, no code fences — in exactly this shape:
+{
+  "resolution": "The complete resolved lines for this conflict — exactly what should replace the conflicted region. Preserve indentation. If one side is clearly right, pick it; if both sides matter, combine them.",
+  "rationale": "2-4 plain sentences explaining why this resolution is correct, referencing what each side was doing. No markdown."
+}
+
+Rules:
+- NEVER auto-apply: you only propose. The developer reviews first.
+- Never include conflict markers (<<<<<<<, =======, >>>>>>>) in the resolution.
+- If the conflict cannot be resolved safely (e.g. both sides delete different critical logic), say so in the rationale and return the ours side as a safe default.
+- Match the surrounding style and indentation. Output raw lines only — no language annotations.`;
+
+    const userPrompt = `Conflicted file: ${args.path}
+
+--- BASE (before either change) ---
+${base || "(empty)"}
+
+--- OURS (the current branch) ---
+${ours || "(empty)"}
+
+--- THEIRS (the incoming branch) ---
+${theirs || "(empty)"}`;
+
+    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
+    let data: {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    };
+    try {
+      const res = await fetch(OPENROUTER_API, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "X-Title": "Aria",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        }),
+      });
+      data = (await res.json()) as typeof data;
+      if (!res.ok) {
+        const detail = data?.error?.message ?? `HTTP ${res.status}`;
+        throw new Error(
+          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
+        );
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
+        throw e;
+      }
+      throw new Error(
+        "Couldn't reach the AI provider — check your network and try again.",
+      );
+    }
+
+    const reply = data?.choices?.[0]?.message?.content ?? "";
+    if (!reply.trim()) {
+      throw new Error("The AI replied with nothing — try again or rephrase.");
+    }
+    const parsed = extractJson(reply) as {
+      resolution?: unknown;
+      rationale?: unknown;
+    } | null;
+    const resolution =
+      parsed && typeof parsed.resolution === "string"
+        ? parsed.resolution.trim()
+        : "";
+    const rationale =
+      parsed && typeof parsed.rationale === "string"
+        ? parsed.rationale.trim().slice(0, 1200)
+        : "";
+    if (!resolution) {
+      throw new Error(
+        "The AI's response couldn't be understood — try again or rephrase.",
+      );
+    }
+
+    await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await ctx.runMutation(internal.aiUsage.logAudit, {
+      userId,
+      action: "ai.conflict",
+      detail: args.path.slice(0, 300),
+    });
+
+    return { resolution, rationale };
+  },
+});

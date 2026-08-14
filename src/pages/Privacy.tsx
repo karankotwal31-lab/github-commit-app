@@ -100,11 +100,18 @@ export default function Privacy() {
           your account, or ask us to delete or correct your data. Contact us
           at{" "}
           <a
-            href="mailto:privacy@arialabs.dev"
+            href="mailto:karankotwal31@gmail.com"
             className="underline underline-offset-2"
           >
-            privacy@arialabs.dev
+            karankotwal31@gmail.com
           </a>{" "}
+          or by phone at{" "}
+          <a
+            href="tel:+918484033991"
+            className="underline underline-offset-2"
+          >
+            +91 84840 33991
+          </a>,{" "}
           or write to Aria Labs (Karan Kotwal and Shivam Kotwal), 2825 Azad
           Nagar, Ranjhi, Jabalpur, Madhya Pradesh 482005, India — and we'll
           respond within 30 days.

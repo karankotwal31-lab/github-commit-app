@@ -126,20 +126,43 @@ Required env vars on the frontend host:
 The Freebuff environment is for **development and preview only**. Once its
 free tokens expire, the preview may stop — but that does NOT take the app
 down, because production never runs there. Do this once and Aria runs 24×7
-from its own infrastructure:
+from its own infrastructure.
 
-1. **Own the backend:** create a free Convex account and deploy Aria there:
-   ```bash
-   bunx convex dev --once   # in this project, to get the function list green
-   bunx convex deploy       # pushes schema + functions to YOUR Convex cloud
-   ```
-2. **Own the frontend:** connect this repo to Vercel/Netlify/Cloudflare Pages
-   (free tiers) with `VITE_CONVEX_URL` set to your Convex URL, plus an SPA
-   fallback to `index.html`.
-3. **Point the domain** at the frontend host (Section 5) and set HTTPS.
-4. **Copy every key** from this project's Keys UI into your Convex dashboard
+### Option A — Fastest live URL (Convex static hosting, already configured)
+
+`convex.json` already has `buildCommand` + `outputDirectory`, so one command
+puts the **whole app** — backend + frontend — live:
+
+```bash
+bunx convex dev --once    # this project, to get the function list green
+bunx convex deploy        # asks you to log in, then deploys schema + functions
+                          # AND builds + serves the frontend at your URL
+```
+
+Your permanent URL is then **`https://<project>.convex.cloud`** — a real,
+shareable, 24×7 address with HTTPS, no Vercel/Netlify needed. Convex injects
+`VITE_CONVEX_URL` into the frontend build automatically, so the app is fully
+functional at that URL the moment the deploy finishes.
+
+> Build memory: the frontend build needs **≥ 4 GB RAM** — run it on your own
+> machine or any free-tier CI, not inside a ~2 GB sandbox.
+
+### Option B — Custom domain (free) on top of Option A
+
+1. Buy a domain anywhere (~$10/yr) and add it in your Convex dashboard's
+   hosting settings (automatic Let's Encrypt HTTPS), or
+2. Connect the repo to **Vercel/Netlify/Cloudflare Pages** (free) with
+   `VITE_CONVEX_URL` set to your `https://<project>.convex.cloud` URL and an
+   SPA fallback to `index.html`, then point your domain at that host.
+
+### Keys + uptime reality check
+
+1. **Copy every key** from this project's Keys UI into your Convex dashboard
    env (same names: GITHUB_*, STRIPE_*, OPENROUTER_API_KEY, VAPID_*).
-5. **Uptime reality check:** Convex's free (Hobby) tier runs your functions
+2. **GitHub OAuth**: the popup flow uses the GitHub OAuth app you created in
+   Section 2 — add `https://<project>.convex.cloud` (or your custom domain)
+   to its Authorized JavaScript origins + callback URLs.
+3. **Uptime reality check:** Convex's free (Hobby) tier runs your functions
    and crons but pauses the deployment after a period of inactivity. For
    guaranteed 24×7 with the push cron and no pauses, Convex Pro (~$10/mo)
    is the only real cost — everything else stays on free tiers. The app is
@@ -170,6 +193,8 @@ The Freebuff preview can then be treated as a staging environment only.
 - [x] Real name/address in the legal pages: **Aria Labs, Karan Kotwal and
       Shivam Kotwal, 2825 Azad Nagar, Ranjhi, Jabalpur, Madhya Pradesh
       482005, India** (LICENSE, Privacy, Terms).
+- [x] Contact channels in the legal pages: **karankotwal31@gmail.com** and
+      **+91 84840 33991** (Privacy, Terms, LICENSE).
 - [ ] Review data flows against the privacy page:
       GitHub tokens are stored encrypted in Convex and never exposed to the
       client; AI requests (OpenRouter) only send the diff/file context you
