@@ -221,6 +221,13 @@ The Freebuff preview can then be treated as a staging environment only.
 7. **Push**: enable notifications in the header bell, close the tab, then ask
    a teammate to assign you an issue — the notification should arrive within
    10 minutes (cron) and open the right page when clicked.
+8. **Push actions**: on a PR awaiting your review, the notification shows
+   **Approve / Comment / Merge** buttons. With a tab open they run instantly
+   (Approve + Merge via the signed-in token, Comment opens the PR); with no
+   tab open, tapping one opens Aria and performs it from the URL.
+9. **Command palette**: press **⌘K / Ctrl+K** anywhere in the workspace —
+   jump to the inbox, AI review, issues, PRs, history, code search, draft
+   vault, billing, admin, or the stress test.
 
 ---
 

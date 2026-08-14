@@ -48,6 +48,9 @@ export const sendPushToUser = internalAction({
     body: v.string(),
     url: v.string(),
     tag: v.optional(v.string()),
+    // "review" notifications carry Approve/Comment/Merge actions on the
+    // notification itself; "assign" ones just open the item.
+    kind: v.optional(v.union(v.literal("review"), v.literal("assign"))),
   },
   handler: async (ctx, args): Promise<{ sent: number }> => {
     if (!pushConfigured()) return { sent: 0 };
@@ -67,6 +70,7 @@ export const sendPushToUser = internalAction({
             body: args.body,
             url: args.url,
             tag: args.tag ?? "aria",
+            kind: args.kind ?? "assign",
           }),
           { vapidDetails: vapidDetails(), TTL: 60 * 60 },
         );
@@ -130,6 +134,7 @@ export const checkForUser = internalAction({
       title: string;
       body: string;
       url: string;
+      kind: "review" | "assign";
     }> = [];
     for (const pr of inbox.awaitingReview) {
       items.push({
@@ -137,6 +142,7 @@ export const checkForUser = internalAction({
         title: pr.title,
         body: `${pr.repo} · PR #${pr.number} is waiting on your review`,
         url: pr.htmlUrl,
+        kind: "review",
       });
     }
     for (const item of inbox.assigned) {
@@ -145,6 +151,7 @@ export const checkForUser = internalAction({
         title: item.title,
         body: `${item.repo} · ${item.isPr ? "PR" : "issue"} #${item.number} assigned to you`,
         url: item.htmlUrl,
+        kind: "assign",
       });
     }
 
@@ -162,6 +169,7 @@ export const checkForUser = internalAction({
         body: item.body.slice(0, 140),
         url: item.url,
         tag: item.key,
+        kind: item.kind,
       });
       await ctx.runMutation(internal.pushSubscriptions.markSent, {
         userId,

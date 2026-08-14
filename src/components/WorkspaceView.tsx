@@ -26,6 +26,8 @@ import { AdminDialog } from "@/components/AdminDialog";
 import { StressTestDialog } from "@/components/StressTestDialog";
 import { CreateIssueDialog } from "@/components/CreateIssueDialog";
 import { PushNotificationsToggle } from "@/components/PushNotificationsToggle";
+import { PushActionHandler } from "@/components/PushActionHandler";
+import { CommandPalette } from "@/components/CommandPalette";
 import { PLAN_BY_ID } from "@/lib/plans";
 import {
   ShareWorkspaceDialog,
@@ -1479,6 +1481,24 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         onOpenChange={setIssueOpen}
         owner={selectedRepo?.fullName.split("/")[0] ?? ""}
         repo={selectedRepo?.fullName.split("/")[1] ?? ""}
+      />
+
+      {/* Push-notification actions (approve / comment / merge) */}
+      <PushActionHandler />
+
+      {/* ⌘K command palette */}
+      <CommandPalette
+        onInbox={() => setInboxOpen(true)}
+        onReview={() => setReviewOpen(true)}
+        onIssue={() => setIssueOpen(true)}
+        onAi={() => setAiOpen(true)}
+        onBilling={() => setBillingOpen(true)}
+        onAdmin={() => setAdminOpen(true)}
+        onStress={() => setStressOpen(true)}
+        onVault={() => setVaultOpen(true)}
+        onPrs={() => setPrsOpen(true)}
+        onHistory={() => setHistoryOpen(true)}
+        onCodeSearch={() => setCodeSearchOpen(true)}
       />
       <ShareWorkspaceDialog
         open={shareOpen}

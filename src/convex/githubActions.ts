@@ -1909,3 +1909,37 @@ export const getInboxForUser = internalAction({
     return { awaitingReview, assigned: assignedItems };
   },
 });
+
+/**
+ * Submit a PR review (used by actionable push notifications). Currently only
+ * "approve" is exposed; a comment body can be supplied for the comment path.
+ */
+export const submitReview = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    number: v.number(),
+    event: v.union(v.literal("approve"), v.literal("comment")),
+    body: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<{ id: number; state: string }>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls/${args.number}/reviews`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          event: args.event,
+          body:
+            args.body ??
+            (args.event === "approve"
+              ? "Approved from Aria ✅"
+              : "Commented from Aria"),
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    return { id: data.id, state: data.state };
+  },
+});
