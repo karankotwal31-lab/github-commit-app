@@ -96,16 +96,50 @@ const schema = defineSchema(
       updatedAt: v.number(),
     }).index("by_userId", ["userId"]),
 
-    // Billing: the signed-in user's Stripe subscription state. One row per
-    // user. Empty until Stripe is configured and a checkout completes.
+    // Billing: the signed-in user's subscription state. One row per user.
+    // plan ladder: free → pro → pro_plus → team → enterprise. Empty until
+    // Stripe is configured and a checkout completes.
     billing: defineTable({
       userId: v.id("users"),
-      plan: v.union(v.literal("free"), v.literal("pro")),
+      plan: v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("pro_plus"),
+        v.literal("team"),
+        v.literal("enterprise"),
+      ),
       stripeCustomerId: v.optional(v.string()),
       stripeSubscriptionId: v.optional(v.string()),
       currentPeriodEnd: v.optional(v.number()),
+      // Team tier: number of paid seats the org owner is billed for.
+      seats: v.optional(v.number()),
       updatedAt: v.number(),
     }).index("by_userId", ["userId"]),
+
+    // AI usage metering: one row per user per calendar month, incremented
+    // server-side before every AI call so quotas are enforced at the action
+    // layer (never by UI hiding alone).
+    aiUsage: defineTable({
+      userId: v.id("users"),
+      period: v.string(), // "YYYY-MM"
+      count: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userPeriod", ["userId", "period"]),
+
+    // Audit trail: who did what and when (commits, pushes, merges, AI calls,
+    // plan changes). Written from the action layer; shown to Team/Enterprise
+    // admins.
+    auditLogs: defineTable({
+      userId: v.id("users"),
+      action: v.string(),
+      repo: v.optional(v.string()),
+      detail: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_createdAt", ["createdAt"]),
 
     // Team workspaces: a short join code that points other users at the same
     // repo + branch. Everyone joins with their own GitHub connection; drafts
