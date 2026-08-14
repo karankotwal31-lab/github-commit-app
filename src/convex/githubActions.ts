@@ -526,6 +526,178 @@ export const getCommitHistory = action({
 });
 
 /**
+ * Full details for one commit: parents, tree, author/committer, and the files
+ * it changed. Powers the in-browser git engine (clone, graph, rebase,
+ * cherry-pick).
+ */
+export const getCommitDetails = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    sha: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<{
+      sha: string;
+      tree?: { sha: string };
+      parents?: Array<{ sha: string }>;
+      commit: {
+        message: string;
+        author: {
+          name: string | null;
+          email: string | null;
+          date: string | null;
+        } | null;
+        committer: {
+          name: string | null;
+          email: string | null;
+          date: string | null;
+        } | null;
+      };
+      files?: Array<{
+        filename: string;
+        status: string;
+        patch: string | null;
+      }>;
+    }>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/commits/${encodeURIComponent(
+        args.sha,
+      )}`,
+      token,
+    );
+    return {
+      sha: data.sha,
+      treeSha: data.tree?.sha ?? null,
+      parents: (data.parents ?? []).map((p) => p.sha),
+      message: data.commit.message,
+      author: {
+        name: data.commit.author?.name ?? "Aria",
+        email:
+          data.commit.author?.email ?? "aria@users.noreply.github.com",
+        date: data.commit.author?.date ?? null,
+      },
+      committer: {
+        name: data.commit.committer?.name ?? "Aria",
+        email:
+          data.commit.committer?.email ?? "aria@users.noreply.github.com",
+        date: data.commit.committer?.date ?? null,
+      },
+      files: (data.files ?? []).map((f) => ({
+        filename: f.filename,
+        status: f.status,
+        patch: f.patch ?? null,
+      })),
+    };
+  },
+});
+
+/**
+ * Full recursive tree listing for one tree sha (paths + blob shas + modes).
+ * Falls back to a non-recursive walk when GitHub truncates the listing on
+ * very large repos.
+ */
+export const getTree = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    treeSha: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+
+    const fetchNested = async (
+      treeSha: string,
+    ): Promise<
+      Array<{ path: string; mode: string; type: string; sha: string | null }>
+    > => {
+      const data = await githubFetch<{
+        tree: GitHubTreeEntry[];
+        truncated?: boolean;
+      }>(
+        `${repoUrl}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`,
+        token,
+      );
+      if (!data.truncated) {
+        return data.tree.map((e) => ({
+          path: e.path,
+          mode: e.mode ?? "100644",
+          type: e.type,
+          sha: e.sha ?? null,
+        }));
+      }
+      // Truncated: walk the tree one directory at a time.
+      const out: Array<{
+        path: string;
+        mode: string;
+        type: string;
+        sha: string | null;
+      }> = [];
+      const queue: Array<{ treeSha: string; prefix: string }> = [
+        { treeSha, prefix: "" },
+      ];
+      while (queue.length > 0) {
+        const next = queue.shift()!;
+        const t = await githubFetch<{ tree: GitHubTreeEntry[] }>(
+          `${repoUrl}/git/trees/${encodeURIComponent(next.treeSha)}`,
+          token,
+        );
+        for (const entry of t.tree) {
+          const path = next.prefix
+            ? `${next.prefix}/${entry.path}`
+            : entry.path;
+          out.push({
+            path,
+            mode: entry.mode ?? "100644",
+            type: entry.type,
+            sha: entry.sha ?? null,
+          });
+          if (entry.type === "tree" && entry.sha) {
+            queue.push({ treeSha: entry.sha, prefix: path });
+          }
+        }
+      }
+      return out;
+    };
+
+    const tree = await fetchNested(args.treeSha);
+    // Submodule entries (type "commit") can't be materialized in the browser
+    // engine — drop them rather than fail the whole clone.
+    return tree.filter(
+      (e) => e.type === "blob" || e.type === "tree",
+    );
+  },
+});
+
+/**
+ * Raw blob content for one blob sha, returned base64-encoded so binary files
+ * round-trip losslessly into the in-browser git engine.
+ */
+export const getBlob = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    sha: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const data = await githubFetch<{ content: string; size: number }>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/git/blobs/${encodeURIComponent(
+        args.sha,
+      )}`,
+      token,
+    );
+    if (data.size > 700_000) {
+      throw new Error(
+        `${args.sha.slice(0, 7)} is ${Math.round(data.size / 1024)} KB — too large for the in-browser engine (limit 700 KB per file).`,
+      );
+    }
+    return { content: data.content, size: data.size };
+  },
+});
+
+/**
  * Revert a commit by creating a new commit that applies its exact reverse,
  * built with the Git Data API (tree entries → commit → fast-forward ref).
  * The original commit stays in history untouched.
@@ -712,7 +884,11 @@ export const commitChanges = action({
       v.object({
         path: v.string(),
         content: v.string(),
-        action: v.union(v.literal("update"), v.literal("create")),
+        action: v.union(
+          v.literal("update"),
+          v.literal("create"),
+          v.literal("delete"),
+        ),
       }),
     ),
   },
@@ -723,8 +899,9 @@ export const commitChanges = action({
     if (args.files.length === 0) {
       throw new Error("Nothing to commit.");
     }
+    const textFiles = args.files.filter((f) => f.action !== "delete");
     const risk = anySecretRisk(
-      args.files.map((f) => ({ path: f.path, content: f.content })),
+      textFiles.map((f) => ({ path: f.path, content: f.content })),
     );
     if (risk.risky && !args.allowSecrets) {
       throw new Error(
@@ -734,7 +911,7 @@ export const commitChanges = action({
     if (new Set(args.files.map((f) => f.path)).size !== args.files.length) {
       throw new Error("A file appears twice in this commit — stage each file once.");
     }
-    for (const file of args.files) {
+    for (const file of textFiles) {
       if (!file.path.trim()) {
         throw new Error("A staged file has an empty path.");
       }
@@ -752,9 +929,9 @@ export const commitChanges = action({
     );
     const headSha = ref.object.sha;
 
-    // 2. Create a blob for every changed file.
+    // 2. Create a blob for every changed file (deletes need no blob).
     const blobShas = new Map<string, string>();
-    for (const file of args.files) {
+    for (const file of textFiles) {
       const blob = await githubFetch<{ sha: string }>(
         `${repoUrl}/git/blobs`,
         token,
@@ -770,7 +947,8 @@ export const commitChanges = action({
       blobShas.set(file.path, blob.sha);
     }
 
-    // 3. Rebuild the tree from the base commit, swapping in the new blobs.
+    // 3. Rebuild the tree from the base commit: keep untouched blobs, swap in
+    //    the new ones, and null out deleted paths (sha: null deletes).
     const baseTree = await githubFetch<{
       sha: string;
       tree: Array<{
@@ -781,9 +959,20 @@ export const commitChanges = action({
       }>;
     }>(`${repoUrl}/git/trees/${headSha}?recursive=1`, token);
 
-    const tree = baseTree.tree
+    const deleted = new Set(
+      args.files.filter((f) => f.action === "delete").map((f) => f.path),
+    );
+    const tree: Array<{
+      path: string;
+      mode: string;
+      type: "blob";
+      sha: string | null;
+    }> = baseTree.tree
       .filter(
-        (entry) => entry.type === "blob" && !blobShas.has(entry.path),
+        (entry) =>
+          entry.type === "blob" &&
+          !blobShas.has(entry.path) &&
+          !deleted.has(entry.path),
       )
       .map((entry) => ({
         path: entry.path,
@@ -791,12 +980,20 @@ export const commitChanges = action({
         type: "blob" as const,
         sha: entry.sha ?? "",
       }));
-    for (const file of args.files) {
+    for (const file of textFiles) {
       tree.push({
         path: file.path,
         mode: "100644",
         type: "blob" as const,
         sha: blobShas.get(file.path)!,
+      });
+    }
+    for (const path of deleted) {
+      tree.push({
+        path,
+        mode: "100644",
+        type: "blob" as const,
+        sha: null,
       });
     }
 

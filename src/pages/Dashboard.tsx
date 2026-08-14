@@ -1609,6 +1609,44 @@ function Workspace({
   const openFileIsStaged =
     openFile !== null && staged.some((f) => f.path === openFile.path);
 
+  // The in-browser git engine (LocalGitDialog) calls this after clone, push,
+  // checkout, merge or rebase so the API-driven workspace reflects the new
+  // GitHub state: refresh the file tree, quick-jump index, branches, history
+  // and any open file.
+  const refreshWorkspace = useCallback(() => {
+    if (!selectedRepo || !currentBranch) return;
+    loadEntries(selectedRepo, currentBranch, path);
+    loadTreeFiles(selectedRepo, currentBranch);
+    loadBranches(selectedRepo);
+    if (openFile && !isNewFile) {
+      void getFile({
+        owner: ownerOf(selectedRepo.fullName),
+        repo: repoNameOf(selectedRepo.fullName),
+        path: openFile.path,
+        branch: currentBranch,
+      })
+        .then((data) => {
+          setOpenFile({ ...data, path: openFile.path });
+          setEditorContent(data.content);
+        })
+        .catch(() => {
+          // The operation may have moved or removed the file — close it.
+          setOpenFile(null);
+          setEditorContent("");
+        });
+    }
+  }, [
+    selectedRepo,
+    currentBranch,
+    path,
+    openFile,
+    isNewFile,
+    loadEntries,
+    loadTreeFiles,
+    loadBranches,
+    getFile,
+  ]);
+
   return (
     <WorkspaceView
       connection={connection}
@@ -1753,6 +1791,7 @@ function Workspace({
       createSharedWorkspace={createSharedWorkspace}
       handleDisconnect={handleDisconnect}
       handleSignOut={handleSignOut}
+      onRefreshWorkspace={refreshWorkspace}
       dialog={dialog}
       dialogBusy={dialogBusy}
       handleDialogConfirm={handleDialogConfirm}

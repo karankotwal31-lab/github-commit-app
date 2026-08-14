@@ -1,5 +1,6 @@
 import { CodeEditor } from "@/components/CodeEditor";
 import { RuntimeDialog } from "@/components/RuntimeDialog";
+import { LocalGitDialog } from "@/components/LocalGitDialog";
 import { BillingDialog } from "@/components/BillingDialog";
 import {
   ShareWorkspaceDialog,
@@ -328,6 +329,7 @@ export interface WorkspaceViewProps {
   }) => Promise<string>;
   handleDisconnect: () => void;
   handleSignOut: () => void;
+  onRefreshWorkspace: () => void;
   dialog: { kind: "newFile" | "rename" | "branch" } | null;
   dialogBusy: boolean;
   handleDialogConfirm: (value: string) => void;
@@ -481,6 +483,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
     createSharedWorkspace,
     handleDisconnect,
     handleSignOut,
+    onRefreshWorkspace,
     dialog,
     dialogBusy,
     handleDialogConfirm,
@@ -490,10 +493,11 @@ export function WorkspaceView(props: WorkspaceViewProps) {
     handleDelete,
   } = props;
 
-  // Local UI state: the Runtime & Plugins, billing, and team-workspace
-  // dialogs. Kept here because they're purely presentational.
+  // Local UI state: the Runtime & Plugins, billing, team-workspace, and the
+  // in-browser git engine dialogs. Kept here because they're presentational.
   const [runtimeOpen, setRuntimeOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
 
   const handleOpenHistory = () => {
     setHistoryOpen(true);
@@ -1277,6 +1281,14 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         </AlertDialogContent>
       </AlertDialog>
 
+      <LocalGitDialog
+        open={localOpen}
+        onOpenChange={setLocalOpen}
+        fullName={selectedRepo?.fullName ?? ""}
+        branch={currentBranch ?? ""}
+        connection={connection}
+        onRefresh={onRefreshWorkspace}
+      />
       <RuntimeDialog open={runtimeOpen} onOpenChange={setRuntimeOpen} />
       <BillingDialog open={billingOpen} onOpenChange={setBillingOpen} />
       <ShareWorkspaceDialog
@@ -1293,6 +1305,18 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 px-4">
         <Wordmark />
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setLocalOpen(true)}
+            disabled={!selectedRepo}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Local git — clone into the browser, merge, rebase, stash, graph"
+          >
+            <GitBranch className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Local
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => setRuntimeOpen(true)}
