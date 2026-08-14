@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "deploy": "npx @convex-dev/static-hosting deploy",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "bun test",
@@ -13,6 +14,7 @@
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.90",
+    "@convex-dev/static-hosting": "^0.2.1",
     "@hookform/resolvers": "^5.2.2",
     "@isomorphic-git/lightning-fs": "^4.7.0",
     "@jridgewell/trace-mapping": "^0.3.31",

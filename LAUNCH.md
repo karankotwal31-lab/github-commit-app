@@ -20,7 +20,7 @@ Total expected out-of-pocket to launch: **under $20** (domain + optional email).
 | LICENSE | Proprietary, Aria Labs, all rights reserved |
 | Web push notifications | 24×7 cron + open-app polling |
 | SEO basics | `index.html` meta, `public/robots.txt` |
-| Deployment config | `convex.json` (hosting config block) |
+| Frontend hosting | `@convex-dev/static-hosting` component (serves `dist/` from your Convex deployment, SPA fallback built in) |
 
 ---
 
@@ -57,12 +57,13 @@ Managed automatically by the platform (do **not** set these):
 ## 2. GitHub OAuth app
 
 1. GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App.
-2. Homepage URL: your production URL (e.g. `https://aria.yourdomain.com`).
-3. Authorization callback URL: `https://<your-convex-site>.convex.site/auth/callback`
-   (find this in the Convex dashboard after first deploy).
+2. Homepage URL: your production URL (e.g. `https://<deployment>.convex.site`).
+3. Authorization callback URL: `https://<deployment>.convex.site/api/github/callback`
+   — this exact path is what `src/convex/http.ts` serves.
 4. Copy the Client ID + Client Secret into the env vars above.
-5. In the GitHub OAuth App settings, add your local dev URL as an extra
-   callback for testing (`http://localhost:5173/auth/callback`).
+5. In the GitHub OAuth App settings, add the Convex dev URL as an extra
+   callback for preview testing: `https://<your-dev>.convex.cloud/api/github/callback`
+   (the dev URL shows up when you run `convex dev`).
 
 ---
 
@@ -74,7 +75,7 @@ Managed automatically by the platform (do **not** set these):
    - **Aria Team** — $45/seat/mo (per-seat, metered quantity) → `STRIPE_PRICE_ID_TEAM`
 2. Copy each Price ID into its env var above.
 3. Deploy once (step 4), then create a webhook endpoint:
-   - URL: `https://<your-convex-site>.convex.site/stripe/webhook`
+   - URL: `https://<deployment>.convex.site/api/stripe/webhook`
    - Events: `checkout.session.completed`, `customer.subscription.updated`,
      `customer.subscription.deleted`
 4. Copy the webhook signing secret into `STRIPE_WEBHOOK_SECRET`.
@@ -96,31 +97,37 @@ Team seat changes are prorated automatically via `updateTeamSeats` (Stripe).
 
 ---
 
-## 4. Deploy
+## 4. Deploy (one command, whole app)
+
+Frontend hosting is wired up via the **`@convex-dev/static-hosting`** component
+(`src/convex/convex.config.ts` + `registerStaticRoutes` in `http.ts`). One
+command builds the frontend, deploys the backend, and uploads `dist/` to your
+Convex deployment:
 
 ```bash
-# 1. Push the backend + database schema + auth config
-bunx convex deploy
+npm install
+npm run deploy    # = npx @convex-dev/static-hosting deploy
+```
 
-# 2. Deploy the static frontend to your host (Netlify / Vercel / Cloudflare Pages)
-bun run build          # outputs dist/
-# then point your host at dist/ with an SPA fallback to /index.html
+That's it. Your app is live at **`https://<deployment>.convex.site`**
+(HTTPS, SPA routing, smart caching — no Netlify/Vercel needed). The CLI sets
+`VITE_CONVEX_URL` for the target deployment automatically, so the bundle talks
+to the right backend.
+
+Two-step alternative (e.g. after changing only the frontend):
+
+```bash
+npm run build
+npx @convex-dev/static-hosting upload --build --prod
 ```
 
 > **Build memory:** Aria bundles Monaco (large editor) — the production build
-> needs **≥ 4 GB RAM** on the CI/build machine. Netlify/Vercel/Cloudflare free
-> tiers provide this; very small containers (~2 GB) can OOM during `vite build`.
+> needs **≥ 4 GB RAM**. Run it on your own machine or any free-tier CI; very
+> small containers (~2 GB) can OOM during `vite build`.
 
-Every host below is free-tier-viable:
-
-| Host | Free tier | Notes |
-|---|---|---|
-| Netlify | Yes | One-click, SPA redirect rule built-in |
-| Vercel | Yes | Also useful later for preview deploys |
-| Cloudflare Pages | Yes | Fastest global CDN |
-
-Required env vars on the frontend host:
-- `VITE_CONVEX_URL` → your `https://<project>.convex.cloud` URL
+Prefer an external host? Point **Netlify / Vercel / Cloudflare Pages** at the
+repo with `VITE_CONVEX_URL` set to your `https://<deployment>.convex.cloud` URL
+and an SPA fallback to `/index.html`. Free-tier-viable on all three.
 
 ---
 
@@ -131,32 +138,23 @@ free tokens expire, the preview may stop — but that does NOT take the app
 down, because production never runs there. Do this once and Aria runs 24×7
 from its own infrastructure.
 
-### Option A — Fastest live URL (Convex static hosting, already configured)
+### Option A — Fastest live URL (Convex static hosting, already wired up)
 
 Good news: **the backend is already deployed and live.** `convex dev --once`
 pushes to a running cloud deployment, and the current one answers at
 `https://fearless-starling-421.convex.cloud` (dashboard:
 `dashboard.convex.dev/t/freebuff/572346b3-b0f0-4f8d-9bdd-b2a65fe145b1/fearless-starling-421`).
-What's missing is the **frontend** being served at that URL — that's the
-`bunx convex deploy` step below.
-
-`convex.json` already has `buildCommand` + `outputDirectory`, so one command
-puts the **whole app** — backend + frontend — live:
+What's missing is the **frontend** being served — one command puts the whole
+app live on your own Convex account:
 
 ```bash
-bunx convex dev --once    # this project, to get the function list green
-bunx convex@latest deploy # logs you in, then deploys schema + functions
-                          # AND builds + serves the frontend at your URL
+npm install
+npm run deploy    # = npx @convex-dev/static-hosting deploy (builds + deploys + uploads)
 ```
 
-> Use `bunx convex@latest` (or `bun i convex@latest` first) — the static-hosting
-> fields in `convex.json` are only recognized by Convex CLI ≥ 1.43. The version
-> bundled with this repo predates them and will warn about `buildCommand`.
-
-Your permanent URL is then **`https://<project>.convex.cloud`** — a real,
-shareable, 24×7 address with HTTPS, no Vercel/Netlify needed. Convex injects
-`VITE_CONVEX_URL` into the frontend build automatically, so the app is fully
-functional at that URL the moment the deploy finishes.
+Your permanent URL is then **`https://<deployment>.convex.site`** — a real,
+shareable, 24×7 address with HTTPS, SPA routing, and caching, no Vercel/Netlify
+needed. The CLI injects `VITE_CONVEX_URL` into the build automatically.
 
 > Build memory: the frontend build needs **≥ 4 GB RAM** — run it on your own
 > machine or any free-tier CI, not inside a ~2 GB sandbox.
@@ -174,8 +172,9 @@ functional at that URL the moment the deploy finishes.
 1. **Copy every key** from this project's Keys UI into your Convex dashboard
    env (same names: GITHUB_*, STRIPE_*, OPENROUTER_API_KEY, VAPID_*).
 2. **GitHub OAuth**: the popup flow uses the GitHub OAuth app you created in
-   Section 2 — add `https://<project>.convex.cloud` (or your custom domain)
-   to its Authorized JavaScript origins + callback URLs.
+   Section 2 — add `https://<deployment>.convex.site` (or your custom domain)
+   to its Authorized JavaScript origins + callback URLs, with the callback
+   path `/api/github/callback`.
 3. **Uptime reality check (2026 pricing):** Convex's **Free plan is $0/mo and
    runs continuously** — serverless, nothing to keep "on". Crons (the push
    notification scheduler) are included on Free. Free gives you 1M function
@@ -200,10 +199,12 @@ The Freebuff preview can then be treated as a staging environment only.
 ## 6. Domain + HTTPS
 
 1. Buy a domain anywhere (~$10/yr).
-2. In your host's dashboard: Domain settings → add your domain.
-3. HTTPS is automatic (Let's Encrypt) on Netlify / Vercel / Cloudflare Pages.
-4. Update the GitHub OAuth callback + Stripe webhook URLs to the production domain.
-5. (Optional, free) Set up email forwarding `you@yourdomain.com` → your inbox.
+2. Convex hosting: add the domain in your Convex dashboard → project →
+   Hosting settings (automatic Let's Encrypt HTTPS). Or, if you deployed the
+   frontend to Netlify/Vercel/Cloudflare Pages, add it in that host's dashboard.
+3. Update the GitHub OAuth callback + Stripe webhook URLs to the production
+   domain (`https://yourdomain.com/api/github/callback`, `.../api/stripe/webhook`).
+4. (Optional, free) Set up email forwarding `you@yourdomain.com` → your inbox.
 
 ---
 

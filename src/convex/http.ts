@@ -2,7 +2,8 @@ import { httpRouter } from "convex/server";
 import { type GenericId } from "convex/values";
 import { auth } from "./auth";
 import { httpAction } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { internal, components } from "./_generated/api";
+import { registerStaticRoutes } from "@convex-dev/static-hosting";
 import { stripeWebhook } from "./stripeWebhook";
 
 const http = httpRouter();
@@ -115,5 +116,10 @@ http.route({
   method: "POST",
   handler: stripeWebhook,
 });
+
+// Serve the built frontend (dist/) from the deployment root with SPA
+// fallback to index.html. Exact routes registered above always win over
+// this static catch-all.
+registerStaticRoutes(http, components.staticHosting);
 
 export default http;
