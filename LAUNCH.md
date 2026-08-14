@@ -15,9 +15,10 @@ Total expected out-of-pocket to launch: **under $20** (domain + optional email).
 |---|---|
 | Backend / database / auth | Convex cloud (managed) |
 | GitHub OAuth (popup flow) | Wired via Convex Auth |
-| Billing (Stripe) | Single Pro tier, server-side gated |
+| Billing (Stripe) | 5-tier ladder, server-side gated |
 | Legal pages | `/privacy`, `/terms` (wired in the footer) |
-| LICENSE | Proprietary, all rights reserved |
+| LICENSE | Proprietary, Aria Labs, all rights reserved |
+| Web push notifications | 24×7 cron + open-app polling |
 | SEO basics | `index.html` meta, `public/robots.txt` |
 | Deployment config | `convex.json` (hosting config block) |
 
@@ -38,6 +39,8 @@ Set these in the **Keys / API keys** UI of your hosting dashboard
 | `STRIPE_PRICE_ID_PRO` | Stripe → Products (after step 3) | Pro price ($12/mo) |
 | `STRIPE_PRICE_ID_PRO_PLUS` | Stripe → Products (after step 3) | Pro+ price ($29/mo) |
 | `STRIPE_PRICE_ID_TEAM` | Stripe → Products (after step 3) | Team price ($45/seat/mo) |
+| `VAPID_PUBLIC_KEY` | Already baked into the client — set it here too | Web push (public half of the keypair) |
+| `VAPID_PRIVATE_KEY` | See LAUNCH.md §5 (generated keypair) | Web push signing |
 
 > `STRIPE_PRICE_ID` (legacy) is still honored as the Pro price if
 > `STRIPE_PRICE_ID_PRO` is unset — set the new keys and remove the old one
@@ -118,7 +121,40 @@ Required env vars on the frontend host:
 
 ---
 
-## 5. Domain + HTTPS
+## 5. Going 24×7 — leaving the Freebuff preview behind
+
+The Freebuff environment is for **development and preview only**. Once its
+free tokens expire, the preview may stop — but that does NOT take the app
+down, because production never runs there. Do this once and Aria runs 24×7
+from its own infrastructure:
+
+1. **Own the backend:** create a free Convex account and deploy Aria there:
+   ```bash
+   bunx convex dev --once   # in this project, to get the function list green
+   bunx convex deploy       # pushes schema + functions to YOUR Convex cloud
+   ```
+2. **Own the frontend:** connect this repo to Vercel/Netlify/Cloudflare Pages
+   (free tiers) with `VITE_CONVEX_URL` set to your Convex URL, plus an SPA
+   fallback to `index.html`.
+3. **Point the domain** at the frontend host (Section 5) and set HTTPS.
+4. **Copy every key** from this project's Keys UI into your Convex dashboard
+   env (same names: GITHUB_*, STRIPE_*, OPENROUTER_API_KEY, VAPID_*).
+5. **Uptime reality check:** Convex's free (Hobby) tier runs your functions
+   and crons but pauses the deployment after a period of inactivity. For
+   guaranteed 24×7 with the push cron and no pauses, Convex Pro (~$10/mo)
+   is the only real cost — everything else stays on free tiers. The app is
+   otherwise fully serverless; nothing needs to "run" continuously.
+
+Web push specifics: notifications are sent by the **Convex cron** (every 10
+minutes, `crons.ts`) even when every tab is closed, and by the open app every
+5 minutes. Push requires the VAPID keypair — generate a fresh one if you ever
+rotate: `node -e "console.log(require('web-push').generateVAPIDKeys())"`.
+
+The Freebuff preview can then be treated as a staging environment only.
+
+---
+
+## 6. Domain + HTTPS
 
 1. Buy a domain anywhere (~$10/yr).
 2. In your host's dashboard: Domain settings → add your domain.
@@ -128,10 +164,12 @@ Required env vars on the frontend host:
 
 ---
 
-## 6. Privacy & legal checklist
+## 7. Privacy & legal checklist
 
 - [x] `/privacy` and `/terms` pages ship with the app (footer links).
-- [ ] Put your **real name/address** in the legal pages (template placeholders).
+- [x] Real name/address in the legal pages: **Aria Labs, Karan Kotwal and
+      Shivam Kotwal, 2825 Azad Nagar, Ranjhi, Jabalpur, Madhya Pradesh
+      482005, India** (LICENSE, Privacy, Terms).
 - [ ] Review data flows against the privacy page:
       GitHub tokens are stored encrypted in Convex and never exposed to the
       client; AI requests (OpenRouter) only send the diff/file context you
@@ -143,7 +181,7 @@ Required env vars on the frontend host:
 
 ---
 
-## 7. Post-launch sanity checks
+## 8. Post-launch sanity checks
 
 1. **Auth**: sign up fresh (incognito) → connect GitHub → land in the dashboard.
 2. **Billing**: buy Pro with Stripe test mode → confirm the plan flips
@@ -155,10 +193,13 @@ Required env vars on the frontend host:
    draft vault sync.
 6. **Offline**: airplane mode → make a draft edit → reconnect → confirm it
    replays via the reconciliation buffer.
+7. **Push**: enable notifications in the header bell, close the tab, then ask
+   a teammate to assign you an issue — the notification should arrive within
+   10 minutes (cron) and open the right page when clicked.
 
 ---
 
-## 8. Optional (later) — no rush, still cheap
+## 9. Optional (later) — no rush, still cheap
 
 - **Custom domain email** — free forwarding or ~$1/mo (Zoho/ImprovMX).
 - **Error monitoring** — Sentry free tier.

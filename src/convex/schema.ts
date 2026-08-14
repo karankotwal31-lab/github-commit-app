@@ -170,6 +170,28 @@ const schema = defineSchema(
       .index("by_userId", ["userId"])
       .index("by_userRepo", ["userId", "repo"]),
 
+    // Web push: one row per browser subscription, so notifications reach the
+    // user 24×7 — even with the tab closed, via the Convex cron. Endpoints are
+    // pruned when the browser push service reports them dead (404/410).
+    pushSubscriptions: defineTable({
+      userId: v.id("users"),
+      endpoint: v.string(),
+      keys: v.object({ p256dh: v.string(), auth: v.string() }),
+      deviceLabel: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_endpoint", ["endpoint"]),
+
+    // Dedup: which inbox items have already been pushed to each user, so the
+    // polling check and the cron never fire the same notification twice.
+    sentNotifications: defineTable({
+      userId: v.id("users"),
+      key: v.string(), // e.g. "review:owner/repo#12"
+      sentAt: v.number(),
+    })
+      .index("by_userKey", ["userId", "key"]),
+
     // Team workspaces: a short join code that points other users at the same
     // repo + branch. Everyone joins with their own GitHub connection; drafts
     // and presence stay per-user.

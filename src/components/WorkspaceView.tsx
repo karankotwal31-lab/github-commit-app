@@ -25,6 +25,7 @@ import { AiReviewDialog } from "@/components/AiReviewDialog";
 import { AdminDialog } from "@/components/AdminDialog";
 import { StressTestDialog } from "@/components/StressTestDialog";
 import { CreateIssueDialog } from "@/components/CreateIssueDialog";
+import { PushNotificationsToggle } from "@/components/PushNotificationsToggle";
 import { PLAN_BY_ID } from "@/lib/plans";
 import {
   ShareWorkspaceDialog,
@@ -1605,6 +1606,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
               </button>
             )}
           <RepoUsageBadge onUpgrade={() => setBillingOpen(true)} />
+          <PushNotificationsToggle />
           <button
             type="button"
             onClick={() => setIssueOpen(true)}

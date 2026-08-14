@@ -1,7 +1,7 @@
 "use node";
 
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { action, type ActionCtx } from "./_generated/server";
+import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { createHash } from "crypto";
@@ -1775,12 +1775,44 @@ export const createIssue = action({
  * assigned to them, aggregated across every repo/org they can access — one
  * feed instead of per-repo digging. CI state is attached to review PRs so a
  * failing check is visible before opening anything.
+ *
+ * Public entry: resolves the signed-in user, then delegates. The internal
+ * variant is what the push-notification cron calls with an explicit user.
  */
 export const getInbox = action({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx): Promise<InboxResult> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    return ctx.runAction(internal.githubActions.getInboxForUser, { userId });
+  },
+});
+
+/** The inbox result shape (shared by the public + internal variants). */
+interface InboxResult {
+  awaitingReview: Array<{
+    repo: string;
+    number: number;
+    title: string;
+    htmlUrl: string;
+    ci: "success" | "failure" | "pending" | "unknown";
+    updatedAt: string | null;
+  }>;
+  assigned: Array<{
+    repo: string;
+    number: number;
+    title: string;
+    htmlUrl: string;
+    isPr: boolean;
+    updatedAt: string | null;
+  }>;
+}
+
+/** Internal: the same inbox, for an explicit user (used by push checks). */
+export const getInboxForUser = internalAction({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args): Promise<InboxResult> => {
+    const userId = args.userId;
     // Pro gate — enforced at the action layer, never by UI hiding. Skipped in
     // dev mode (no Stripe keys) so the app stays fully unlocked until then.
     if (process.env.STRIPE_SECRET_KEY) {
@@ -1793,7 +1825,8 @@ export const getInbox = action({
         );
       }
     }
-    const token = await getToken(ctx);
+    // Explicit annotations break the inference cycle that otherwise makes the
+    // whole api type degrade to `any` under tsc's noImplicitAny.
     const conn: {
       token: string;
       login: string;
@@ -1802,7 +1835,9 @@ export const getInbox = action({
     } | null = await ctx.runQuery(internal.github.connectionForUser, {
       userId,
     });
-    const login: string = conn?.login ?? "";
+    if (conn === null) throw new Error("GitHub is not connected.");
+    const token: string = conn.token;
+    const login: string = conn.login ?? "";
 
     // 1. Everything assigned to me and open, across all repos.
     const assigned = await githubFetch<GitHubInboxIssue[]>(

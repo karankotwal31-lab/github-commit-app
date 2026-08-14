@@ -105,9 +105,9 @@ export default function Privacy() {
           >
             privacy@arialabs.dev
           </a>{" "}
-          or write to Aria Labs (Karan Kotwal), 2825 Azad Nagar, Ranjhi,
-          Jabalpur, Madhya Pradesh 482005, India — and we'll respond within
-          30 days.
+          or write to Aria Labs (Karan Kotwal and Shivam Kotwal), 2825 Azad
+          Nagar, Ranjhi, Jabalpur, Madhya Pradesh 482005, India — and we'll
+          respond within 30 days.
         </p>
         <p>
           If you're in the EU/UK, this policy is your record of processing

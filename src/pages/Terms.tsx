@@ -108,8 +108,8 @@ export default function Terms() {
           >
             legal@arialabs.dev
           </a>{" "}
-          or write to Aria Labs (Karan Kotwal), 2825 Azad Nagar, Ranjhi,
-          Jabalpur, Madhya Pradesh 482005, India.
+          or write to Aria Labs (Karan Kotwal and Shivam Kotwal), 2825 Azad
+          Nagar, Ranjhi, Jabalpur, Madhya Pradesh 482005, India.
         </p>
         <p>
           These terms are governed by the laws of India (Jabalpur, Madhya
