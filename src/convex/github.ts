@@ -568,3 +568,122 @@ export const saveConnection = internalMutation({
     });
   },
 });
+
+// ---------------------------------------------------------------------------
+// Chunked blob uploads (in-browser git engine push path)
+// ---------------------------------------------------------------------------
+
+const UPLOAD_TTL_MS = 60 * 60 * 1000; // prune abandoned uploads after 1h
+
+/**
+ * Start a chunked blob upload. Prunes this user's abandoned uploads (crashed
+ * pushes) as a side effect.
+ */
+export const beginBlobUpload = mutation({
+  args: {
+    sha: v.string(),
+    size: v.number(),
+    totalChunks: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+
+    // Prune abandoned uploads for this user (best effort).
+    const cutoff = Date.now() - UPLOAD_TTL_MS;
+    try {
+      const stale = await ctx.db
+        .query("blobUploads")
+        .withIndex("by_userId", (q) => q.eq("userId", userId))
+        .collect();
+      for (const row of stale) {
+        if (row.createdAt >= cutoff) continue;
+        const chunks = await ctx.db
+          .query("blobUploadChunks")
+          .withIndex("by_upload", (q) => q.eq("uploadId", row._id))
+          .collect();
+        for (const chunk of chunks) await ctx.db.delete(chunk._id);
+        await ctx.db.delete(row._id);
+      }
+    } catch {
+      // pruning is best effort
+    }
+
+    if (args.totalChunks < 1 || args.totalChunks > 512) {
+      throw new Error("Invalid chunk count.");
+    }
+    if (args.size < 1 || args.size > 100 * 1024 * 1024) {
+      throw new Error("Blob size must be between 1 byte and 100 MB.");
+    }
+    const id = await ctx.db.insert("blobUploads", {
+      userId,
+      sha: args.sha,
+      size: args.size,
+      totalChunks: args.totalChunks,
+      createdAt: Date.now(),
+    });
+    return { uploadId: id };
+  },
+});
+
+/** Upload one base64 slice of a chunked blob upload. */
+export const uploadBlobChunk = mutation({
+  args: {
+    uploadId: v.id("blobUploads"),
+    chunkIndex: v.number(),
+    data: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("Not signed in.");
+    const upload = await ctx.db.get(args.uploadId);
+    if (upload === null || upload.userId !== userId) {
+      throw new Error("Upload not found.");
+    }
+    if (args.chunkIndex < 0 || args.chunkIndex >= upload.totalChunks) {
+      throw new Error("Invalid chunk index.");
+    }
+    if (args.data.length > 1_000_000) {
+      throw new Error("Chunk too large.");
+    }
+    await ctx.db.insert("blobUploadChunks", {
+      userId,
+      uploadId: args.uploadId,
+      chunkIndex: args.chunkIndex,
+      data: args.data,
+    });
+  },
+});
+
+/** Internal: the full chunked payload for an upload (actions only). */
+export const getBlobUploadChunks = internalQuery({
+  args: { uploadId: v.id("blobUploads") },
+  handler: async (ctx, args) => {
+    const upload = await ctx.db.get(args.uploadId);
+    if (upload === null) return null;
+    const rows = await ctx.db
+      .query("blobUploadChunks")
+      .withIndex("by_upload", (q) => q.eq("uploadId", args.uploadId))
+      .collect();
+    rows.sort((a, b) => a.chunkIndex - b.chunkIndex);
+    return {
+      sha: upload.sha,
+      size: upload.size,
+      totalChunks: upload.totalChunks,
+      data: rows.map((r) => r.data),
+    };
+  },
+});
+
+/** Internal: delete an upload and its chunks after use. */
+export const deleteBlobUpload = internalMutation({
+  args: { uploadId: v.id("blobUploads") },
+  handler: async (ctx, args) => {
+    const chunks = await ctx.db
+      .query("blobUploadChunks")
+      .withIndex("by_upload", (q) => q.eq("uploadId", args.uploadId))
+      .collect();
+    for (const chunk of chunks) await ctx.db.delete(chunk._id);
+    await ctx.db.delete(args.uploadId);
+  },
+});

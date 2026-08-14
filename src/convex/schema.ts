@@ -116,6 +116,23 @@ const schema = defineSchema(
       updatedAt: v.number(),
     }).index("by_userId", ["userId"]),
 
+    // Chunked blob uploads for the in-browser git engine: files larger than
+    // a single Convex call can carry are streamed here as base64 slices, then
+    // reassembled server-side by the push action. Rows are pruned after use.
+    blobUploads: defineTable({
+      userId: v.id("users"),
+      sha: v.string(), // expected git blob sha (integrity check on finalize)
+      size: v.number(),
+      totalChunks: v.number(),
+      createdAt: v.number(),
+    }).index("by_userId", ["userId"]),
+    blobUploadChunks: defineTable({
+      userId: v.id("users"),
+      uploadId: v.id("blobUploads"),
+      chunkIndex: v.number(),
+      data: v.string(), // base64 slice
+    }).index("by_upload", ["uploadId", "chunkIndex"]),
+
     // AI usage metering: one row per user per calendar month, incremented
     // server-side before every AI call so quotas are enforced at the action
     // layer (never by UI hiding alone).

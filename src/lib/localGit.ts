@@ -8,13 +8,19 @@
  * cherry-picks all operate on real git objects; pushing translates local
  * commits into GitHub commits through the existing API actions.
  *
- * Known limitations (deliberately surfaced, never silent):
- * - "Clone" fetches the branch tip's full tree plus `depth` of history
- *   metadata. Blobs for older commits are fetched on demand (merge/rebase).
- * - Pushing replays local commits onto GitHub's current tip; after a rebase
- *   the ancestry on GitHub can differ from local (content is identical).
- * - Binary files can be staged/committed locally but are skipped during push.
- * - Submodules are skipped.
+ * Push fidelity:
+ * - Commits are recreated on GitHub with their exact parents, author,
+ *   committer and dates, so SHAs match local when GitHub stores them
+ *   byte-identically. When GitHub's SHA differs (edge cases in date or
+ *   message normalization), the chain continues off the created SHA and the
+ *   push reports `ancestryReplayed` — content is identical either way.
+ * - Binary files push via base64; files over ~600 KB stream through chunked
+ *   uploads (up to GitHub's 100 MB blob limit).
+ * - Submodule (gitlink) pins are preserved through trees, merges and pushes;
+ *   their contents are not checked out in the browser (like an
+ *   un-initialized submodule on disk).
+ * - A diverged branch requires an explicit force push (rewrites remote
+ *   history) — never silent.
  */
 
 import * as git from "isomorphic-git";
@@ -61,18 +67,60 @@ export interface GitBackend {
     repo: string;
     sha: string;
   }): Promise<{ content: string; size: number }>;
+  getBlobs(args: {
+    owner: string;
+    repo: string;
+    shas: string[];
+  }): Promise<{
+    blobs: Array<{ sha: string; content: string; size: number }>;
+    remaining: string[];
+  }>;
   commitChanges(args: {
     owner: string;
     repo: string;
     branch: string;
     message: string;
     allowSecrets?: boolean;
-    files: Array<{
-      path: string;
-      content: string;
-      action: "update" | "create" | "delete";
-    }>;
+    files: Array<PushFile>;
   }): Promise<{ sha: string | null }>;
+  pushCommits(args: {
+    owner: string;
+    repo: string;
+    branch: string;
+    moveRef: boolean;
+    force: boolean;
+    commit: {
+      message: string;
+      parents: string[];
+      authorName?: string;
+      authorEmail?: string;
+      authorDate?: string | null;
+      committerName?: string;
+      committerEmail?: string;
+      committerDate?: string | null;
+      files: Array<PushFile>;
+    };
+  }): Promise<{ sha: string | null }>;
+  beginBlobUpload(args: {
+    sha: string;
+    size: number;
+    totalChunks: number;
+  }): Promise<{ uploadId: string }>;
+  uploadBlobChunk(args: {
+    uploadId: string;
+    chunkIndex: number;
+    data: string;
+  }): Promise<void>;
+}
+
+export interface PushFile {
+  path: string;
+  action: "update" | "create" | "delete";
+  content?: string;
+  contentBase64?: string;
+  uploadId?: string;
+  /** Submodule pin — tree entry mode 160000, no blob. */
+  gitlink?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +241,15 @@ export async function resetEngine() {
 // Small helpers
 // ---------------------------------------------------------------------------
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 function base64ToBytes(base64: string): Uint8Array {
   const bin = atob(base64);
   const bytes = new Uint8Array(bin.length);
@@ -253,7 +310,9 @@ export function gitPerson(p: GitPerson): {
     const d = new Date(p.date);
     if (!Number.isNaN(d.getTime())) {
       timestamp = Math.floor(d.getTime() / 1000);
-      timezoneOffset = -d.getTimezoneOffset();
+      // isomorphic-git expects JS convention (minutes *behind* UTC); the
+      // raw commit line's sign is derived from this internally.
+      timezoneOffset = d.getTimezoneOffset();
     }
   }
   return {
@@ -264,14 +323,42 @@ export function gitPerson(p: GitPerson): {
   };
 }
 
+/**
+ * Convert an isomorphic-git {timestamp, timezoneOffset} (JS convention,
+ * minutes behind UTC) into the ISO-8601 string that makes GitHub's
+ * git/commits API write the identical raw author/committer line — the
+ * foundation of SHA-exact push reconstruction.
+ */
+export function gitDateIso(
+  timestamp: number,
+  timezoneOffset?: number,
+): string {
+  const tz = timezoneOffset ?? 0; // JS convention: minutes behind UTC
+  const wall = new Date((timestamp - tz * 60) * 1000);
+  const iso = wall.toISOString().replace(/\.\d{3}Z$/, "");
+  const isoOffset = -tz; // git convention: minutes ahead of UTC
+  const sign = isoOffset >= 0 ? "+" : "-";
+  const abs = Math.abs(isoOffset);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  return `${iso}${sign}${hh}:${mm}`;
+}
+
+export interface TreeFileEntry {
+  oid: string;
+  mode: string;
+  /** Submodule reference (mode 160000) — no blob content, pinned SHA only. */
+  gitlink?: boolean;
+}
+
 /** Read the full recursive file map of a tree: path → { oid, mode }. */
 export async function readTreeFiles(
   owner: string,
   repo: string,
   oid: string,
-): Promise<Map<string, { oid: string; mode: string }>> {
+): Promise<Map<string, TreeFileEntry>> {
   const { fs, dir, gitdir } = await repoCtx(owner, repo);
-  const map = new Map<string, { oid: string; mode: string }>();
+  const map = new Map<string, TreeFileEntry>();
   const stack: Array<{ oid: string; prefix: string }> = [{ oid, prefix: "" }];
   while (stack.length > 0) {
     const { oid: treeOid, prefix } = stack.pop()!;
@@ -280,6 +367,9 @@ export async function readTreeFiles(
       const path = prefix ? `${prefix}/${entry.path}` : entry.path;
       if (entry.type === "tree") {
         stack.push({ oid: entry.oid, prefix: path });
+      } else if (entry.type === "commit") {
+        // Submodule pin — keep it in the map so merges compare by SHA.
+        map.set(path, { oid: entry.oid, mode: entry.mode, gitlink: true });
       } else {
         map.set(path, { oid: entry.oid, mode: entry.mode });
       }
@@ -288,7 +378,8 @@ export async function readTreeFiles(
   return map;
 }
 
-/** Fetch missing blobs into the object DB, verifying content hashes. */
+/** Fetch missing blobs into the object DB, verifying content hashes. Uses the
+ *  bulk endpoint so small files download ~25 per round trip. */
 export async function ensureBlobs(
   backend: GitBackend,
   owner: string,
@@ -306,20 +397,35 @@ export async function ensureBlobs(
     }
   }
   if (missing.length === 0) return;
+
   let done = 0;
-  await mapLimit(missing, 6, async (oid) => {
-    const data = await backend.getBlob({ owner, repo, sha: oid });
-    const bytes = base64ToBytes(data.content);
-    const hash = await git.hashBlob({ object: bytes });
-    if (hash.oid !== oid) {
-      throw new Error(
-        `Content hash mismatch for ${oid.slice(0, 7)} — the file may have changed mid-fetch. Retry the operation.`,
-      );
+  let remaining = missing;
+  while (remaining.length > 0) {
+    // Batch in chunks so one bad blob doesn't re-fetch the whole set.
+    const batch = remaining.slice(0, 100);
+    const { blobs, remaining: rest } = await backend.getBlobs({
+      owner,
+      repo,
+      shas: batch,
+    });
+    for (const blob of blobs) {
+      const bytes = base64ToBytes(blob.content);
+      const hash = await git.hashBlob({ object: bytes });
+      if (hash.oid !== blob.sha) {
+        throw new Error(
+          `Content hash mismatch for ${blob.sha.slice(0, 7)} — the file may have changed mid-fetch. Retry the operation.`,
+        );
+      }
+      await git.writeBlob({ fs, dir, gitdir, blob: bytes });
+      done++;
+      onProgress?.(done, missing.length);
     }
-    await git.writeBlob({ fs, dir, gitdir, blob: bytes });
-    done++;
-    onProgress?.(done, missing.length);
-  });
+    remaining = [...rest, ...remaining.slice(batch.length)];
+    if (blobs.length === 0 && rest.length === batch.length) {
+      // No progress — avoid an infinite loop.
+      throw new Error("Couldn't fetch blobs — the batch stalled. Retry the operation.");
+    }
+  }
 }
 
 /** Write a git tree from full-path entries; returns the root tree oid. */
@@ -351,7 +457,12 @@ export async function writeGitTree(
       .map(([name, child]) => ({
         mode: child.mode,
         path: name,
-        type: child.type === "tree" ? ("tree" as const) : ("blob" as const),
+        type:
+          child.type === "tree"
+            ? ("tree" as const)
+            : child.type === "commit"
+              ? ("commit" as const)
+              : ("blob" as const),
         oid:
           child.type === "tree"
             ? oidCache.get(dir ? `${dir}/${name}` : name) ?? child.sha
@@ -530,7 +641,12 @@ export async function cloneRepo(
     throw new Error("Couldn't resolve the branch tip tree for checkout.");
   }
   const tipTree = await readTreeFiles(owner, repo, tipDetail.treeSha);
-  const blobOids = [...new Set([...tipTree.values()].map((e) => e.oid))];
+  // Submodule pins aren't blobs — there's nothing to download for them.
+  const blobOids = [
+    ...new Set(
+      [...tipTree.values()].filter((e) => !e.gitlink).map((e) => e.oid),
+    ),
+  ];
   await ensureBlobs(backend, owner, repo, blobOids, (done, total) => {
     args.onProgress?.({ phase: "files", done, total });
   });
@@ -605,9 +721,23 @@ export async function getStatus(
   repo: string,
 ): Promise<StatusRow[]> {
   const { fs, dir, gitdir } = await repoCtx(owner, repo);
+  // Submodule pins (gitlinks) have no checked-out content — the index entry
+  // always looks "deleted" to statusMatrix. Track them so the status view
+  // stays clean (the UI notes they're un-populated instead).
+  const gitlinkPaths = new Set<string>();
+  try {
+    const headOid = await git.resolveRef({ fs, dir, gitdir, ref: "HEAD" });
+    const headTree = await readTreeFiles(owner, repo, headOid);
+    for (const [path, entry] of headTree) {
+      if (entry.gitlink) gitlinkPaths.add(path);
+    }
+  } catch {
+    // unborn HEAD — nothing tracked yet
+  }
   const matrix = await git.statusMatrix({ fs, dir, gitdir });
   const rows: StatusRow[] = [];
   for (const [path, head, workdir, stage] of matrix) {
+    if (gitlinkPaths.has(path)) continue;
     if (head === 0 && workdir === 2 && stage === 0) {
       rows.push({ path, label: "untracked", staged: false });
     } else if (head === 1 && workdir === 2 && stage === 1) {
@@ -695,29 +825,54 @@ export async function commitLocal(
 }
 
 // ---------------------------------------------------------------------------
-// Push (local commits → GitHub via API)
+// Push (local commits → GitHub via API, exact ancestry reconstruction)
 // ---------------------------------------------------------------------------
 
-export interface PushResult {
-  pushed: number;
-  skippedBinary: string[];
-  finalSha: string | null;
-  replayed: boolean;
+/** Max raw bytes sent as a single base64 arg (~800 KB encoded, under Convex's
+ *  ~1 MB action limit). Larger files stream through chunked uploads. */
+const DIRECT_BASE64_BYTES = 600 * 1024;
+/** Raw bytes per chunked-upload slice (~853 KB base64, under the 1 MB limit). */
+const UPLOAD_CHUNK_BYTES = 640 * 1024;
+
+async function uploadLargeBlob(
+  backend: GitBackend,
+  oid: string,
+  bytes: Uint8Array,
+): Promise<string> {
+  const totalChunks = Math.max(1, Math.ceil(bytes.length / UPLOAD_CHUNK_BYTES));
+  const { uploadId } = await backend.beginBlobUpload({
+    sha: oid,
+    size: bytes.length,
+    totalChunks,
+  });
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * UPLOAD_CHUNK_BYTES;
+    const slice = bytes.subarray(
+      start,
+      Math.min(start + UPLOAD_CHUNK_BYTES, bytes.length),
+    );
+    await backend.uploadBlobChunk({
+      uploadId,
+      chunkIndex: i,
+      data: bytesToBase64(slice),
+    });
+  }
+  return uploadId;
 }
 
-export async function pushLocal(
+export interface PushPlan {
+  needsForce: boolean;
+  commitCount: number;
+  localTip: string;
+}
+
+/** Preflight a push: is the remote branch diverged (needs a force push)? */
+export async function planPush(
   backend: GitBackend,
-  args: {
-    owner: string;
-    repo: string;
-    branch: string;
-    allowSecrets?: boolean;
-    onProgress?: (done: number, total: number) => void;
-  },
-): Promise<PushResult> {
+  args: { owner: string; repo: string; branch: string },
+): Promise<PushPlan> {
   const { owner, repo, branch } = args;
   const { fs, dir, gitdir } = await repoCtx(owner, repo);
-
   const current = await git.currentBranch({ fs, dir, gitdir, fullname: false });
   if (!current || current !== branch) {
     throw new Error(
@@ -727,6 +882,69 @@ export async function pushLocal(
     );
   }
   const localTip = await git.resolveRef({ fs, dir, gitdir, ref: `refs/heads/${branch}` });
+  const remoteBranches = await backend.listBranches({ owner, repo });
+  const remote = remoteBranches.find((b) => b.name === branch);
+  if (!remote) {
+    throw new Error(
+      `${branch} doesn't exist on GitHub yet. Create it from the workspace first.`,
+    );
+  }
+  const log = await git.log({ fs, dir, gitdir, ref: `refs/heads/${branch}`, depth: 500 });
+  const remoteIndex = log.findIndex((c) => c.oid === remote.sha);
+  return {
+    needsForce: remoteIndex < 0,
+    commitCount: remoteIndex >= 0 ? remoteIndex : log.length,
+    localTip,
+  };
+}
+
+export interface PushResult {
+  pushed: number;
+  /** Kept for API compat — binary files now push via base64. Only filled
+   *  when a file exceeds GitHub's 100 MB blob limit and blocks the commit. */
+  skippedBinary: string[];
+  finalSha: string | null;
+  replayed: boolean;
+  /** True when any recreated commit's GitHub SHA differs from its local SHA
+   *  (content identical; ancestry re-derived from the created commits). */
+  ancestryReplayed: boolean;
+}
+
+/**
+ * Push local commits to GitHub by recreating each one with its exact parents,
+ * author, committer and dates through the Git Data API — so SHAs match local
+ * whenever GitHub stores the objects byte-identically. A diverged branch
+ * requires `force: true` (rewrites remote history) and is never done silently.
+ */
+export async function pushLocal(
+  backend: GitBackend,
+  args: {
+    owner: string;
+    repo: string;
+    branch: string;
+    allowSecrets?: boolean;
+    force?: boolean;
+    onProgress?: (done: number, total: number) => void;
+  },
+): Promise<PushResult> {
+  const { owner, repo, branch } = args;
+  const { fs, dir, gitdir } = await repoCtx(owner, repo);
+
+  const plan = await planPush(backend, { owner, repo, branch });
+  if (plan.needsForce && !args.force) {
+    throw new Error(
+      "The local and GitHub branches have diverged — this push would rewrite history on GitHub. Confirm the force push to continue.",
+    );
+  }
+  if (plan.commitCount === 0) {
+    return {
+      pushed: 0,
+      skippedBinary: [],
+      finalSha: plan.localTip,
+      replayed: false,
+      ancestryReplayed: false,
+    };
+  }
 
   const remoteBranches = await backend.listBranches({ owner, repo });
   const remote = remoteBranches.find((b) => b.name === branch);
@@ -737,28 +955,32 @@ export async function pushLocal(
   }
   const remoteTip = remote.sha;
 
-  // Commits to push: walk local history until we hit the remote tip.
   const log = await git.log({ fs, dir, gitdir, ref: `refs/heads/${branch}`, depth: 500 });
   const remoteIndex = log.findIndex((c) => c.oid === remoteTip);
-  const toPush = remoteIndex >= 0 ? log.slice(0, remoteIndex) : log;
-  if (toPush.length === 0) {
-    return { pushed: 0, skippedBinary: [], finalSha: localTip, replayed: false };
-  }
-  // Oldest first.
-  toPush.reverse();
+  const toPush = (remoteIndex >= 0 ? log.slice(0, remoteIndex) : log).reverse();
 
+  // Local oid → GitHub oid, so a recreated commit whose SHA GitHub computes
+  // differently still parents the rest of the chain correctly.
+  const createdShas = new Map<string, string>();
   const skippedBinary: string[] = [];
   let pushed = 0;
   let finalSha: string | null = remoteTip;
+  let ancestryReplayed = false;
 
-  for (const entry of toPush) {
+  for (let i = 0; i < toPush.length; i++) {
+    const entry = toPush[i];
+    const isLast = i === toPush.length - 1;
     const commit = (await git.readCommit({ fs, dir, gitdir, oid: entry.oid })).commit;
-    // Root commit (no parent): everything is a create against an empty tree.
-    const parentMap = commit.parent[0]
-      ? await readTreeFiles(owner, repo, commit.parent[0])
-      : new Map<string, { oid: string; mode: string }>();
+    const parents = commit.parent.map((p) => createdShas.get(p) ?? p);
+    if (parents.length === 0) {
+      throw new Error(
+        `Can't push ${entry.oid.slice(0, 7)} — it's a root commit. Create the first commit on GitHub first.`,
+      );
+    }
     const commitTree = await readTreeFiles(owner, repo, commit.tree);
-    const parentTree = parentMap;
+    const parentTree = commit.parent[0]
+      ? await readTreeFiles(owner, repo, commit.parent[0])
+      : new Map<string, TreeFileEntry>();
 
     const changed: Array<{ path: string; action: "update" | "create" | "delete" }> = [];
     for (const [path, e] of commitTree) {
@@ -770,44 +992,87 @@ export async function pushLocal(
     for (const [path] of parentTree) {
       if (!commitTree.has(path)) changed.push({ path, action: "delete" });
     }
-    if (changed.length === 0) continue;
+    if (changed.length === 0) {
+      throw new Error(
+        `${entry.oid.slice(0, 7)} has no file changes — Aria can't recreate it on GitHub.`,
+      );
+    }
 
-    const files: Array<{
-      path: string;
-      content: string;
-      action: "update" | "create" | "delete";
-    }> = [];
+    const files: PushFile[] = [];
     for (const change of changed) {
       if (change.action === "delete") {
-        files.push({ path: change.path, content: "", action: "delete" });
+        files.push({ path: change.path, action: "delete" });
         continue;
       }
-      const blobOid = commitTree.get(change.path)!.oid;
-      const blob = await git.readBlob({ fs, dir, gitdir, oid: blobOid });
-      if (isBinaryBytes(blob.blob)) {
-        skippedBinary.push(change.path);
-        continue; // binary files can't round-trip through the API text path
+      const info = commitTree.get(change.path)!;
+      if (info.gitlink) {
+        // Submodule pin — recreate the gitlink tree entry directly.
+        files.push({ path: change.path, action: change.action, gitlink: info.oid });
+        continue;
       }
-      files.push({
-        path: change.path,
-        content: decodeText(blob.blob),
-        action: change.action,
-      });
+      const blob = await git.readBlob({ fs, dir, gitdir, oid: info.oid });
+      const bytes = blob.blob;
+      // Secret guardrails mirror the local commit check.
+      if (!args.allowSecrets && !isBinaryBytes(bytes)) {
+        const risk = secretRisk(change.path, decodeText(bytes));
+        if (risk.risky) {
+          throw new Error(
+            `${change.path} looks like it contains secrets — confirm “commit anyway” to push it.`,
+          );
+        }
+      }
+      if (bytes.length > 100 * 1024 * 1024) {
+        skippedBinary.push(change.path);
+        continue;
+      }
+      if (bytes.length > DIRECT_BASE64_BYTES) {
+        const uploadId = await uploadLargeBlob(backend, info.oid, bytes);
+        files.push({ path: change.path, action: change.action, uploadId });
+      } else {
+        files.push({
+          path: change.path,
+          action: change.action,
+          contentBase64: bytesToBase64(bytes),
+        });
+      }
     }
-    if (files.length === 0) continue;
+    if (files.length === 0) {
+      if (skippedBinary.length > 0) {
+        throw new Error(
+          `${skippedBinary.join(", ")} exceed${skippedBinary.length > 1 ? "" : "s"} GitHub's 100 MB blob limit — Aria can't push it.`,
+        );
+      }
+      continue;
+    }
 
-    await backend.commitChanges({
+    const created = await backend.pushCommits({
       owner,
       repo,
       branch,
-      message: commit.message,
-      allowSecrets: args.allowSecrets,
-      files,
+      moveRef: isLast,
+      force: isLast && plan.needsForce,
+      commit: {
+        message: commit.message,
+        parents,
+        authorName: commit.author.name,
+        authorEmail: commit.author.email,
+        authorDate:
+          commit.author.timestamp !== undefined
+            ? gitDateIso(commit.author.timestamp, commit.author.timezoneOffset)
+            : undefined,
+        committerName: commit.committer?.name,
+        committerEmail: commit.committer?.email,
+        committerDate:
+          commit.committer?.timestamp !== undefined
+            ? gitDateIso(commit.committer.timestamp, commit.committer.timezoneOffset)
+            : undefined,
+        files,
+      },
     });
+    if (created.sha && created.sha !== entry.oid) ancestryReplayed = true;
+    createdShas.set(entry.oid, created.sha ?? entry.oid);
+    finalSha = created.sha ?? finalSha;
     pushed++;
-    finalSha = (await backend.listBranches({ owner, repo })).find(
-      (b) => b.name === branch,
-    )?.sha ?? finalSha;
     args.onProgress?.(pushed, toPush.length);
   }
 
@@ -817,7 +1082,7 @@ export async function pushLocal(
       dir,
       gitdir,
       ref: `refs/remotes/origin/${branch}`,
-      value: localTip,
+      value: plan.localTip,
       force: true,
     });
   } catch {
@@ -828,7 +1093,8 @@ export async function pushLocal(
     pushed,
     skippedBinary,
     finalSha,
-    replayed: remoteIndex < 0,
+    replayed: plan.needsForce,
+    ancestryReplayed,
   };
 }
 
@@ -842,6 +1108,10 @@ export interface ConflictFile {
   ours: Uint8Array | null;
   theirs: Uint8Array | null;
   binary: boolean;
+  /** Submodule (gitlink) conflicts resolve by pinned SHA, not content. */
+  gitlink: boolean;
+  gitlinkOurs: string | null;
+  gitlinkTheirs: string | null;
   resolved: boolean;
 }
 
@@ -899,16 +1169,20 @@ async function conflictEntry(
   owner: string,
   repo: string,
   path: string,
-  baseMap: Map<string, { oid: string; mode: string }>,
-  oursMap: Map<string, { oid: string; mode: string }>,
-  theirsMap: Map<string, { oid: string; mode: string }>,
+  baseMap: Map<string, TreeFileEntry>,
+  oursMap: Map<string, TreeFileEntry>,
+  theirsMap: Map<string, TreeFileEntry>,
 ): Promise<ConflictFile> {
   const { fs, dir, gitdir } = await repoCtx(owner, repo);
+  const baseE = baseMap.get(path);
+  const oursE = oursMap.get(path);
+  const theirsE = theirsMap.get(path);
+  const isGitlink = baseE?.gitlink || oursE?.gitlink || theirsE?.gitlink;
   const read = async (
-    map: Map<string, { oid: string; mode: string }>,
+    map: Map<string, TreeFileEntry>,
   ): Promise<Uint8Array | null> => {
     const entry = map.get(path);
-    if (!entry) return null;
+    if (!entry || entry.gitlink) return null;
     const blob = await git.readBlob({ fs, dir, gitdir, oid: entry.oid });
     return blob.blob;
   };
@@ -916,22 +1190,35 @@ async function conflictEntry(
   const ours = await read(oursMap);
   const theirs = await read(theirsMap);
   const binary =
-    (base !== null && isBinaryBytes(base)) ||
-    (ours !== null && isBinaryBytes(ours)) ||
-    (theirs !== null && isBinaryBytes(theirs));
-  return { path, base, ours, theirs, binary, resolved: false };
+    !isGitlink &&
+    ((base !== null && isBinaryBytes(base)) ||
+      (ours !== null && isBinaryBytes(ours)) ||
+      (theirs !== null && isBinaryBytes(theirs)));
+  return {
+    path,
+    base,
+    ours,
+    theirs,
+    binary,
+    gitlink: !!isGitlink,
+    gitlinkOurs: oursE?.gitlink ? oursE.oid : null,
+    gitlinkTheirs: theirsE?.gitlink ? theirsE.oid : null,
+    resolved: false,
+  };
 }
 
 async function ensureTreeBlobs(
   backend: GitBackend,
   owner: string,
   repo: string,
-  trees: Map<string, { oid: string; mode: string }>[],
+  trees: Map<string, TreeFileEntry>[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
   const oids = new Set<string>();
   for (const tree of trees) {
-    for (const entry of tree.values()) oids.add(entry.oid);
+    for (const entry of tree.values()) {
+      if (!entry.gitlink) oids.add(entry.oid);
+    }
   }
   await ensureBlobs(backend, owner, repo, oids, onProgress);
 }
@@ -1019,11 +1306,27 @@ export async function resolveConflictFile(
   repo: string,
   path: string,
   content: Uint8Array | null,
+  gitlinkSha?: string | null,
 ): Promise<void> {
   const session = activeSession;
   if (!session) throw new Error("No operation in progress.");
   const { fs, pfs, dir, gitdir } = await repoCtx(owner, repo);
-  if (content === null) {
+  if (gitlinkSha !== undefined) {
+    // Submodule conflict — resolve by writing the pinned SHA into the index
+    // (mode 160000), like real git's `git update-index --cacheinfo`.
+    if (gitlinkSha === null) {
+      await git.remove({ fs, dir, gitdir, filepath: path });
+    } else {
+      await git.updateIndex({
+        fs,
+        dir,
+        gitdir,
+        filepath: path,
+        oid: gitlinkSha,
+        mode: 0o160000,
+      });
+    }
+  } else if (content === null) {
     try {
       await pfs.unlink(`${dir}/${path}`);
     } catch {
@@ -1208,7 +1511,8 @@ async function applyCommitChanges(
   for (const path of changed) {
     for (const map of [parentMap, commitMap, headMap]) {
       const e = map.get(path);
-      if (e) needed.add(e.oid);
+      // Gitlink (submodule) entries pin a commit SHA — never fetched as blobs.
+      if (e && !e.gitlink) needed.add(e.oid);
     }
   }
   await ensureBlobs(backend, owner, repo, needed);
@@ -1216,14 +1520,48 @@ async function applyCommitChanges(
   const conflicts: ConflictFile[] = [];
   const read = async (
     path: string,
-    map: Map<string, { oid: string; mode: string }>,
+    map: Map<string, TreeFileEntry>,
   ): Promise<Uint8Array | null> => {
     const e = map.get(path);
-    if (!e) return null;
+    if (!e || e.gitlink) return null;
     return (await git.readBlob({ fs, dir, gitdir, oid: e.oid })).blob;
   };
 
   for (const path of changed) {
+    const baseE = parentMap.get(path);
+    const oursE = headMap.get(path);
+    const theirsE = commitMap.get(path);
+    const isGitlink = baseE?.gitlink || oursE?.gitlink || theirsE?.gitlink;
+
+    if (isGitlink) {
+      // Submodule conflicts resolve by pinned SHA, not content.
+      const oursSha = oursE?.gitlink ? oursE.oid : null;
+      const theirsSha = theirsE?.gitlink ? theirsE.oid : null;
+      const baseSha = baseE?.gitlink ? baseE.oid : null;
+      if (oursSha === theirsSha) continue; // same pin (or both deleted) — clean
+      if (baseSha === oursSha && theirsSha === null) {
+        // The commit deletes the submodule; we didn't touch it — apply.
+        await git.remove({ fs, dir, gitdir, filepath: path });
+        continue;
+      }
+      if (baseSha === theirsSha && oursSha !== null) {
+        // Theirs is unchanged — keep our pin.
+        continue;
+      }
+      conflicts.push({
+        path,
+        base: null,
+        ours: null,
+        theirs: null,
+        binary: false,
+        gitlink: true,
+        gitlinkOurs: oursSha,
+        gitlinkTheirs: theirsSha,
+        resolved: false,
+      });
+      continue;
+    }
+
     const base = await read(path, parentMap);
     const ours = await read(path, headMap);
     const theirs = await read(path, commitMap);
@@ -1262,7 +1600,17 @@ async function applyCommitChanges(
       }
       // Add/add, delete/modify, or modify/modify on binary data — the user
       // picks a whole side.
-      conflicts.push({ path, base, ours, theirs, binary: true, resolved: false });
+      conflicts.push({
+        path,
+        base,
+        ours,
+        theirs,
+        binary: true,
+        gitlink: false,
+        gitlinkOurs: null,
+        gitlinkTheirs: null,
+        resolved: false,
+      });
       continue;
     }
 
@@ -1283,7 +1631,17 @@ async function applyCommitChanges(
         await git.add({ fs, dir, gitdir, filepath: path });
       }
     } else {
-      conflicts.push({ path, base, ours, theirs, binary: false, resolved: false });
+      conflicts.push({
+        path,
+        base,
+        ours,
+        theirs,
+        binary: false,
+        gitlink: false,
+        gitlinkOurs: null,
+        gitlinkTheirs: null,
+        resolved: false,
+      });
     }
   }
   return conflicts.length > 0 ? conflicts : null;

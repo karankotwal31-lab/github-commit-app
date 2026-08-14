@@ -1,5 +1,6 @@
 import { api } from "@/convex/_generated/api";
-import { useAction } from "convex/react";
+import { type Id } from "@/convex/_generated/dataModel";
+import { useAction, useMutation } from "convex/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -92,7 +93,13 @@ export function LocalGitDialog({
   const getCommitDetails = useAction(api.githubActions.getCommitDetails);
   const getTree = useAction(api.githubActions.getTree);
   const getBlob = useAction(api.githubActions.getBlob);
+  const getBlobs = useAction(api.githubActions.getBlobs);
   const commitChanges = useAction(api.githubActions.commitChanges);
+  const pushCommits = useAction(api.githubActions.pushCommits);
+  const beginBlobUpload = useMutation(api.github.beginBlobUpload);
+  const uploadBlobChunk = useMutation(api.github.uploadBlobChunk);
+
+  const asUploadId = (value: string) => value as Id<"blobUploads">;
 
   const backend: GitBackend = useMemo(
     () => ({
@@ -100,9 +107,42 @@ export function LocalGitDialog({
       getCommitDetails: (a) => getCommitDetails(a),
       getTree: (a) => getTree(a),
       getBlob: (a) => getBlob(a),
-      commitChanges: (a) => commitChanges(a),
+      getBlobs: (a) => getBlobs(a),
+      commitChanges: (a) =>
+        commitChanges({
+          ...a,
+          files: a.files.map((f) => ({
+            ...f,
+            uploadId: f.uploadId ? asUploadId(f.uploadId) : undefined,
+          })),
+        }),
+      pushCommits: (a) =>
+        pushCommits({
+          ...a,
+          commit: {
+            ...a.commit,
+            files: a.commit.files.map((f) => ({
+              ...f,
+              uploadId: f.uploadId ? asUploadId(f.uploadId) : undefined,
+            })),
+          },
+        }),
+      beginBlobUpload: (a) => beginBlobUpload(a),
+      uploadBlobChunk: async (a) => {
+        await uploadBlobChunk({ ...a, uploadId: asUploadId(a.uploadId) });
+      },
     }),
-    [listBranches, getCommitDetails, getTree, getBlob, commitChanges],
+    [
+      listBranches,
+      getCommitDetails,
+      getTree,
+      getBlob,
+      getBlobs,
+      commitChanges,
+      pushCommits,
+      beginBlobUpload,
+      uploadBlobChunk,
+    ],
   );
 
   const author = useMemo(
