@@ -10,6 +10,42 @@ export interface EditorCursor {
   column: number;
 }
 
+// ---------------------------------------------------------------------------
+// Active-editor registry
+//
+// The mobile coding accessory bar (symbol insertion, focus detection) works
+// through this module registry instead of prop-drilling the editor instance
+// through the whole workspace layout. Only one editor is mounted at a time
+// (the workspace keys it by path), so a single slot is enough.
+// ---------------------------------------------------------------------------
+
+let activeEditor: MonacoEditor.IStandaloneCodeEditor | null = null;
+
+/** Insert `text` at the cursor of the currently focused editor (no-op → false). */
+export function insertTextAtCursor(text: string): boolean {
+  const editor = activeEditor;
+  if (!editor) return false;
+  editor.trigger("keyboard", "type", { text });
+  editor.focus();
+  return true;
+}
+
+const focusListeners = new Set<(focused: boolean) => void>();
+
+/** Subscribe to text-focus changes of the active editor; returns unsubscribe. */
+export function onActiveEditorFocus(
+  listener: (focused: boolean) => void,
+): () => void {
+  focusListeners.add(listener);
+  return () => {
+    focusListeners.delete(listener);
+  };
+}
+
+function notifyFocus(focused: boolean) {
+  for (const listener of focusListeners) listener(focused);
+}
+
 /**
  * The Aria code editor: Monaco with the app's turquoise "aria" theme and
  * per-file language detection. Mirrors the current file content via `value`
@@ -39,6 +75,15 @@ export function CodeEditor({
       theme="aria"
       onMount={(editor) => {
         editorRef.current = editor;
+        activeEditor = editor;
+        editor.onDidFocusEditorText(() => notifyFocus(true));
+        editor.onDidBlurEditorText(() => notifyFocus(false));
+        editor.onDidDispose(() => {
+          if (activeEditor === editor) {
+            activeEditor = null;
+            notifyFocus(false);
+          }
+        });
         editor.onDidChangeCursorPosition((e) => {
           setCursorSync({
             line: e.position.lineNumber,

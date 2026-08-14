@@ -219,6 +219,61 @@ export const saveDraft = mutation({
   },
 });
 
+/**
+ * Draft-vault write used by offline reconciliation: writes the buffered draft
+ * only when this device's copy is newer than what's stored. Because drafts
+ * are keyed per user this is about *cross-device* safety — replaying an
+ * offline edit must never clobber a newer draft another of the user's devices
+ * saved while this one was offline.
+ */
+export const saveDraftIfNewer = mutation({
+  args: {
+    repo: v.string(),
+    branch: v.string(),
+    path: v.string(),
+    content: v.string(),
+    cursorLine: v.optional(v.number()),
+    cursorColumn: v.optional(v.number()),
+    updatedAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const existing = await ctx.db
+      .query("drafts")
+      .withIndex("by_userKey", (q) =>
+        q
+          .eq("userId", userId)
+          .eq("repo", args.repo)
+          .eq("branch", args.branch)
+          .eq("path", args.path),
+      )
+      .unique();
+    if (existing !== null && existing.updatedAt >= args.updatedAt) {
+      return { applied: false }; // a fresher draft already exists elsewhere
+    }
+    const doc = {
+      userId,
+      repo: args.repo,
+      branch: args.branch,
+      path: args.path,
+      content:
+        args.content.length <= DRAFT_MAX_CHARS
+          ? args.content
+          : args.content.slice(0, DRAFT_MAX_CHARS),
+      cursorLine: args.cursorLine,
+      cursorColumn: args.cursorColumn,
+      updatedAt: args.updatedAt,
+    };
+    if (existing !== null) {
+      await ctx.db.replace(existing._id, doc);
+    } else {
+      await ctx.db.insert("drafts", doc);
+    }
+    return { applied: true };
+  },
+});
+
 /** Drop a draft after it's been committed (or deliberately discarded). */
 export const deleteDraft = mutation({
   args: {

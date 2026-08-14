@@ -223,3 +223,52 @@
     cursor: pointer;
   }
 }
+
+/* -------------------------------------------------------------------------
+   Mobile editor — focus mode + keyboard inset
+
+   The workspace root carries two data attributes while the mobile editor is
+   in use:
+
+   - data-focus-mode: aggressive focus mode — everything but the code and the
+     coding accessory bar collapses. On phones the top header, the editor
+     chrome bar and the commit footer hide; on desktop the two sidebars and
+     the commit footer hide (the top header and editor chrome stay, with the
+     Focus toggle to get back out).
+   - data-kb-inset: measured on-screen-keyboard height. Monaco's container
+     gets bottom padding so the active line never sits under the keyboard;
+     Monaco's automaticLayout resizes to the padded content box.
+
+   The workspace itself is sized with h-[var(--vvh)] (visual viewport
+   height), so the whole app shrinks instead of being clipped.
+   ------------------------------------------------------------------------- */
+
+.aria-workspace[data-focus-mode="true"] > header {
+  display: none;
+}
+
+/* Sidebars: the two <aside> columns (repos + files). */
+.aria-workspace[data-focus-mode="true"] aside {
+  display: none;
+}
+
+/* Editor chrome (1st div) and commit footer (3rd div) inside <main>. */
+.aria-workspace[data-focus-mode="true"] main > div:nth-of-type(1),
+.aria-workspace[data-focus-mode="true"] main > div:nth-of-type(3) {
+  display: none;
+}
+
+/* Keep the header visible on desktop focus mode; only collapse on phones. */
+@media (min-width: 768px) {
+  .aria-workspace[data-focus-mode="true"] > header {
+    display: flex;
+  }
+  .aria-workspace[data-focus-mode="true"] main > div:nth-of-type(1) {
+    display: flex;
+  }
+}
+
+/* Keyboard inset: pad Monaco's container so the active line stays visible. */
+.aria-workspace[data-kb-inset] main > div:nth-of-type(2) {
+  padding-bottom: var(--kb-inset, 0px);
+}

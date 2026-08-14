@@ -1,4 +1,12 @@
-import { CodeEditor } from "@/components/CodeEditor";
+import {
+  CodeEditor,
+  insertTextAtCursor,
+  onActiveEditorFocus,
+} from "@/components/CodeEditor";
+import { CodingAccessoryBar } from "@/components/CodingAccessoryBar";
+import { PreviewPanel, type DeploymentInfo } from "@/components/PreviewPanel";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { RuntimeDialog } from "@/components/RuntimeDialog";
 import { LocalGitDialog } from "@/components/LocalGitDialog";
 import { BillingDialog } from "@/components/BillingDialog";
@@ -41,7 +49,7 @@ import {
 import { formatDate, formatSize, type Repository } from "@/lib/github";
 import { diffLines, parseUnifiedPatch } from "@/lib/diff";
 import { cn } from "@/lib/utils";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   Archive,
   ArrowLeft,
@@ -59,6 +67,7 @@ import {
   FileSearch,
   Folder,
   FolderOpen,
+  Focus,
   GitBranch,
   GitPullRequest,
   Github,
@@ -69,6 +78,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Rocket,
   RotateCcw,
   Search,
   ShieldAlert,
@@ -76,8 +86,54 @@ import {
   Trash2,
   Unplug,
   Users,
+  WifiOff,
   XCircle,
 } from "lucide-react";
+
+/** Compact deployment chip shown next to the CI chip in the files sidebar. */
+function DeploymentChip({
+  deployment,
+  loading,
+  onClick,
+}: {
+  deployment: DeploymentInfo | null;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  const state = deployment?.state ?? "none";
+  const dot =
+    state === "success"
+      ? "bg-emerald-500"
+      : state === "failure" || state === "error"
+        ? "bg-red-500"
+        : state === "pending" || state === "in_progress"
+          ? "bg-amber-500 animate-pulse"
+          : "bg-neutral-300";
+  const label =
+    state === "success"
+      ? "Live"
+      : state === "failure" || state === "error"
+        ? "Failed"
+        : state === "pending" || state === "in_progress"
+          ? "Deploying"
+          : "No deploy";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={loading}
+      className="flex min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-xs hover:bg-neutral-100"
+      title="Live deployment preview for this branch"
+    >
+      {loading ? (
+        <Loader2 className="size-3 shrink-0 animate-spin text-neutral-400" />
+      ) : (
+        <span className={`size-1.5 shrink-0 rounded-full ${dot}`} />
+      )}
+      <span className="truncate text-neutral-500">{label}</span>
+    </button>
+  );
+}
 
 export interface WorkspaceViewProps {
   connection: {
@@ -116,8 +172,13 @@ export interface WorkspaceViewProps {
   isNewFile: boolean;
   editorContent: string;
   setEditorContent: (v: string) => void;
-  viewMode: "edit" | "diff";
-  setViewMode: (v: "edit" | "diff") => void;
+  viewMode: "edit" | "diff" | "preview";
+  setViewMode: (v: "edit" | "diff" | "preview") => void;
+  deployment: DeploymentInfo | null;
+  deploymentLoading: boolean;
+  deploymentError: string | null;
+  loadDeployment: () => void;
+  offline: { online: boolean; pending: number; syncing: boolean };
   fileLoading: boolean;
   dirty: boolean;
   openFileIsStaged: boolean;
@@ -431,6 +492,11 @@ export function WorkspaceView(props: WorkspaceViewProps) {
     checksLoading,
     checksError,
     loadChecks,
+    deployment,
+    deploymentLoading,
+    deploymentError,
+    loadDeployment,
+    offline,
     vaultOpen,
     setVaultOpen,
     drafts,
@@ -499,6 +565,31 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [shareOpen, setShareOpen] = useState(false);
   const [localOpen, setLocalOpen] = useState(false);
 
+  // Mobile editor: visual-viewport height (so the keyboard never clips the
+  // canvas), focus mode (collapse everything but the code while typing) and
+  // the coding accessory bar above the keyboard. The bar is fixed-positioned
+  // so it renders from the workspace root; Monaco itself is reached through
+  // the active-editor registry in CodeEditor.tsx (no prop drilling through
+  // the whole layout).
+  const isMobile = useIsMobile();
+  const vv = useVisualViewport(); // publishes --vvh + measured keyboard inset
+  const [focusMode, setFocusMode] = useState(false);
+  const [editorFocused, setEditorFocused] = useState(false);
+  const [accessoryHidden, setAccessoryHidden] = useState(false);
+
+  // Aggressive focus mode: typing on a phone collapses the header, editor
+  // chrome and commit bar automatically; exit via the Focus toggle in the
+  // accessory bar (or the header button on desktop).
+  useEffect(() => {
+    if (isMobile && editorFocused) setFocusMode(true);
+  }, [isMobile, editorFocused]);
+  useEffect(() => onActiveEditorFocus(setEditorFocused), []);
+
+  const accessoryVisible =
+    isMobile &&
+    !accessoryHidden &&
+    (focusMode || editorFocused || vv.keyboardOpen);
+
   const handleOpenHistory = () => {
     setHistoryOpen(true);
     loadHistory();
@@ -525,7 +616,58 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground antialiased">
+    <div
+      className={cn(
+        "aria-workspace flex flex-col bg-background text-foreground antialiased",
+        isMobile ? "h-[var(--vvh)]" : "h-screen",
+      )}
+      data-focus-mode={focusMode ? "true" : undefined}
+      data-kb-inset={isMobile && vv.keyboardOpen ? "true" : undefined}
+      style={
+        isMobile && vv.keyboardOpen
+          ? ({ "--kb-inset": `${vv.keyboardInset}px` } as CSSProperties)
+          : undefined
+      }
+    >
+      {/* Coding accessory toolbar — fixed above the mobile keyboard */}
+      <CodingAccessoryBar
+        visible={accessoryVisible}
+        focusMode={focusMode}
+        onToggleFocusMode={() => setFocusMode((f) => !f)}
+        onInsert={insertTextAtCursor}
+        onClose={() => setAccessoryHidden(true)}
+      />
+
+      {/* Live deployment preview — full-screen so the app can be tested */}
+      {viewMode === "preview" && selectedRepo && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-white">
+          <div className="flex shrink-0 items-center gap-2 border-b border-neutral-200 px-4 py-2.5">
+            <button
+              type="button"
+              onClick={() => setViewMode("edit")}
+              className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-800"
+              title="Back to the editor"
+            >
+              <ArrowLeft className="size-4" />
+            </button>
+            <p className="truncate font-mono text-sm font-medium text-neutral-900">
+              {selectedRepo.name} · {currentBranch}
+            </p>
+            <span className="ml-auto text-xs text-neutral-400">
+              Live preview
+            </span>
+          </div>
+          <div className="min-h-0 flex-1">
+            <PreviewPanel
+              deployment={deployment}
+              loading={deploymentLoading}
+              error={deploymentError}
+              onRefresh={loadDeployment}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Pull requests — open PRs with merge */}
       <Dialog open={prsOpen} onOpenChange={setPrsOpen}>
         <DialogContent className="max-w-xl">
@@ -1301,8 +1443,13 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         createSharedWorkspace={createSharedWorkspace}
       />
 
-      {/* Top bar */}
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 px-4">
+      {/* Top bar — hidden in mobile focus mode for maximum code space */}
+      <header
+        className={cn(
+          "flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 px-4",
+          focusMode && isMobile && "hidden",
+        )}
+      >
         <Wordmark />
         <div className="flex items-center gap-3">
           <button
@@ -1326,6 +1473,41 @@ export function WorkspaceView(props: WorkspaceViewProps) {
             <Cpu className="size-3.5 text-neutral-500" />
             <span className="hidden text-xs text-neutral-500 sm:inline">
               Runtime
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setViewMode("preview");
+              loadDeployment();
+            }}
+            disabled={!selectedRepo}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Live deployment preview — test the app without leaving Aria"
+          >
+            <Rocket className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Live
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setFocusMode((f) => !f)}
+            aria-pressed={focusMode}
+            className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 transition-colors ${
+              focusMode
+                ? "border-neutral-900 bg-neutral-900 text-white"
+                : "border-neutral-200 hover:bg-neutral-100"
+            }`}
+            title={
+              focusMode
+                ? "Exit focus mode"
+                : "Focus mode — hide everything but the code"
+            }
+          >
+            <Focus className="size-3.5" />
+            <span className="hidden text-xs sm:inline">
+              {focusMode ? "Exit focus" : "Focus"}
             </span>
           </button>
           <button
@@ -1358,6 +1540,25 @@ export function WorkspaceView(props: WorkspaceViewProps) {
               {billing?.configured && billing.plan === "free" ? "Upgrade" : "Pro"}
             </span>
           </button>
+          {/* Offline sync safeguard indicator */}
+          {(offline.pending > 0 || !offline.online) && (
+            <span
+              className="flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-700"
+              title={
+                !offline.online
+                  ? "You're offline — edits are saved on this device and sync when you're back."
+                  : `${offline.pending} unsaved edit${offline.pending > 1 ? "s" : ""} queued — syncing when online.`
+              }
+            >
+              <WifiOff className="size-3" />
+              <span className="hidden sm:inline">
+                {!offline.online
+                  ? "Offline"
+                  : `${offline.pending} queued`}
+              </span>
+              {offline.syncing && <Loader2 className="size-3 animate-spin" />}
+            </span>
+          )}
           {liveSessions && liveSessions.length > 0 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1450,7 +1651,8 @@ export function WorkspaceView(props: WorkspaceViewProps) {
             mobileView === "repos"
               ? "max-md:flex max-md:w-full"
               : "max-md:hidden",
-            "md:flex md:w-64",
+            // Focus mode on desktop collapses the sidebars.
+            focusMode ? "md:hidden" : "md:flex md:w-64",
           )}
         >
           <div className="flex items-center justify-between px-4 pt-4">
@@ -1539,7 +1741,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
             mobileView === "files"
               ? "max-md:flex max-md:w-full"
               : "max-md:hidden",
-            "md:flex md:w-72",
+            focusMode ? "md:hidden" : "md:flex md:w-72",
           )}
         >
           <div className="px-4 pt-4">
@@ -1605,6 +1807,14 @@ export function WorkspaceView(props: WorkspaceViewProps) {
                       onClick={() => {
                         setChecksOpen(true);
                         if (!checks) loadChecks();
+                      }}
+                    />
+                    <DeploymentChip
+                      deployment={deployment}
+                      loading={deploymentLoading}
+                      onClick={() => {
+                        setViewMode("preview");
+                        loadDeployment();
                       }}
                     />
                   </div>

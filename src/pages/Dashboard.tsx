@@ -20,6 +20,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { ConnectScreen } from "@/components/workspace-shared";
 import { WorkspaceView } from "@/components/WorkspaceView";
+import { type DeploymentInfo } from "@/components/PreviewPanel";
+import { useNetworkReconciliation } from "@/hooks/useNetworkReconciliation";
+import { queueDraft } from "@/lib/offlineBuffer";
 
 // Per-tab device id for live presence. Module-scope so it is generated once
 // per page load (not on every render — keeps the component pure) and stays
@@ -91,9 +94,21 @@ function Workspace({
   // Draft vault: autosave unsaved edits per (repo, branch, path), drop them
   // once committed, and list everything for the vault dialog.
   const saveDraft = useMutation(api.github.saveDraft);
+  // Offline reconciliation writes buffered drafts back with a recency check,
+  // so replay never clobbers a fresher draft another device saved.
+  const saveDraftIfNewer = useMutation(api.github.saveDraftIfNewer);
   const deleteDraft = useMutation(api.github.deleteDraft);
   const getDraftContent = useMutation(api.github.getDraftContent);
   const drafts = useQuery(api.github.listDrafts);
+
+  // Live deployment preview: the latest GitHub deployment for the branch
+  // (Vercel / Netlify / Actions publish these), powering the Preview tab and
+  // the deployment chip. `loadDeployment` lives below next to currentBranch;
+  // this polling effect refreshes the chip every 30s while a repo is open.
+  const getDeploymentStatus = useAction(api.deployments.getDeploymentStatus);
+  const [deployment, setDeployment] = useState<DeploymentInfo | null>(null);
+  const [deploymentLoading, setDeploymentLoading] = useState(false);
+  const [deploymentError, setDeploymentError] = useState<string | null>(null);
 
   // Live presence: one row per browser tab. This tab heartbeats so other
   // devices see where it is, and we subscribe to everyone else's sessions.
@@ -138,7 +153,7 @@ function Workspace({
   );
   const [isNewFile, setIsNewFile] = useState(false);
   const [editorContent, setEditorContent] = useState("");
-  const [viewMode, setViewMode] = useState<"edit" | "diff">("edit");
+  const [viewMode, setViewMode] = useState<"edit" | "diff" | "preview">("edit");
   const [fileLoading, setFileLoading] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [committing, setCommitting] = useState(false);
@@ -328,6 +343,37 @@ function Workspace({
   const fileRequestRef = useRef(0);
 
   const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
+
+  // Live deployment preview — fetch + 30s polling for the branch's latest
+  // GitHub deployment (Vercel / Netlify / Actions register these on push).
+  const loadDeployment = useCallback(async () => {
+    if (!selectedRepo || !currentBranch) return;
+    const [owner, repo] = selectedRepo.fullName.split("/");
+    if (!owner || !repo) return;
+    setDeploymentLoading(true);
+    try {
+      const result = await getDeploymentStatus({
+        owner,
+        repo,
+        branch: currentBranch,
+      });
+      setDeployment(result.deployment);
+      setDeploymentError(result.error);
+    } catch (e) {
+      setDeploymentError(errorMessage(e));
+    } finally {
+      setDeploymentLoading(false);
+    }
+  }, [selectedRepo, currentBranch, getDeploymentStatus]);
+  useEffect(() => {
+    if (!selectedRepo || !currentBranch) {
+      setDeployment(null);
+      return;
+    }
+    void loadDeployment();
+    const id = setInterval(() => void loadDeployment(), 30_000);
+    return () => clearInterval(id);
+  }, [selectedRepo, currentBranch, loadDeployment]);
 
   // On mobile the workspace is a single drill-down screen; desktop shows all
   // three panes side by side.
@@ -556,17 +602,26 @@ function Workspace({
       }).catch(() => {
         // Best-effort persistence — never interrupt the workspace for it.
       });
-      // Draft vault: only files that actually have unsaved work.
+      // Draft vault: only files that actually have unsaved work. If the write
+      // fails (weak Wi-Fi / dead zone / Convex hiccup), the edit is queued to
+      // localStorage and replayed by useNetworkReconciliation on reconnect —
+      // never silently dropped.
       if (openFile && (isNewFile || dirty)) {
-        void saveDraft({
+        const draftArgs = {
           repo: selectedRepo.fullName,
           branch: currentBranch,
           path: openFile.path,
           content: editorContent,
           cursorLine: getCursorSync()?.line,
           cursorColumn: getCursorSync()?.column,
-        }).catch(() => {
-          // Best-effort persistence — never interrupt the workspace for it.
+        };
+        void saveDraft(draftArgs).catch(() => {
+          queueDraft({
+            ...draftArgs,
+            cursorLine: draftArgs.cursorLine ?? null,
+            cursorColumn: draftArgs.cursorColumn ?? null,
+            updatedAt: Date.now(),
+          });
         });
       }
     }, 600);
@@ -623,6 +678,43 @@ function Workspace({
       void clearLiveSession({ deviceId: DEVICE_ID }).catch(() => {});
     };
   }, [updateLiveSession, clearLiveSession, deviceLabel]);
+
+  // Offline safeguard: draft saves that failed while offline were queued to
+  // localStorage; this hook replays the queue the moment connectivity
+  // returns — via saveDraftIfNewer so a fresher draft from another device
+  // always wins.
+  const offlineToastShownRef = useRef(false);
+  const { online, pendingCount: offlinePending, syncing: offlineSyncing } =
+    useNetworkReconciliation({
+      enabled: selectedRepo !== null,
+      push: async (draft) => {
+        await saveDraftIfNewer({
+          repo: draft.repo,
+          branch: draft.branch,
+          path: draft.path,
+          content: draft.content,
+          cursorLine: draft.cursorLine ?? undefined,
+          cursorColumn: draft.cursorColumn ?? undefined,
+          updatedAt: draft.updatedAt,
+        });
+      },
+      onSynced: (count) => {
+        toast.success(
+          `${count} offline edit${count > 1 ? "s" : ""} synced to the draft vault.`,
+        );
+      },
+      onOffline: () => {
+        if (!offlineToastShownRef.current) {
+          offlineToastShownRef.current = true;
+          toast.warning(
+            "You're offline — edits are saved on this device and will sync when you're back.",
+          );
+        }
+      },
+    });
+  useEffect(() => {
+    if (online) offlineToastShownRef.current = false;
+  }, [online]);
 
   const handleRevert = async () => {
     if (!revertTarget || !selectedRepo || !currentBranch) return;
@@ -1683,6 +1775,11 @@ function Workspace({
       setEditorContent={setEditorContent}
       viewMode={viewMode}
       setViewMode={setViewMode}
+      deployment={deployment}
+      deploymentLoading={deploymentLoading}
+      deploymentError={deploymentError}
+      loadDeployment={loadDeployment}
+      offline={{ online, pending: offlinePending, syncing: offlineSyncing }}
       fileLoading={fileLoading}
       dirty={dirty}
       openFileIsStaged={openFileIsStaged}
