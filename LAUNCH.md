@@ -42,6 +42,9 @@ Set these in the **Keys / API keys** UI of your hosting dashboard
 | `VAPID_PUBLIC_KEY` | Already baked into the client — set it here too | Web push (public half of the keypair) |
 | `VAPID_PRIVATE_KEY` | See LAUNCH.md §5 (generated keypair) | Web push signing |
 
+> Free Convex plan = $0/mo, runs 24×7, crons included, pay only if you exceed
+> the included usage. No card required to start. See §5 "Uptime reality check".
+
 > `STRIPE_PRICE_ID` (legacy) is still honored as the Pro price if
 > `STRIPE_PRICE_ID_PRO` is unset — set the new keys and remove the old one
 > once migration is done.
@@ -173,11 +176,17 @@ functional at that URL the moment the deploy finishes.
 2. **GitHub OAuth**: the popup flow uses the GitHub OAuth app you created in
    Section 2 — add `https://<project>.convex.cloud` (or your custom domain)
    to its Authorized JavaScript origins + callback URLs.
-3. **Uptime reality check:** Convex's free (Hobby) tier runs your functions
-   and crons but pauses the deployment after a period of inactivity. For
-   guaranteed 24×7 with the push cron and no pauses, Convex Pro (~$10/mo)
-   is the only real cost — everything else stays on free tiers. The app is
-   otherwise fully serverless; nothing needs to "run" continuously.
+3. **Uptime reality check (2026 pricing):** Convex's **Free plan is $0/mo and
+   runs continuously** — serverless, nothing to keep "on". Crons (the push
+   notification scheduler) are included on Free. Free gives you 1M function
+   calls, 20 GB-hours of action compute, 0.5 GB database, and 1 GB file
+   storage per month; beyond that you pay-as-you-go at metered rates (only
+   when you exceed the included amounts — you are never charged a flat fee,
+   and data is never deleted). If you exceed limits for an extended period
+   the deployment returns HTTP errors until usage drops or you upgrade.
+   Upgrade to **Professional ($25/developer/mo)** when you want the much
+   higher included limits, a custom domain, log streaming, daily backups,
+   and email support — it is not required to launch.
 
 Web push specifics: notifications are sent by the **Convex cron** (every 10
 minutes, `crons.ts`) even when every tab is closed, and by the open app every
