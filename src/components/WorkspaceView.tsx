@@ -1,20 +1,28 @@
-import {
-  CodeEditor,
-  insertTextAtCursor,
-  onActiveEditorFocus,
-} from "@/components/CodeEditor";
+// CodeEditor pulls in Monaco (≈1.5 MB gzipped) — lazy-load it so the app
+// shell loads fast and the editor arrives on the first file open. The tiny
+// symbol-insertion/focus registry stays in the main bundle (type-only monaco
+// import in editorRegistry).
+const CodeEditor = lazy(() =>
+  import("@/components/CodeEditor").then((m) => ({ default: m.CodeEditor })),
+);
+import { insertTextAtCursor, onActiveEditorFocus } from "@/lib/editorRegistry";
 import { CodingAccessoryBar } from "@/components/CodingAccessoryBar";
 import { PreviewPanel, type DeploymentInfo } from "@/components/PreviewPanel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { RuntimeDialog } from "@/components/RuntimeDialog";
-import { LocalGitDialog } from "@/components/LocalGitDialog";
+// LocalGitDialog pulls in isomorphic-git + LightningFS (≈500 KB gzipped) —
+// lazy-load it so the browser git engine only loads when the user opens it.
+const LocalGitDialog = lazy(() =>
+  import("@/components/LocalGitDialog").then((m) => ({ default: m.LocalGitDialog })),
+);
 import { BillingDialog } from "@/components/BillingDialog";
 import { AiUsageMeter } from "@/components/AiUsageMeter";
 import { RepoUsageBadge } from "@/components/RepoUsageBadge";
 import { InboxDialog } from "@/components/InboxDialog";
 import { AiReviewDialog } from "@/components/AiReviewDialog";
 import { AdminDialog } from "@/components/AdminDialog";
+import { StressTestDialog } from "@/components/StressTestDialog";
 import { PLAN_BY_ID } from "@/lib/plans";
 import {
   ShareWorkspaceDialog,
@@ -55,8 +63,9 @@ import {
 import { formatDate, formatSize, type Repository } from "@/lib/github";
 import { diffLines, parseUnifiedPatch } from "@/lib/diff";
 import { cn } from "@/lib/utils";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { lazy, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
+  Activity,
   Archive,
   ArrowLeft,
   Bell,
@@ -576,6 +585,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [inboxOpen, setInboxOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [stressOpen, setStressOpen] = useState(false);
 
   // Mobile editor: visual-viewport height (so the keyboard never clips the
   // canvas), focus mode (collapse everything but the code while typing) and
@@ -1455,6 +1465,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         branch={currentBranch ?? ""}
       />
       <AdminDialog open={adminOpen} onOpenChange={setAdminOpen} />
+      <StressTestDialog open={stressOpen} onOpenChange={setStressOpen} />
       <ShareWorkspaceDialog
         open={shareOpen}
         onOpenChange={setShareOpen}
@@ -1581,6 +1592,17 @@ export function WorkspaceView(props: WorkspaceViewProps) {
               </button>
             )}
           <RepoUsageBadge onUpgrade={() => setBillingOpen(true)} />
+          <button
+            type="button"
+            onClick={() => setStressOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100"
+            title="Stress test — measure this instance under load"
+          >
+            <Activity className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Test
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => setBillingOpen(true)}

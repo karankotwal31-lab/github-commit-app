@@ -4,46 +4,15 @@ import type { editor as MonacoEditor } from "monaco-editor";
 import "@/lib/monaco";
 import { languageForPath } from "@/lib/monaco";
 import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
+import { notifyFocus, setActiveEditor } from "@/lib/editorRegistry";
+
+// The active-editor registry lives in @/lib/editorRegistry (type-only monaco
+// import) so the workspace chrome can insert symbols / detect focus without
+// pulling the Monaco runtime into the main bundle.
 
 export interface EditorCursor {
   line: number;
   column: number;
-}
-
-// ---------------------------------------------------------------------------
-// Active-editor registry
-//
-// The mobile coding accessory bar (symbol insertion, focus detection) works
-// through this module registry instead of prop-drilling the editor instance
-// through the whole workspace layout. Only one editor is mounted at a time
-// (the workspace keys it by path), so a single slot is enough.
-// ---------------------------------------------------------------------------
-
-let activeEditor: MonacoEditor.IStandaloneCodeEditor | null = null;
-
-/** Insert `text` at the cursor of the currently focused editor (no-op → false). */
-export function insertTextAtCursor(text: string): boolean {
-  const editor = activeEditor;
-  if (!editor) return false;
-  editor.trigger("keyboard", "type", { text });
-  editor.focus();
-  return true;
-}
-
-const focusListeners = new Set<(focused: boolean) => void>();
-
-/** Subscribe to text-focus changes of the active editor; returns unsubscribe. */
-export function onActiveEditorFocus(
-  listener: (focused: boolean) => void,
-): () => void {
-  focusListeners.add(listener);
-  return () => {
-    focusListeners.delete(listener);
-  };
-}
-
-function notifyFocus(focused: boolean) {
-  for (const listener of focusListeners) listener(focused);
 }
 
 /**
@@ -75,14 +44,12 @@ export function CodeEditor({
       theme="aria"
       onMount={(editor) => {
         editorRef.current = editor;
-        activeEditor = editor;
+        setActiveEditor(editor);
         editor.onDidFocusEditorText(() => notifyFocus(true));
         editor.onDidBlurEditorText(() => notifyFocus(false));
         editor.onDidDispose(() => {
-          if (activeEditor === editor) {
-            activeEditor = null;
-            notifyFocus(false);
-          }
+          setActiveEditor(null);
+          notifyFocus(false);
         });
         editor.onDidChangeCursorPosition((e) => {
           setCursorSync({

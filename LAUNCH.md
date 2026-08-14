@@ -101,6 +101,10 @@ bun run build          # outputs dist/
 # then point your host at dist/ with an SPA fallback to /index.html
 ```
 
+> **Build memory:** Aria bundles Monaco (large editor) — the production build
+> needs **≥ 4 GB RAM** on the CI/build machine. Netlify/Vercel/Cloudflare free
+> tiers provide this; very small containers (~2 GB) can OOM during `vite build`.
+
 Every host below is free-tier-viable:
 
 | Host | Free tier | Notes |
