@@ -103,17 +103,18 @@ export default function Terms() {
           We may update these terms; material changes will be announced in the
           app. Questions? Contact{" "}
           <a
-            href="mailto:legal@yourapp.com"
+            href="mailto:legal@arialabs.dev"
             className="underline underline-offset-2"
           >
-            legal@yourapp.com
+            legal@arialabs.dev
           </a>{" "}
-          (replace with your real address before launch).
+          or write to Aria Labs (Karan Kotwal), 2825 Azad Nagar, Ranjhi,
+          Jabalpur, Madhya Pradesh 482005, India.
         </p>
         <p>
-          These terms are governed by the laws of your jurisdiction of
-          residence where mandatory law applies; otherwise by the laws of the
-          place where we operate.
+          These terms are governed by the laws of India (Jabalpur, Madhya
+          Pradesh), where Aria Labs operates, except where mandatory law in
+          your jurisdiction of residence applies.
         </p>
       </LegalSection>
     </LegalShell>

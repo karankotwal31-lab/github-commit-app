@@ -462,7 +462,7 @@ export default function Landing() {
                 <div className="mt-6 flex-1" />
                 {tier.id === "enterprise" ? (
                   <a
-                    href="mailto:sales@aria.dev?subject=Aria%20Enterprise"
+                    href="mailto:sales@arialabs.dev?subject=Aria%20Enterprise"
                     className={`inline-flex h-9 items-center justify-center rounded-md border text-sm font-medium transition-colors ${
                       tier.highlighted
                         ? "border-neutral-700 text-neutral-200 hover:border-neutral-500"
@@ -501,6 +501,7 @@ export default function Landing() {
               Terms
             </Link>
             <span className="hidden sm:inline">One desk. One GitHub. Nothing else.</span>
+            <span>© 2026 Aria Labs · All rights reserved</span>
           </div>
         </div>
       </footer>

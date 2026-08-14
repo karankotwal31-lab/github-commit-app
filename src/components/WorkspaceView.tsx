@@ -18,11 +18,13 @@ const LocalGitDialog = lazy(() =>
 );
 import { BillingDialog } from "@/components/BillingDialog";
 import { AiUsageMeter } from "@/components/AiUsageMeter";
+import { AiCommitMessageButton } from "@/components/AiCommitMessageButton";
 import { RepoUsageBadge } from "@/components/RepoUsageBadge";
 import { InboxDialog } from "@/components/InboxDialog";
 import { AiReviewDialog } from "@/components/AiReviewDialog";
 import { AdminDialog } from "@/components/AdminDialog";
 import { StressTestDialog } from "@/components/StressTestDialog";
+import { CreateIssueDialog } from "@/components/CreateIssueDialog";
 import { PLAN_BY_ID } from "@/lib/plans";
 import {
   ShareWorkspaceDialog,
@@ -586,6 +588,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [stressOpen, setStressOpen] = useState(false);
+  const [issueOpen, setIssueOpen] = useState(false);
 
   // Mobile editor: visual-viewport height (so the keyboard never clips the
   // canvas), focus mode (collapse everything but the code while typing) and
@@ -1241,6 +1244,10 @@ export function WorkspaceView(props: WorkspaceViewProps) {
             <DialogTitle>Ask Aria</DialogTitle>
           </DialogHeader>
           <AiUsageMeter onUpgrade={() => setBillingOpen(true)} />
+          <AiCommitMessageButton
+            staged={staged}
+            onMessage={(msg) => setCommitMessage(msg)}
+          />
           {aiHistory.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
@@ -1466,6 +1473,12 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       />
       <AdminDialog open={adminOpen} onOpenChange={setAdminOpen} />
       <StressTestDialog open={stressOpen} onOpenChange={setStressOpen} />
+      <CreateIssueDialog
+        open={issueOpen}
+        onOpenChange={setIssueOpen}
+        owner={selectedRepo?.fullName.split("/")[0] ?? ""}
+        repo={selectedRepo?.fullName.split("/")[1] ?? ""}
+      />
       <ShareWorkspaceDialog
         open={shareOpen}
         onOpenChange={setShareOpen}
@@ -1592,6 +1605,18 @@ export function WorkspaceView(props: WorkspaceViewProps) {
               </button>
             )}
           <RepoUsageBadge onUpgrade={() => setBillingOpen(true)} />
+          <button
+            type="button"
+            onClick={() => setIssueOpen(true)}
+            disabled={!selectedRepo}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100 disabled:opacity-40"
+            title="Create an issue in this repository"
+          >
+            <CircleDot className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Issue
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => setStressOpen(true)}

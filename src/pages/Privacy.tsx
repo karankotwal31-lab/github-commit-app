@@ -100,13 +100,14 @@ export default function Privacy() {
           your account, or ask us to delete or correct your data. Contact us
           at{" "}
           <a
-            href="mailto:privacy@yourapp.com"
+            href="mailto:privacy@arialabs.dev"
             className="underline underline-offset-2"
           >
-            privacy@yourapp.com
+            privacy@arialabs.dev
           </a>{" "}
-          (replace with your real address before launch) and we'll respond
-          within 30 days.
+          or write to Aria Labs (Karan Kotwal), 2825 Azad Nagar, Ranjhi,
+          Jabalpur, Madhya Pradesh 482005, India — and we'll respond within
+          30 days.
         </p>
         <p>
           If you're in the EU/UK, this policy is your record of processing

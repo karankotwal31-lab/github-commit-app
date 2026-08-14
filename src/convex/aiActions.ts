@@ -637,3 +637,140 @@ Rules:
     };
   },
 });
+
+/**
+ * AI commit message generator (Ask Aria pool): turns the staged changes into
+ * a conventional-commit message. Metered against the plan's monthly quota
+ * like every other AI call. Proposes only — the developer edits/commits.
+ */
+export const aiCommitMessage = action({
+  args: {
+    repo: v.optional(v.string()),
+    changes: v.array(
+      v.object({
+        path: v.string(),
+        action: v.union(v.literal("update"), v.literal("create")),
+        originalContent: v.optional(v.string()),
+        content: v.string(),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    if (args.changes.length === 0) {
+      throw new Error("Stage some changes first — there's nothing to describe yet.");
+    }
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    // Same monthly quota gate as Ask Aria (enforced at the action layer).
+    const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
+    if (usage.quota !== null && usage.used >= usage.quota) {
+      throw new Error(
+        "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
+      );
+    }
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+      );
+    }
+
+    // Compact per-file summary: rough +/- from line counts plus a short
+    // excerpt of the new content — keeps the request tiny and effective.
+    const files = args.changes.slice(0, 8).map((c) => {
+      const oldLines = (c.originalContent ?? "")
+        .split("\n")
+        .filter((l) => l.trim()).length;
+      const newLines = c.content.split("\n").filter((l) => l.trim()).length;
+      return {
+        path: c.path,
+        action: c.action,
+        plus: Math.max(0, newLines),
+        minus: Math.max(0, oldLines),
+        excerpt: c.content.replace(/\s+/g, " ").trim().slice(0, 200),
+      };
+    });
+    const summary = files
+      .map(
+        (f) =>
+          `${f.action} ${f.path} (+${f.plus}/-${f.minus})\n  ${f.excerpt}`,
+      )
+      .join("\n");
+
+    const systemPrompt = `You are Aria, writing a git commit message for a solo developer. Reply with ONLY a JSON object — no markdown, no code fences — in exactly this shape:
+{
+  "message": "<the commit message>"
+}
+
+Rules:
+- Use Conventional Commits: a one-line subject (max 72 chars) prefixed with type (feat, fix, refactor, chore, docs, test, style, perf), followed by an optional blank line and a short body (max 6 lines) explaining what and why.
+- Base it ONLY on the staged changes provided. Never invent files or work.
+- If multiple changes are unrelated, pick the dominant type and summarize.
+- Never mention AI or that this was generated.`;
+
+    const userPrompt = `Repository: ${args.repo ?? "this repository"}\n\nStaged changes:\n${summary}`;
+
+    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
+    let data: {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    };
+    try {
+      const res = await fetch(OPENROUTER_API, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "X-Title": "Aria",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        }),
+      });
+      data = (await res.json()) as typeof data;
+      if (!res.ok) {
+        const detail = data?.error?.message ?? `HTTP ${res.status}`;
+        throw new Error(
+          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
+        );
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
+        throw e;
+      }
+      throw new Error(
+        "Couldn't reach the AI provider — check your network and try again.",
+      );
+    }
+
+    const reply = data?.choices?.[0]?.message?.content ?? "";
+    if (!reply.trim()) {
+      throw new Error("The AI replied with nothing — try again or rephrase.");
+    }
+    const parsed = extractJson(reply) as { message?: unknown } | null;
+    const message =
+      parsed && typeof parsed.message === "string"
+        ? parsed.message.trim().slice(0, 2000)
+        : "";
+    if (!message) {
+      throw new Error(
+        "The AI's response couldn't be understood — try again or rephrase.",
+      );
+    }
+
+    await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await ctx.runMutation(internal.aiUsage.logAudit, {
+      userId,
+      action: "ai.commit_message",
+      repo: args.repo ?? undefined,
+      detail: `${args.changes.length} file(s)`,
+    });
+
+    return { message };
+  },
+});

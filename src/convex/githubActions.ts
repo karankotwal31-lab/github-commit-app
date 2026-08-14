@@ -1738,6 +1738,38 @@ function repoFromUrl(url: string | null | undefined): string {
   return match ? match[1] : url.replace(/^https?:\/\/api\.github\.com\/repos\//, "");
 }
 
+/** Create an issue in the current repository. */
+export const createIssue = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    title: v.string(),
+    body: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const token = await getToken(ctx);
+    const title = args.title.trim();
+    if (!title) throw new Error("Issue title can't be empty.");
+    const data = await githubFetch<{
+      number: number;
+      title: string;
+      html_url: string;
+    }>(
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/issues`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          title: title.slice(0, 200),
+          body: (args.body ?? "").slice(0, 8000),
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    return { number: data.number, title: data.title, htmlUrl: data.html_url };
+  },
+});
+
 /**
  * Unified cross-repo inbox (Pro): PRs awaiting the user's review and issues
  * assigned to them, aggregated across every repo/org they can access — one

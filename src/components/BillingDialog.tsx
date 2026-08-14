@@ -256,7 +256,7 @@ export function BillingDialog({
 
                 {id === "enterprise" ? (
                   <a
-                    href="mailto:sales@aria.dev?subject=Aria%20Enterprise"
+                    href="mailto:sales@arialabs.dev?subject=Aria%20Enterprise"
                     className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-neutral-300 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-100"
                   >
                     Contact sales
