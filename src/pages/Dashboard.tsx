@@ -70,10 +70,11 @@ function Workspace({
   const saveWorkspaceState = useMutation(api.github.saveWorkspaceState);
   const workspaceState = useQuery(api.github.getWorkspaceState);
 
-  // Billing: the user's plan (free/pro). When Stripe isn't configured the app
-  // stays fully unlocked (configured: false) — the Pro gate only activates
-  // once billing keys exist.
+  // Billing: the user's plan (free → enterprise) + AI usage metering. When
+  // Stripe isn't configured the app stays fully unlocked (configured: false),
+  // so every gate below only activates once billing keys exist.
   const billing = useQuery(api.billing.plan);
+  const aiUsage = useQuery(api.aiUsage.getAiUsage);
   const [billingOpen, setBillingOpen] = useState(false);
 
   // Team workspaces: share the current repo + branch with teammates via a
@@ -764,12 +765,17 @@ function Workspace({
     if (!selectedRepo || !currentBranch) return;
     const instruction = aiInstruction.trim();
     if (!instruction) return;
-    // Pro gate: Ask Aria is the paid feature (any paid tier unlocks it).
-    // Skipped entirely when Stripe isn't configured, so the app stays fully
-    // unlocked until then.
-    if (billing?.configured && billing.plan === "free") {
+    // Quota gate: Free includes a monthly taste of Ask Aria; every tier's
+    // quota is enforced server-side in the action. If this month's requests
+    // are spent, nudge the user to upgrade instead of letting the action fail.
+    if (
+      billing?.configured &&
+      aiUsage &&
+      aiUsage.quota !== null &&
+      aiUsage.used >= aiUsage.quota
+    ) {
       setAiError(null);
-      toast.error("Ask Aria is a Pro feature — upgrade to use it.", {
+      toast.error("You've used all your Ask Aria requests for this month.", {
         action: {
           label: "Upgrade",
           onClick: () => setBillingOpen(true),

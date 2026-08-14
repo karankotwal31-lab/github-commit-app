@@ -1,27 +1,85 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import { v } from "convex/values";
+import { type PlanId } from "../lib/plans";
 
 /**
- * Billing state for the Pro tier — queries/mutations only (no Node APIs).
- * The Stripe actions live in billingActions.ts ("use node") because only
- * actions can run in the Node.js runtime.
+ * Billing state for the plan ladder (free → pro → pro_plus → team →
+ * enterprise) — queries/mutations only (no Node APIs). The Stripe actions
+ * live in billingActions.ts ("use node") because only actions can run in the
+ * Node.js runtime.
  *
- * - `plan` query: the signed-in user's plan (free / pro). When Stripe isn't
+ * - `plan` query: the signed-in user's plan + seats. When Stripe isn't
  *   configured the app stays fully unlocked (`configured: false`).
- * - `setPlan` internal mutation: called by the Stripe webhook (stripeWebhook.ts)
- *   to keep the stored plan in sync with reality.
+ * - `setPlan` internal mutation: called by the Stripe webhook
+ *   (billingActions.ts) to keep the stored plan in sync with reality.
  */
 
-/** Whether billing is configured on the backend (keys + a price set). */
+export const planValidator = v.union(
+  v.literal("free"),
+  v.literal("pro"),
+  v.literal("pro_plus"),
+  v.literal("team"),
+  v.literal("enterprise"),
+);
+
+/** Which env var holds the Stripe price id for a check-out-able tier. */
+const PRICE_ENV: Record<string, string> = {
+  pro: "STRIPE_PRICE_ID_PRO",
+  pro_plus: "STRIPE_PRICE_ID_PRO_PLUS",
+  team: "STRIPE_PRICE_ID_TEAM",
+};
+
+function env(name: string): string | null {
+  const value = process.env[name];
+  return value && value.trim() ? value : null;
+}
+
+/** Whether billing is configured on the backend (keys + at least one price). */
+function billingConfigured(): boolean {
+  return !!(
+    process.env.STRIPE_SECRET_KEY &&
+    (process.env.STRIPE_PRICE_ID ||
+      process.env.STRIPE_PRICE_ID_PRO ||
+      process.env.STRIPE_PRICE_ID_PRO_PLUS ||
+      process.env.STRIPE_PRICE_ID_TEAM)
+  );
+}
+
+/** Stripe price ids per tier, from env (STRIPE_PRICE_ID is the Pro legacy). */
+export function priceIds(): Record<string, string | null> {
+  return {
+    pro: env("STRIPE_PRICE_ID_PRO") ?? env("STRIPE_PRICE_ID"),
+    pro_plus: env("STRIPE_PRICE_ID_PRO_PLUS"),
+    team: env("STRIPE_PRICE_ID_TEAM"),
+  };
+}
+
+/** Map a Stripe price id back to its tier (used by the webhook). */
+export function tierForPriceId(priceId: string | null | undefined): PlanId | null {
+  if (!priceId) return null;
+  const ids = priceIds();
+  for (const [tier, id] of Object.entries(ids)) {
+    if (id === priceId) return tier as PlanId;
+  }
+  return null;
+}
+
+/** Whether a tier is purchasable at self-serve checkout. */
+export function isCheckoutTier(tier: string): tier is "pro" | "pro_plus" | "team" {
+  return tier === "pro" || tier === "pro_plus" || tier === "team";
+}
+
 export const billingConfig = query({
   args: {},
-  handler: () => ({
-    configured: !!(
-      process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID
-    ),
-    priceId: process.env.STRIPE_PRICE_ID ?? null,
-  }),
+  handler: () => {
+    const configured = billingConfigured();
+    return {
+      configured,
+      priceId: priceIds().pro ?? null,
+      prices: priceIds(),
+    };
+  },
 });
 
 /** The signed-in user's current plan (free unless Stripe says otherwise). */
@@ -29,23 +87,32 @@ export const plan = query({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
-    const configured = !!(
-      process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID
-    );
+    const configured = billingConfigured();
     if (userId === null || !configured) {
-      return { configured, plan: "free" as const, currentPeriodEnd: null };
+      return {
+        configured,
+        plan: "free" as PlanId,
+        currentPeriodEnd: null,
+        seats: null,
+      };
     }
     const row = await ctx.db
       .query("billing")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .unique();
     if (row === null) {
-      return { configured, plan: "free" as const, currentPeriodEnd: null };
+      return {
+        configured,
+        plan: "free" as PlanId,
+        currentPeriodEnd: null,
+        seats: null,
+      };
     }
     return {
       configured,
-      plan: row.plan,
+      plan: row.plan as PlanId,
       currentPeriodEnd: row.currentPeriodEnd ?? null,
+      seats: row.seats ?? null,
     };
   },
 });
@@ -62,14 +129,32 @@ export const billingForUser = internalQuery({
   },
 });
 
+/** Internal: full billing snapshot for the current user (for actions). */
+export const planForUser = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("billing")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .unique();
+    return {
+      plan: (row?.plan ?? "free") as PlanId,
+      seats: row?.seats ?? null,
+      stripeSubscriptionId: row?.stripeSubscriptionId ?? null,
+      currentPeriodEnd: row?.currentPeriodEnd ?? null,
+    };
+  },
+});
+
 /** Internal: update the stored plan (called by the Stripe webhook). */
 export const setPlan = internalMutation({
   args: {
     userId: v.id("users"),
-    plan: v.union(v.literal("free"), v.literal("pro")),
+    plan: planValidator,
     stripeCustomerId: v.optional(v.string()),
     stripeSubscriptionId: v.optional(v.string()),
     currentPeriodEnd: v.optional(v.number()),
+    seats: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -82,6 +167,7 @@ export const setPlan = internalMutation({
       stripeCustomerId: args.stripeCustomerId,
       stripeSubscriptionId: args.stripeSubscriptionId,
       currentPeriodEnd: args.currentPeriodEnd,
+      seats: args.seats,
       updatedAt: Date.now(),
     };
     if (existing !== null) {

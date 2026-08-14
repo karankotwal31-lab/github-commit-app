@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import {
   ArrowRight,
+  Check,
   Diff,
   GitBranch,
   GitCommitHorizontal,
@@ -11,6 +12,7 @@ import {
   Plus,
 } from "lucide-react";
 import { Link } from "react-router";
+import { PLANS } from "@/lib/plans";
 
 const STEPS = [
   {
@@ -383,6 +385,106 @@ export default function Landing() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Pricing */}
+      <section className="border-t border-neutral-200">
+        <div className="mx-auto w-full max-w-5xl px-6 py-20 sm:py-28">
+          <div className="mx-auto max-w-2xl text-center">
+            <p className="text-xs font-medium uppercase tracking-[0.22em] text-neutral-400">
+              Pricing
+            </p>
+            <h2 className="mt-6 text-balance text-3xl font-semibold tracking-tight sm:text-4xl">
+              One desk, every pace of work.
+            </h2>
+            <p className="mt-4 text-pretty text-base leading-7 text-neutral-500">
+              The core desk is free forever. AI requests reset each month, and
+              every upgrade activates instantly through Stripe.
+            </p>
+          </div>
+          <div className="mt-12 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {PLANS.map((tier) => (
+              <div
+                key={tier.id}
+                className={`flex flex-col rounded-lg border p-6 ${
+                  tier.highlighted
+                    ? "border-neutral-900 bg-neutral-900 text-white"
+                    : "border-neutral-200"
+                }`}
+              >
+                <p
+                  className={`text-xs font-medium uppercase tracking-[0.18em] ${
+                    tier.highlighted ? "text-neutral-400" : "text-neutral-400"
+                  }`}
+                >
+                  {tier.name}
+                </p>
+                <p className="mt-3 text-3xl font-semibold tracking-tight">
+                  {tier.priceLabel}
+                  {tier.monthlyPrice !== undefined && tier.monthlyPrice > 0 && (
+                    <span
+                      className={`text-sm font-normal ${
+                        tier.highlighted ? "text-neutral-400" : "text-neutral-500"
+                      }`}
+                    >
+                      {" "}
+                      /mo
+                    </span>
+                  )}
+                </p>
+                <p
+                  className={`mt-2 text-sm leading-6 ${
+                    tier.highlighted ? "text-neutral-300" : "text-neutral-500"
+                  }`}
+                >
+                  {tier.tagline}
+                </p>
+                <ul className="mt-5 space-y-2">
+                  {tier.features.slice(0, 4).map((f) => (
+                    <li key={f} className="flex items-start gap-2 text-sm leading-5">
+                      <Check
+                        className={`mt-0.5 size-3.5 shrink-0 ${
+                          tier.highlighted ? "text-neutral-300" : "text-emerald-600"
+                        }`}
+                      />
+                      <span
+                        className={
+                          tier.highlighted ? "text-neutral-200" : "text-neutral-600"
+                        }
+                      >
+                        {f}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-6 flex-1" />
+                {tier.id === "enterprise" ? (
+                  <a
+                    href="mailto:sales@aria.dev?subject=Aria%20Enterprise"
+                    className={`inline-flex h-9 items-center justify-center rounded-md border text-sm font-medium transition-colors ${
+                      tier.highlighted
+                        ? "border-neutral-700 text-neutral-200 hover:border-neutral-500"
+                        : "border-neutral-300 text-neutral-700 hover:border-neutral-500"
+                    }`}
+                  >
+                    Contact sales
+                  </a>
+                ) : (
+                  <Link
+                    to="/auth"
+                    className={`inline-flex h-9 items-center justify-center rounded-md text-sm font-medium transition-colors ${
+                      tier.highlighted
+                        ? "bg-white text-neutral-900 hover:bg-neutral-200"
+                        : "bg-neutral-900 text-white hover:bg-neutral-700"
+                    }`}
+                  >
+                    {tier.monthlyPrice === 0 ? "Start free" : "Get started"}
+                  </Link>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       </section>

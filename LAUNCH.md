@@ -35,7 +35,13 @@ Set these in the **Keys / API keys** UI of your hosting dashboard
 | `OPENROUTER_API_KEY` | openrouter.ai (free tier exists) | "Ask Aria" AI |
 | `STRIPE_SECRET_KEY` | Stripe Dashboard → Developers → API keys | Checkout & billing |
 | `STRIPE_WEBHOOK_SECRET` | Stripe → Webhooks (after step 3) | Subscription events |
-| `STRIPE_PRICE_ID` | Stripe → Products (after step 3) | The Pro price |
+| `STRIPE_PRICE_ID_PRO` | Stripe → Products (after step 3) | Pro price ($12/mo) |
+| `STRIPE_PRICE_ID_PRO_PLUS` | Stripe → Products (after step 3) | Pro+ price ($29/mo) |
+| `STRIPE_PRICE_ID_TEAM` | Stripe → Products (after step 3) | Team price ($45/seat/mo) |
+
+> `STRIPE_PRICE_ID` (legacy) is still honored as the Pro price if
+> `STRIPE_PRICE_ID_PRO` is unset — set the new keys and remove the old one
+> once migration is done.
 
 Managed automatically by the platform (do **not** set these):
 `VLY_APP_NAME`, `VLY_CONVEX_AUTH_ISSUER`.
@@ -54,10 +60,13 @@ Managed automatically by the platform (do **not** set these):
 
 ---
 
-## 3. Stripe setup
+## 3. Stripe setup (5-tier ladder)
 
-1. Create a product **Aria Pro** with a recurring monthly price (e.g. $12/mo).
-2. Copy the Price ID into `STRIPE_PRICE_ID`.
+1. Create one product per paid tier, each with a recurring monthly price:
+   - **Aria Pro** — $12/mo → `STRIPE_PRICE_ID_PRO`
+   - **Aria Pro+** — $29/mo → `STRIPE_PRICE_ID_PRO_PLUS`
+   - **Aria Team** — $45/seat/mo (per-seat, metered quantity) → `STRIPE_PRICE_ID_TEAM`
+2. Copy each Price ID into its env var above.
 3. Deploy once (step 4), then create a webhook endpoint:
    - URL: `https://<your-convex-site>.convex.site/stripe/webhook`
    - Events: `checkout.session.completed`, `customer.subscription.updated`,
@@ -65,9 +74,19 @@ Managed automatically by the platform (do **not** set these):
 4. Copy the webhook signing secret into `STRIPE_WEBHOOK_SECRET`.
 5. Switch to **live mode** and repeat with live keys when ready to take money.
 
-> Single-tier is intentional for v1. The tier ladder (Free / Pro / Pro+ /
-> Team / Enterprise) is designed in the billing schema and can be switched on
-> without re-architecting — the gating already lives server-side.
+How the ladder is enforced (all server-side, never UI-hidden):
+
+| Tier | Price | Ask Aria quota / mo | Notes |
+|---|---|---|---|
+| Free | $0 | 50 | 1 private repo (tracked, see repo limits) |
+| Pro | $12/mo | 300 | Unlimited private repos, unified inbox |
+| Pro+ | $29/mo | 1,500 | AI review on push, AI PR descriptions |
+| Team | $45/seat/mo | Unlimited | SSO, audit logs, admin console; prorated seats |
+| Enterprise | Custom | Unlimited | Self-hosted option, custom SLA — contact sales |
+
+Quota is enforced in the `aiSuggest` action (check before, meter after), and
+usage shows as "X of Y used" in the billing dialog and the Ask Aria panel.
+Team seat changes are prorated automatically via `updateTeamSeats` (Stripe).
 
 ---
 

@@ -225,6 +225,17 @@ export const aiSuggest = action({
       role: h.role,
       content: h.content.slice(0, 2000),
     }));
+    const userId = await getAuthUserId(ctx);
+    // Quota gate — enforced at the action layer, never by UI hiding alone.
+    // When billing isn't configured the quota is null (app stays unlocked).
+    if (userId !== null) {
+      const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
+      if (usage.quota !== null && usage.used >= usage.quota) {
+        throw new Error(
+          "You've used all your Ask Aria requests for this month — upgrade your plan or wait for the next billing cycle.",
+        );
+      }
+    }
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
       throw new Error(
@@ -425,6 +436,18 @@ ${instruction}`;
       throw new Error(
         "The AI proposed no usable changes — try rephrasing with more specifics, or check that the request is achievable in this repository.",
       );
+    }
+
+    // Metering: count this successful call toward the plan's monthly quota,
+    // and leave an audit trail (Team/Enterprise) for who asked what, when.
+    if (userId !== null) {
+      await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+      await ctx.runMutation(internal.aiUsage.logAudit, {
+        userId,
+        action: "ai.ask",
+        repo: `${args.owner}/${args.repo}`,
+        detail: instruction.slice(0, 300),
+      });
     }
 
     return {

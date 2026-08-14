@@ -10,6 +10,8 @@ import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { RuntimeDialog } from "@/components/RuntimeDialog";
 import { LocalGitDialog } from "@/components/LocalGitDialog";
 import { BillingDialog } from "@/components/BillingDialog";
+import { AiUsageMeter } from "@/components/AiUsageMeter";
+import { PLAN_BY_ID } from "@/lib/plans";
 import {
   ShareWorkspaceDialog,
   type SharedWorkspaceRow,
@@ -1218,6 +1220,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
           <DialogHeader>
             <DialogTitle>Ask Aria</DialogTitle>
           </DialogHeader>
+          <AiUsageMeter onUpgrade={() => setBillingOpen(true)} />
           {aiHistory.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
@@ -1525,19 +1528,25 @@ export function WorkspaceView(props: WorkspaceViewProps) {
             type="button"
             onClick={() => setBillingOpen(true)}
             className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 transition-colors ${
-              billing?.plan === "pro"
+              billing?.configured && billing.plan !== "free"
                 ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
                 : "border-neutral-200 hover:bg-neutral-100"
             }`}
             title={
               billing?.configured && billing.plan === "free"
                 ? "Upgrade to Aria Pro"
-                : "Aria Pro"
+                : billing?.configured
+                  ? `Aria ${PLAN_BY_ID[billing.plan].name}`
+                  : "Aria plans"
             }
           >
             <Crown className="size-3.5 text-amber-600" />
             <span className="hidden text-xs font-medium sm:inline">
-              {billing?.configured && billing.plan === "free" ? "Upgrade" : "Pro"}
+              {billing?.configured && billing.plan === "free"
+                ? "Upgrade"
+                : billing?.configured
+                  ? PLAN_BY_ID[billing.plan].name
+                  : "Plans"}
             </span>
           </button>
           {/* Offline sync safeguard indicator */}
