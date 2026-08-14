@@ -68,10 +68,18 @@ Convex actions — never commit them):
 | `GITHUB_CLIENT_ID` | ✅ | GitHub OAuth app client id |
 | `GITHUB_CLIENT_SECRET` | ✅ | GitHub OAuth app secret |
 | `OPENROUTER_API_KEY` | For AI | Powers Ask Aria (OpenRouter) |
-| `OPENROUTER_MODEL` | Optional | Override the default free model |
+| `OPENROUTER_MODEL` | Optional | Override the default AI model |
 | `STRIPE_SECRET_KEY` | For billing | Stripe server key (sk_live_/sk_test_) |
 | `STRIPE_WEBHOOK_SECRET` | For billing | Stripe webhook signing secret |
-| `STRIPE_PRICE_ID` | For billing | Recurring price for the Pro plan |
+| `STRIPE_PRICE_ID_PRO` | For Pro | Recurring price for Pro ($12/mo) |
+| `STRIPE_PRICE_ID_PRO_PLUS` | For Pro+ | Recurring price for Pro+ ($29/mo) |
+| `STRIPE_PRICE_ID_TEAM` | For Team | Per-seat price for Team ($45/seat/mo) |
+| `VAPID_PUBLIC_KEY` | For push | Web-push public key (also baked into the client) |
+| `VAPID_PRIVATE_KEY` | For push | Web-push signing key (generate, see LAUNCH.md) |
+
+> `STRIPE_PRICE_ID` (legacy) is still honored as the Pro price if
+> `STRIPE_PRICE_ID_PRO` is unset — set the new keys and remove the old one
+> once migrated.
 
 The GitHub OAuth callback URL to register in your OAuth app is
 `{your-site}/api/github/callback`. The Stripe webhook endpoint is
@@ -121,8 +129,20 @@ manager (`lib/pluginManager`).
 
 ## Monetization
 
-Aria ships with an optional Pro tier. Billing is implemented server-side with
-Stripe (checkout, webhooks, customer portal). When Stripe keys are absent the
-app runs fully unlocked; once configured, Ask Aria becomes a Pro feature.
+Aria ships a five-tier ladder, enforced server-side at the Convex action
+layer (never by UI hiding alone):
+
+| Tier | Price | Ask Aria quota | Adds |
+| --- | --- | --- | --- |
+| Free | $0 | 50 req/mo | Everything core, 1 private repo |
+| Pro | $12/mo | 300 req/mo | Unlimited private repos, unified inbox |
+| Pro+ | $29/mo | 1,500 req/mo | AI PR descriptions, AI review on push |
+| Team | $45/seat/mo | Unlimited | SSO, audit logs, admin console, prorated seats |
+| Enterprise | Custom | Unlimited | Self-hosted, custom SLA — contact sales |
+
+Billing is implemented server-side with Stripe (checkout, webhooks, customer
+portal). When Stripe keys are absent the app runs fully unlocked; once
+configured, quotas and gated features activate automatically. AI usage is
+metered per user per calendar month (`aiUsage.ts`) and shown as "X of Y used".
 Create a Stripe account and price at <https://dashboard.stripe.com>, then add
-the three `STRIPE_*` keys above.
+the `STRIPE_*` keys above. Full setup steps are in `LAUNCH.md`.

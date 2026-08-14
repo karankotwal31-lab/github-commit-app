@@ -130,14 +130,25 @@ from its own infrastructure.
 
 ### Option A — Fastest live URL (Convex static hosting, already configured)
 
+Good news: **the backend is already deployed and live.** `convex dev --once`
+pushes to a running cloud deployment, and the current one answers at
+`https://fearless-starling-421.convex.cloud` (dashboard:
+`dashboard.convex.dev/t/freebuff/572346b3-b0f0-4f8d-9bdd-b2a65fe145b1/fearless-starling-421`).
+What's missing is the **frontend** being served at that URL — that's the
+`bunx convex deploy` step below.
+
 `convex.json` already has `buildCommand` + `outputDirectory`, so one command
 puts the **whole app** — backend + frontend — live:
 
 ```bash
 bunx convex dev --once    # this project, to get the function list green
-bunx convex deploy        # asks you to log in, then deploys schema + functions
+bunx convex@latest deploy # logs you in, then deploys schema + functions
                           # AND builds + serves the frontend at your URL
 ```
+
+> Use `bunx convex@latest` (or `bun i convex@latest` first) — the static-hosting
+> fields in `convex.json` are only recognized by Convex CLI ≥ 1.43. The version
+> bundled with this repo predates them and will warn about `buildCommand`.
 
 Your permanent URL is then **`https://<project>.convex.cloud`** — a real,
 shareable, 24×7 address with HTTPS, no Vercel/Netlify needed. Convex injects
