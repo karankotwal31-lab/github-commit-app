@@ -1,0 +1,26 @@
+Aria — Proprietary License
+Copyright (c) 2026 Aria (the "Licensor")
+All rights reserved.
+
+The Aria source code in this repository is the proprietary, confidential
+software of the Licensor. You may use the source code solely to run,
+operate, and deploy the Aria service for its intended purpose.
+
+You may NOT, without prior written permission from the Licensor:
+
+  1. Redistribute, sublicense, sell, rent, or lease the source code or any
+     substantial portion of it, in original or modified form.
+  2. Use the source code to build a competing product or service.
+  3. Remove or alter any copyright, trademark, or attribution notices.
+
+Using the hosted Aria service is governed by the Terms of Service and
+Privacy Policy published in the application — not by this license.
+
+The software is provided "as is", without warranty of any kind, express or
+implied, including but not limited to the warranties of merchantability,
+fitness for a particular purpose, and noninfringement. In no event shall the
+Licensor be liable for any claim, damages, or other liability arising from
+the use of the software.
+
+If you intend to release Aria as open source, replace this file with a
+standard license (e.g. MIT) before publishing the repository.

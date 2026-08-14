@@ -389,11 +389,17 @@ export default function Landing() {
 
       {/* Footer */}
       <footer className="border-t border-neutral-200">
-        <div className="mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-8">
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
           <Wordmark />
-          <p className="text-xs text-neutral-400">
-            One desk. One GitHub. Nothing else.
-          </p>
+          <div className="flex items-center gap-5 text-xs text-neutral-400">
+            <Link to="/privacy" className="hover:text-neutral-700">
+              Privacy
+            </Link>
+            <Link to="/terms" className="hover:text-neutral-700">
+              Terms
+            </Link>
+            <span className="hidden sm:inline">One desk. One GitHub. Nothing else.</span>
+          </div>
         </div>
       </footer>
     </div>
