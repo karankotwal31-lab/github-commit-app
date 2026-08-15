@@ -10,8 +10,12 @@
  * The test builds a real remote repository (on a second in-memory LightningFS),
  * serves it through the same GitBackend contract the UI wires to Convex, and
  * then drives the app's own functions: clone → edit → status → stage →
- * commit → merge with a conflict → resolve → finish, plus abort, stash and
- * cherry-pick. No mocks of the git engine itself are used.
+ * commit → merge with a conflict → resolve → finish → push, plus abort, stash
+ * and cherry-pick. No mocks of the git engine itself are used — the test
+ * backend's pushCommits rebuilds each pushed commit on the remote with real
+ * git objects (exact parents, author/committer and dates), mirroring what the
+ * Convex action does against the GitHub API, so the SHA-exact push
+ * reconstruction is verified end-to-end.
  */
 import { describe, expect, test } from "bun:test";
 import * as git from "isomorphic-git";
@@ -32,7 +36,9 @@ import {
   localBranchTip,
   localRepoExists,
   mergeBranch,
+  planPush,
   promisesOf,
+  pushLocal,
   repoCtx,
   resetEngine,
   resolveConflictFile,
@@ -45,6 +51,7 @@ import {
   type GitBackend,
   type GitPerson,
 } from "./localGit";
+import { applyChoices, threeWayMerge } from "./merge3";
 
 // ---------------------------------------------------------------------------
 // Minimal functional IndexedDB shim
@@ -211,6 +218,49 @@ const EDITED_HELLO = [
   "",
 ].join("\n");
 
+// Two independent conflict regions in one file, so a merge produces two
+// separate hunks that can be resolved differently (ours vs theirs).
+const TWO_BASE = [
+  "function greet(name: string): string {",
+  '  return "Hello, " + name + "!";',
+  "}",
+  "function farewell(name: string): string {",
+  '  return "Goodbye, " + name + "!";',
+  "}",
+  "",
+].join("\n");
+
+const TWO_OURS = [
+  "function greet(name: string): string {",
+  '  return "Hi, " + name + "!";',
+  "}",
+  "function farewell(name: string): string {",
+  '  return "Later, " + name + "!";',
+  "}",
+  "",
+].join("\n");
+
+const TWO_THEIRS = [
+  "function greet(name: string): string {",
+  '  return "Howdy, " + name + "!";',
+  "}",
+  "function farewell(name: string): string {",
+  '  return "Ciao, " + name + "!";',
+  "}",
+  "",
+].join("\n");
+
+// ours for the first hunk, theirs for the second.
+const TWO_RESOLVED = [
+  "function greet(name: string): string {",
+  '  return "Hi, " + name + "!";',
+  "}",
+  "function farewell(name: string): string {",
+  '  return "Ciao, " + name + "!";',
+  "}",
+  "",
+].join("\n");
+
 /** In-memory db for LightningFS (mirrors localGit's private MemoryDb). */
 class MemoryDb {
   private map = new Map<string | number, unknown>();
@@ -344,8 +394,116 @@ async function makeBackend(): Promise<GitBackend> {
     async commitChanges() {
       return { sha: null };
     },
-    async pushCommits() {
-      return { sha: null };
+    async pushCommits({ branch, moveRef, force, commit }) {
+      // Mirror the Convex action's contract against GitHub: the first parent
+      // must already exist on the remote, then blobs → tree → commit (with
+      // exact parents/authors/dates) → move the branch ref.
+      if (commit.parents.length === 0) {
+        throw new Error("Can't push a root commit — create the first commit on GitHub first.");
+      }
+      let baseTree: string;
+      try {
+        baseTree = (
+          await git.readCommit({
+            fs: remote.fs,
+            dir: remote.dir,
+            gitdir: remote.gitdir,
+            oid: commit.parents[0],
+          })
+        ).commit.tree;
+      } catch {
+        throw new Error(
+          `Parent ${commit.parents[0].slice(0, 7)} isn't on GitHub — push its branch first (it may be a local-only base).`,
+        );
+      }
+
+      const entries = await remoteTreeMap(baseTree);
+      const seen = new Set<string>();
+      for (const file of commit.files) {
+        if (seen.has(file.path)) {
+          throw new Error(`A file appears twice in this commit — stage each file once.`);
+        }
+        seen.add(file.path);
+        if (file.action === "delete") {
+          entries.delete(file.path);
+          continue;
+        }
+        if (file.gitlink !== undefined) {
+          // Submodule pin — write the pinned SHA as a gitlink (mode 160000).
+          entries.set(file.path, { mode: "160000", type: "commit", sha: file.gitlink });
+          continue;
+        }
+        if (file.contentBase64 === undefined) {
+          throw new Error(`No content provided for ${file.path}.`);
+        }
+        const bytes = Buffer.from(file.contentBase64, "base64");
+        const hashed = await git.hashBlob({ object: bytes });
+        await git.writeBlob({
+          fs: remote.fs,
+          dir: remote.dir,
+          gitdir: remote.gitdir,
+          blob: bytes,
+        });
+        entries.set(file.path, { mode: "100644", type: "blob", sha: hashed.oid });
+      }
+      const tree = await remoteWriteTree(entries);
+
+      const personOf = (name?: string, email?: string, iso?: string | null) => {
+        if (!name || !email) return undefined;
+        const parsed = iso ? parseGitDateIso(iso) : { timestamp: 0, timezoneOffset: 0 };
+        return { name, email, timestamp: parsed.timestamp, timezoneOffset: parsed.timezoneOffset };
+      };
+      const author = personOf(commit.authorName, commit.authorEmail, commit.authorDate);
+      const committer = personOf(commit.committerName, commit.committerEmail, commit.committerDate);
+      const oid = await git.writeCommit({
+        fs: remote.fs,
+        dir: remote.dir,
+        gitdir: remote.gitdir,
+        commit: {
+          message: commit.message,
+          tree,
+          parent: commit.parents,
+          author: author ?? { name: AUTHOR.name, email: AUTHOR.email, timestamp: 0, timezoneOffset: 0 },
+          committer: committer ?? { name: AUTHOR.name, email: AUTHOR.email, timestamp: 0, timezoneOffset: 0 },
+        },
+      });
+      if (moveRef) {
+        // GitHub's PATCH refs/heads/{branch} updates an existing ref and
+        // rejects non-fast-forward moves unless force is set — mirror that.
+        const ref = `refs/heads/${branch}`;
+        let current: string | null = null;
+        try {
+          current = await git.resolveRef({
+            fs: remote.fs,
+            dir: remote.dir,
+            gitdir: remote.gitdir,
+            ref,
+          });
+        } catch {
+          current = null;
+        }
+        if (current !== null && current !== oid && !force) {
+          const ancestorLog = await git.log({
+            fs: remote.fs,
+            dir: remote.dir,
+            gitdir: remote.gitdir,
+            ref: oid,
+            depth: 500,
+          });
+          if (!ancestorLog.some((c) => c.oid === current)) {
+            throw new Error(`Update is not a fast forward for ref ${ref}`);
+          }
+        }
+        await git.writeRef({
+          fs: remote.fs,
+          dir: remote.dir,
+          gitdir: remote.gitdir,
+          ref,
+          value: oid,
+          force: true,
+        });
+      }
+      return { sha: oid };
     },
     async beginBlobUpload() {
       return { uploadId: "test-upload" };
@@ -369,7 +527,8 @@ async function setupRemote(): Promise<void> {
   remote = { fs, pfs, dir, gitdir };
   await remoteWrite("README.md", "# Notes\nA calm place for code notes.\n");
   await remoteWrite("hello.ts", BASE_HELLO);
-  await remoteCommit("chore: add README and hello.ts", 1_700_000_000);
+  await remoteWrite("greet.ts", TWO_BASE);
+  await remoteCommit("chore: add README, hello.ts and greet.ts", 1_700_000_000);
 }
 
 /** Fresh local engine + a fresh clone of the remote. Returns the backend. */
@@ -412,6 +571,104 @@ async function remoteMainTip(): Promise<string> {
     gitdir: remote.gitdir,
     ref: "refs/heads/main",
   });
+}
+
+/** Mirror the app's createBranch action: a new branch on GitHub at `fromOid`. */
+async function remoteCreateBranch(name: string, fromOid: string): Promise<void> {
+  await git.writeRef({
+    fs: remote.fs,
+    dir: remote.dir,
+    gitdir: remote.gitdir,
+    ref: `refs/heads/${name}`,
+    value: fromOid,
+    force: false,
+  });
+}
+
+/**
+ * Parse the engine's gitDateIso() output ("2023-11-14T06:30:00+05:30", UTC
+ * instant + git-convention offset) back into the {timestamp, timezoneOffset}
+ * pair isomorphic-git's writeCommit expects (JS convention: minutes behind
+ * UTC). This is what the Convex action feeds to GitHub's git/commits API to
+ * recreate a commit byte-identically.
+ */
+function parseGitDateIso(iso: string): { timestamp: number; timezoneOffset: number } {
+  const offsetMatch = /([+-])(\d{2}):(\d{2})$/.exec(iso);
+  const timestamp = Math.floor(new Date(iso).getTime() / 1000);
+  let timezoneOffset = 0;
+  if (offsetMatch) {
+    const ahead = Number(offsetMatch[2]) * 60 + Number(offsetMatch[3]);
+    timezoneOffset = offsetMatch[1] === "+" ? -ahead : ahead;
+    // isomorphic-git preserves -0 and formats it as "-0000"; the original
+    // commit wrote "+0000" for a zero offset. Normalize so the raw line
+    // (and therefore the SHA) round-trips exactly.
+    if (Object.is(timezoneOffset, -0)) timezoneOffset = 0;
+  }
+  return { timestamp, timezoneOffset };
+}
+
+/** Recursively read a remote tree into path → {mode, type, sha}. */
+async function remoteTreeMap(
+  treeOid: string,
+): Promise<Map<string, { mode: string; type: string; sha: string }>> {
+  const map = new Map<string, { mode: string; type: string; sha: string }>();
+  const stack: Array<{ oid: string; prefix: string }> = [{ oid: treeOid, prefix: "" }];
+  while (stack.length > 0) {
+    const { oid, prefix } = stack.pop()!;
+    const { tree } = await git.readTree({
+      fs: remote.fs,
+      dir: remote.dir,
+      gitdir: remote.gitdir,
+      oid,
+    });
+    for (const entry of tree) {
+      const path = prefix ? `${prefix}/${entry.path}` : entry.path;
+      if (entry.type === "tree") {
+        stack.push({ oid: entry.oid, prefix: path });
+      } else {
+        map.set(path, { mode: entry.mode, type: entry.type, sha: entry.oid });
+      }
+    }
+  }
+  return map;
+}
+
+/** Write a git tree on the remote from a path map (same sort as the engine). */
+async function remoteWriteTree(
+  entries: Map<string, { mode: string; type: string; sha: string }>,
+): Promise<string> {
+  const dirMap = new Map<string, Map<string, { mode: string; type: string; sha: string }>>();
+  for (const [path, entry] of entries) {
+    const parts = path.split("/");
+    const name = parts.pop()!;
+    const parent = parts.join("/");
+    if (!dirMap.has(parent)) dirMap.set(parent, new Map());
+    dirMap.get(parent)!.set(name, entry);
+  }
+  const oidCache = new Map<string, string>();
+  const depthOf = (dir: string) => (dir ? dir.split("/").length : 0);
+  const sortedDirs = [...dirMap.keys()].sort((a, b) => depthOf(b) - depthOf(a));
+  for (const dir of sortedDirs) {
+    const children = dirMap.get(dir)!;
+    const tree = [...children.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, child]) => ({
+        mode: child.mode,
+        path: name,
+        type: child.type === "tree" ? ("tree" as const) : (child.type as "blob" | "commit"),
+        oid: child.type === "tree" ? oidCache.get(dir ? `${dir}/${name}` : name) ?? child.sha : child.sha,
+      }));
+    const oid = await git.writeTree({
+      fs: remote.fs,
+      dir: remote.dir,
+      gitdir: remote.gitdir,
+      tree,
+    });
+    oidCache.set(dir, oid);
+  }
+  const root = oidCache.get("");
+  if (!root) throw new Error("Empty tree — nothing to write.");
+  return root;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,5 +878,184 @@ describe("cherry-pick", () => {
     const graph = await getGraph(OWNER, REPO);
     expect(graph.commits.some((c) => c.oid === outcome.oid)).toBe(true);
     expect(graph.headBranch).toBe("main");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Push (SHA-exact reconstruction on a real remote)
+// ---------------------------------------------------------------------------
+
+describe("push (SHA-exact reconstruction)", () => {
+  test("clone → two-branch conflict → per-hunk resolve → merge → push → remote matches local", async () => {
+    const backend = await freshClone();
+
+    // feature edits both regions of greet.ts differently…
+    await makeBranch("feature", "main");
+    // Create the branch on GitHub too (the app's createBranch action), so
+    // pushing feature is a fast-forward, like in the real workspace.
+    await remoteCreateBranch("feature", await remoteMainTip());
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "feature" });
+    await writeWorkFile(OWNER, REPO, "greet.ts", encodeText(TWO_THEIRS));
+    await stageFile(OWNER, REPO, "greet.ts");
+    await localCommit("feat(feature): howdy + ciao greetings");
+    const featureTip = (await localBranchTip(OWNER, REPO, "feature"))!;
+
+    // …and main edits the same two regions differently.
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "main" });
+    await writeWorkFile(OWNER, REPO, "greet.ts", encodeText(TWO_OURS));
+    await stageFile(OWNER, REPO, "greet.ts");
+    await localCommit("feat(main): hi + later greetings");
+    const mainTip = (await localBranchTip(OWNER, REPO, "main"))!;
+
+    // Push feature first so the merge commit's second parent exists remotely.
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "feature" });
+    const featurePush = await pushLocal(backend, {
+      owner: OWNER,
+      repo: REPO,
+      branch: "feature",
+    });
+    expect(featurePush.pushed).toBe(1);
+    expect(featurePush.finalSha).toBe(featureTip);
+    expect(featurePush.ancestryReplayed).toBe(false);
+    expect(
+      await git.resolveRef({
+        fs: remote.fs,
+        dir: remote.dir,
+        gitdir: remote.gitdir,
+        ref: "refs/heads/feature",
+      }),
+    ).toBe(featureTip);
+
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "main" });
+
+    // Merging feature into main conflicts on both regions of greet.ts.
+    const outcome = await mergeBranch(backend, {
+      owner: OWNER,
+      repo: REPO,
+      theirs: "feature",
+      message: "Merge feature",
+      author: AUTHOR,
+    });
+    expect(outcome.type).toBe("conflicts");
+    if (outcome.type !== "conflicts") throw new Error("expected conflicts");
+    const file = outcome.files.find((f) => f.path === "greet.ts");
+    expect(file).toBeDefined();
+    expect(file!.binary).toBe(false);
+
+    // Resolve exactly like the resolver UI: split into three-way chunks and
+    // pick ours for hunk 1, theirs for hunk 2.
+    const full = threeWayMerge(
+      decodeText(file!.base!),
+      decodeText(file!.ours!),
+      decodeText(file!.theirs!),
+    );
+    const conflictChunks = full.chunks.filter((c) => c.kind === "conflict");
+    expect(conflictChunks.length).toBe(2);
+    let conflictIndex = 0;
+    const resolved = applyChoices(full.chunks, (chunk) => {
+      if (chunk.kind === "common") return "base";
+      const pick = conflictIndex === 0 ? "ours" : "theirs";
+      conflictIndex++;
+      return pick;
+    });
+    expect(resolved).toBe(TWO_RESOLVED);
+
+    await resolveConflictFile(OWNER, REPO, "greet.ts", encodeText(resolved));
+    expect(allResolved()).toBe(true);
+    const mergeOid = await finishMerge({
+      owner: OWNER,
+      repo: REPO,
+      message: "Merge feature",
+      author: AUTHOR,
+    });
+    expect(await localRead("greet.ts")).toBe(TWO_RESOLVED);
+
+    // Push main. featureTip is reachable through the merge's second parent,
+    // so the engine recreates it too — but it already exists on GitHub (we
+    // pushed it earlier), so it content-addresses to the SAME sha instead of
+    // creating a duplicate.
+    const mainPush = await pushLocal(backend, {
+      owner: OWNER,
+      repo: REPO,
+      branch: "main",
+    });
+    expect(mainPush.pushed).toBe(3);
+    expect(mainPush.finalSha).toBe(mergeOid);
+    expect(mainPush.ancestryReplayed).toBe(false);
+
+    // The remote now matches local exactly: same tip SHA, both parents of the
+    // merge preserved, the resolved content landed on GitHub, and the feature
+    // branch ref wasn't disturbed.
+    expect(await remoteMainTip()).toBe(mergeOid);
+    expect(await localBranchTip(OWNER, REPO, "main")).toBe(mergeOid);
+    expect(
+      await git.resolveRef({
+        fs: remote.fs,
+        dir: remote.dir,
+        gitdir: remote.gitdir,
+        ref: "refs/heads/feature",
+      }),
+    ).toBe(featureTip);
+    const remoteMerge = (
+      await git.readCommit({
+        fs: remote.fs,
+        dir: remote.dir,
+        gitdir: remote.gitdir,
+        oid: mergeOid,
+      })
+    ).commit;
+    expect(remoteMerge.parent).toEqual([mainTip, featureTip]);
+    const remoteGreet = decodeText(
+      (
+        await git.readBlob({
+          fs: remote.fs,
+          dir: remote.dir,
+          gitdir: remote.gitdir,
+          oid: (await remoteTreeMap(remoteMerge.tree)).get("greet.ts")!.sha,
+        })
+      ).blob,
+    );
+    expect(remoteGreet).toBe(TWO_RESOLVED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Push guards (diverged remote)
+// ---------------------------------------------------------------------------
+
+describe("push guards", () => {
+  test("a diverged remote requires an explicit force push — never silent", async () => {
+    const backend = await freshClone();
+
+    // Another device pushed to main while we were offline.
+    await remoteWrite("other.txt", "from another device\n");
+    await remoteCommit("chore: remote-only change", 1_700_100_000);
+
+    // Local commit on top of the old base.
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    await localCommit("feat: local greeting change");
+    const localTip = (await localBranchTip(OWNER, REPO, "main"))!;
+
+    const plan = await planPush(backend, { owner: OWNER, repo: REPO, branch: "main" });
+    expect(plan.needsForce).toBe(true);
+    expect(plan.localTip).toBe(localTip);
+
+    // Without consent the push refuses to rewrite history…
+    await expect(
+      pushLocal(backend, { owner: OWNER, repo: REPO, branch: "main" }),
+    ).rejects.toThrow(/diverged|rewrite history/);
+
+    // …and with an explicit force the remote tip lands on the local commit.
+    const forced = await pushLocal(backend, {
+      owner: OWNER,
+      repo: REPO,
+      branch: "main",
+      force: true,
+    });
+    expect(forced.pushed).toBe(1);
+    expect(forced.replayed).toBe(true);
+    expect(forced.finalSha).toBe(localTip);
+    expect(await remoteMainTip()).toBe(localTip);
   });
 });

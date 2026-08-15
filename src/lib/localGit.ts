@@ -957,7 +957,39 @@ export async function pushLocal(
 
   const log = await git.log({ fs, dir, gitdir, ref: `refs/heads/${branch}`, depth: 500 });
   const remoteIndex = log.findIndex((c) => c.oid === remoteTip);
-  const toPush = (remoteIndex >= 0 ? log.slice(0, remoteIndex) : log).reverse();
+  let toPush: typeof log;
+  if (remoteIndex >= 0) {
+    // Fast-forward: recreate exactly the commits since the remote tip.
+    toPush = log.slice(0, remoteIndex);
+  } else {
+    // Diverged: the remote tip isn't in local history (another device pushed
+    // commits we've never fetched). Recreating the whole local log would try
+    // to rewrite shared history — including root commits GitHub can't parent.
+    // Walk the remote side through the backend to find where the histories
+    // meet, and recreate only the local commits GitHub doesn't have yet.
+    const logSet = new Set(log.map((c) => c.oid));
+    const remoteAncestors = new Set<string>();
+    const queue: Array<{ sha: string; remaining: number }> = [
+      { sha: remoteTip, remaining: 200 },
+    ];
+    while (queue.length > 0) {
+      const { sha, remaining } = queue.shift()!;
+      if (remaining <= 0 || remoteAncestors.has(sha)) continue;
+      remoteAncestors.add(sha);
+      if (logSet.has(sha)) continue; // histories meet here — stop this line
+      let detail: CommitDetails;
+      try {
+        detail = await backend.getCommitDetails({ owner, repo, sha });
+      } catch {
+        continue; // shallow boundary — can't see further back
+      }
+      for (const parent of detail.parents.slice(0, 1)) {
+        queue.push({ sha: parent, remaining: remaining - 1 });
+      }
+    }
+    toPush = log.filter((c) => !remoteAncestors.has(c.oid));
+  }
+  toPush = toPush.reverse();
 
   // Local oid → GitHub oid, so a recreated commit whose SHA GitHub computes
   // differently still parents the rest of the chain correctly.
