@@ -620,6 +620,23 @@ const schema = defineSchema(
       approvedBy: v.id("users"),
       approvedAt: v.number(),
     }).index("by_orgAction", ["orgId", "action", "branch"]),
+
+    // Personal access tokens for the Aria CLI (and future integrations like
+    // a VS Code extension). Only the SHA-256 hash of the token is stored —
+    // the plaintext is shown exactly once at creation. Bearer-auth'd HTTP
+    // actions verify against this table; revoking sets revokedAt and the
+    // token stops working immediately.
+    cliTokens: defineTable({
+      userId: v.id("users"),
+      tokenHash: v.string(),
+      prefix: v.string(), // display-only, e.g. "aria_Ab12cD…"
+      label: v.string(),
+      createdAt: v.number(),
+      lastUsedAt: v.optional(v.number()),
+      revokedAt: v.optional(v.number()),
+    })
+      .index("by_hash", ["tokenHash"])
+      .index("by_user", ["userId"]),
   },
   {
     schemaValidation: false,

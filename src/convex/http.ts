@@ -138,6 +138,63 @@ http.route({
   handler: stripeWebhook,
 });
 
+// ---------------------------------------------------------------------------
+// Aria CLI — read-only endpoints authenticated with personal access tokens
+// (created in the app under Platform → CLI & API). The CLI never sees the
+// GitHub OAuth token; it only gets the user's own data, scoped to them.
+// ---------------------------------------------------------------------------
+
+const bearerOf = (request: Request): string | null =>
+  request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? null;
+
+const unauthorized = () =>
+  Response.json(
+    { error: "Unauthorized — set ARIA_TOKEN or pass --token." },
+    { status: 401 },
+  );
+
+http.route({
+  path: "/api/cli/whoami",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearerOf(request);
+    const userId = token
+      ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
+      : null;
+    if (!userId) return unauthorized();
+    const data = await ctx.runQuery(internal.cli.whoamiByUser, { userId });
+    return Response.json(data);
+  }),
+});
+
+http.route({
+  path: "/api/cli/repos",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearerOf(request);
+    const userId = token
+      ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
+      : null;
+    if (!userId) return unauthorized();
+    const data = await ctx.runQuery(internal.cli.reposByUser, { userId });
+    return Response.json(data);
+  }),
+});
+
+http.route({
+  path: "/api/cli/inbox",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearerOf(request);
+    const userId = token
+      ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
+      : null;
+    if (!userId) return unauthorized();
+    const data = await ctx.runQuery(internal.cli.inboxByUser, { userId });
+    return Response.json(data);
+  }),
+});
+
 // Serve the built frontend (dist/) from the deployment root with SPA
 // fallback to index.html. Exact routes registered above always win over
 // this static catch-all.

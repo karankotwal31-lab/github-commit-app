@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "bun test",
+    "cli": "bun src/cli/aria.ts",
     "format": "prettier --write .",
     "preview": "vite preview"
   },

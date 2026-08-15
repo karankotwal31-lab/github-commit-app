@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import { type Id } from "@/convex/_generated/dataModel";
 import {
   BadgeCheck,
   Boxes,
@@ -14,8 +15,10 @@ import {
   Shield,
   Smartphone,
   Tablet,
+  Terminal,
   Users,
 } from "lucide-react";
+import { errorMessage } from "@/lib/github";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1331,6 +1334,148 @@ function ReleaseOrg({
   );
 }
 
+// CLI & API tab — personal access tokens for the Aria CLI (and future
+// integrations). Tokens are scoped to the signed-in user, hashed at rest
+// (plaintext shown exactly once), and revocable instantly. The CLI never
+// sees the GitHub OAuth token.
+function CliTab() {
+  const tokens = useQuery(api.cli.listCliTokens);
+  const create = useMutation(api.cli.createCliToken);
+  const revoke = useMutation(api.cli.revokeCliToken);
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<{ token: string; label: string } | null>(
+    null,
+  );
+  const [copied, setCopied] = useState(false);
+
+  const handleCreate = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await create({ label });
+      setCreated(result);
+      setLabel("");
+      setCopied(false);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRevoke = async (id: Id<"cliTokens">) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await revoke({ tokenId: id });
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-3 text-[11px] leading-5 text-neutral-600">
+        Personal access tokens let the{" "}
+        <span className="font-medium text-neutral-700">Aria CLI</span> talk to
+        the same backend you use in the browser —{" "}
+        <code className="font-mono">whoami</code>, <code className="font-mono">repos</code>,{" "}
+        <code className="font-mono">inbox</code>. Tokens are hashed at rest,
+        scoped to your account, and never touch GitHub credentials.
+      </div>
+
+      {error && <p className="text-[11px] text-red-600">{error}</p>}
+
+      {created && (
+        <div className="rounded-md border border-emerald-100 bg-emerald-50 p-3">
+          <p className="mb-1 text-[11px] font-medium text-emerald-800">
+            Token created — copy it now. It is shown only once.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 break-all rounded border border-emerald-200 bg-white px-2 py-1 font-mono text-[11px] text-emerald-900">
+              {created.token}
+            </code>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 shrink-0 text-[11px]"
+              onClick={() => {
+                void navigator.clipboard.writeText(created.token);
+                setCopied(true);
+              }}
+            >
+              {copied ? "Copied" : "Copy"}
+            </Button>
+          </div>
+          <p className="mt-2 text-[11px] leading-4 text-emerald-700">
+            Save it with:{" "}
+            <code className="font-mono">bun run cli -- login --token &lt;paste&gt;</code>
+          </p>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Label (e.g. work laptop)"
+          className="h-9 flex-1 text-sm"
+        />
+        <Button type="button" onClick={() => void handleCreate()} disabled={busy}>
+          {busy ? (
+            <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+          ) : (
+            <Terminal className="mr-1.5 size-3.5" />
+          )}
+          Create token
+        </Button>
+      </div>
+
+      {tokens === undefined ? (
+        <p className="text-xs text-neutral-400">Loading tokens…</p>
+      ) : tokens.length === 0 ? (
+        <p className="py-4 text-center text-xs text-neutral-400">
+          No tokens yet — create one to use the CLI.
+        </p>
+      ) : (
+        <ul className="divide-y divide-neutral-100 overflow-hidden rounded-lg border border-neutral-200">
+          {tokens.map((t) => (
+            <li key={String(t._id)} className="flex items-center gap-2 px-3 py-2">
+              <Terminal className="size-3.5 shrink-0 text-neutral-400" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-medium text-neutral-800">
+                  {t.label}
+                </p>
+                <p className="text-[10px] text-neutral-400">
+                  {t.prefix} · created {new Date(t.createdAt).toLocaleDateString()}
+                  {t.lastUsedAt
+                    ? ` · last used ${new Date(t.lastUsedAt).toLocaleDateString()}`
+                    : " · never used"}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 shrink-0 text-[11px] text-red-600 hover:bg-red-50"
+                disabled={busy}
+                onClick={() => void handleRevoke(t._id)}
+              >
+                Revoke
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Dialog shell
 // ---------------------------------------------------------------------------
@@ -1417,6 +1562,9 @@ export function PlatformDialog({
             <TabsTrigger value="release">
               <Rocket className="mr-1.5 size-3.5" /> Release
             </TabsTrigger>
+            <TabsTrigger value="cli">
+              <Terminal className="mr-1.5 size-3.5" /> CLI & API
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="org" className="mt-3">
@@ -1438,6 +1586,9 @@ export function PlatformDialog({
               branch={branch}
               orgId={orgId}
             />
+          </TabsContent>
+          <TabsContent value="cli" className="mt-3">
+            <CliTab />
           </TabsContent>
         </Tabs>
       </DialogContent>
