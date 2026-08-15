@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   CircleDashed,
+  FileText,
   GitPullRequest,
   Inbox,
   Loader2,
@@ -27,7 +28,15 @@ import { cn } from "@/lib/utils";
 
 interface AiFinding {
   _id: string;
-  kind: "dependency" | "stale_pr" | "config_change" | "failing_ci";
+  kind:
+    | "dependency"
+    | "stale_pr"
+    | "config_change"
+    | "failing_ci"
+    | "security"
+    | "dependency_upgrade"
+    | "docs"
+    | "mission";
   repo: string;
   title: string;
   detail: string;
@@ -374,11 +383,15 @@ export function InboxDialog({
 }
 
 function FindingIcon({ kind }: { kind: AiFinding["kind"] }) {
-  const styles = {
+  const styles: Record<AiFinding["kind"], string> = {
     dependency: "text-amber-600",
     stale_pr: "text-sky-600",
     config_change: "text-red-600",
     failing_ci: "text-rose-600",
+    security: "text-rose-600",
+    dependency_upgrade: "text-amber-600",
+    docs: "text-sky-600",
+    mission: "text-emerald-600",
   };
   return (
     <span className={cn("mt-0.5 shrink-0", styles[kind])}>
@@ -386,6 +399,10 @@ function FindingIcon({ kind }: { kind: AiFinding["kind"] }) {
       {kind === "stale_pr" && <GitPullRequest className="size-3.5" />}
       {kind === "config_change" && <Lock className="size-3.5" />}
       {kind === "failing_ci" && <XCircle className="size-3.5" />}
+      {kind === "security" && <ShieldAlert className="size-3.5" />}
+      {kind === "dependency_upgrade" && <AlertTriangle className="size-3.5" />}
+      {kind === "docs" && <FileText className="size-3.5" />}
+      {kind === "mission" && <CheckCircle2 className="size-3.5" />}
     </span>
   );
 }

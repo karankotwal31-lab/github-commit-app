@@ -30,6 +30,7 @@ import { WhyChangedDialog } from "@/components/WhyChangedDialog";
 import { CrossRepoDialog } from "@/components/CrossRepoDialog";
 import { AiReviewDialog } from "@/components/AiReviewDialog";
 import { AdminDialog } from "@/components/AdminDialog";
+import { SecurityCenterDialog } from "@/components/SecurityCenterDialog";
 import { StressTestDialog } from "@/components/StressTestDialog";
 import { CreateIssueDialog } from "@/components/CreateIssueDialog";
 import { PushNotificationsToggle } from "@/components/PushNotificationsToggle";
@@ -761,6 +762,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [inboxOpen, setInboxOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [securityOpen, setSecurityOpen] = useState(false);
   const [stressOpen, setStressOpen] = useState(false);
   const [issueOpen, setIssueOpen] = useState(false);
   const [simpleMode, setSimpleMode] = useState(false);
@@ -1685,6 +1687,25 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         branch={currentBranch ?? ""}
       />
       <AdminDialog open={adminOpen} onOpenChange={setAdminOpen} />
+      <SecurityCenterDialog
+        open={securityOpen}
+        onOpenChange={setSecurityOpen}
+        owner={selectedRepo?.fullName.split("/")[0] ?? ""}
+        repo={selectedRepo?.fullName.split("/")[1] ?? ""}
+        branch={currentBranch ?? ""}
+      />
+      {/* Security entry point (kept here so it survives header layout churn) */}
+      {selectedRepo && !securityOpen && (
+        <button
+          type="button"
+          onClick={() => setSecurityOpen(true)}
+          className="fixed bottom-16 right-4 z-40 flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-600 shadow-sm transition-colors hover:bg-neutral-50"
+          title="Security command center — health, dependencies, rules, memory, missions"
+        >
+          <ShieldAlert className="size-3.5 text-neutral-500" />
+          Security
+        </button>
+      )}
       <StressTestDialog open={stressOpen} onOpenChange={setStressOpen} />
       <CreateIssueDialog
         open={issueOpen}

@@ -162,12 +162,18 @@ const schema = defineSchema(
       .index("by_userPeriod", ["userId", "period"]),
 
     // Audit trail: who did what and when (commits, pushes, merges, AI calls,
-    // plan changes). Written from the action layer; shown to Team/Enterprise
-    // admins.
+    // plan changes, secret overrides, mission approvals). Written from the
+    // action layer; shown to Team/Enterprise admins (and the mission owner in
+    // the security center). Phase 3 extends the record with the branch,
+    // result, whether an approval was involved, and the mission it belongs to.
     auditLogs: defineTable({
       userId: v.id("users"),
       action: v.string(),
       repo: v.optional(v.string()),
+      branch: v.optional(v.string()),
+      result: v.optional(v.string()), // e.g. "ok" | "blocked" | "overridden" | "approved" | "denied"
+      approval: v.optional(v.boolean()),
+      missionId: v.optional(v.id("missions")),
       detail: v.optional(v.string()),
       createdAt: v.number(),
     })
@@ -281,10 +287,12 @@ const schema = defineSchema(
 
     // Background AI checker findings: one row per issue the scheduled scan
     // surfaced (outdated/risky dependencies, stale PRs, suspicious config
-    // changes, failing CI). Deterministic scans produce template explanations
-    // — nothing is ever auto-fixed, only surfaced as cards for review. Rows
-    // are upserted by (userId, key) so a fixed finding disappears on the next
-    // scan, and pruned to a cap so the inbox stays tidy.
+    // changes, failing CI, security scan hits, dependency upgrade warnings,
+    // docs gaps, mission completions). Deterministic scans produce template
+    // explanations — nothing is ever auto-fixed, only surfaced as cards for
+    // review. Rows are upserted by (userId, key) so a fixed finding
+    // disappears on the next scan, and pruned to a cap so the inbox stays
+    // tidy.
     aiFindings: defineTable({
       userId: v.id("users"),
       key: v.string(), // dedup: e.g. "deps:owner/repo:lodash"
@@ -293,6 +301,10 @@ const schema = defineSchema(
         v.literal("stale_pr"),
         v.literal("config_change"),
         v.literal("failing_ci"),
+        v.literal("security"),
+        v.literal("dependency_upgrade"),
+        v.literal("docs"),
+        v.literal("mission"),
       ),
       repo: v.string(), // full name, e.g. "owner/name"
       title: v.string(),
@@ -302,6 +314,179 @@ const schema = defineSchema(
     })
       .index("by_userId", ["userId"])
       .index("by_userKey", ["userId", "key"]),
+
+    // Project constitution (Phase 3): repository-specific rules a user has
+    // written down — files never to modify, conventions, testing/deployment
+    // requirements. Rules are visible, editable, persisted, and enforced
+    // server-side at the commit and PR gates (never UI hiding alone).
+    projectRules: defineTable({
+      userId: v.id("users"),
+      repo: v.string(), // full name, e.g. "owner/name"
+      title: v.string(),
+      body: v.string(), // free-text rule
+      paths: v.array(v.string()), // file specs the rule applies to
+      action: v.union(v.literal("block"), v.literal("require_review")),
+      updatedAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userRepo", ["userId", "repo"]),
+
+    // Project memory (Phase 3): repository-scoped facts/instructions the user
+    // wants Aria to remember. Visible, editable, deletable, permission-aware
+    // (only the owner edits; read by the mission/agent pipeline). Secrets are
+    // rejected at write time.
+    projectMemory: defineTable({
+      userId: v.id("users"),
+      repo: v.string(), // full name, e.g. "owner/name"
+      title: v.string(),
+      body: v.string(),
+      updatedAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userRepo", ["userId", "repo"]),
+
+    // Missions (Phase 3): resumable multi-step engineering missions with
+    // tasks, agents, permissions, approvals, and evidence. Nothing a mission
+    // does ever silently commits, merges, deploys, or deletes — it prepares
+    // proposals the user applies and approves.
+    missions: defineTable({
+      userId: v.id("users"),
+      repo: v.string(),
+      branch: v.string(),
+      title: v.string(),
+      objective: v.string(),
+      plan: v.string(),
+      status: v.union(
+        v.literal("active"),
+        v.literal("awaiting_review"),
+        v.literal("done"),
+        v.literal("cancelled"),
+      ),
+      tasks: v.array(
+        v.object({
+          id: v.string(),
+          label: v.string(),
+          status: v.union(
+            v.literal("pending"),
+            v.literal("running"),
+            v.literal("done"),
+            v.literal("blocked"),
+          ),
+          detail: v.optional(v.string()),
+        }),
+      ),
+      agents: v.array(
+        v.object({
+          role: v.string(), // "analyst" | "security" | "coding" | "test" | "reviewer"
+          permission: v.string(), // PermissionLevel: read | suggest | modify | test | git | pr | deploy
+          status: v.union(
+            v.literal("idle"),
+            v.literal("running"),
+            v.literal("done"),
+            v.literal("blocked"),
+          ),
+          objective: v.string(),
+          files: v.array(v.string()), // files claimed / inspected (parallel-safety)
+          result: v.optional(v.string()),
+        }),
+      ),
+      approvals: v.array(
+        v.object({
+          by: v.string(), // user login or reviewer role label
+          at: v.number(),
+          kind: v.union(v.literal("user"), v.literal("reviewer")),
+          note: v.optional(v.string()),
+        }),
+      ),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_userId", ["userId"]),
+
+    // Security command center findings (Phase 3): everything the security
+    // scans surfaced for a repo — secrets, dependency vulnerabilities, risky
+    // config, CI problems, docs gaps. Each row carries severity, evidence
+    // (never the secret value), the affected file, an explanation, and a
+    // remediation. Deduped per (userId, key).
+    securityFindings: defineTable({
+      userId: v.id("users"),
+      key: v.string(),
+      kind: v.union(
+        v.literal("secret"),
+        v.literal("dependency"),
+        v.literal("config"),
+        v.literal("ci"),
+        v.literal("docs"),
+      ),
+      repo: v.string(),
+      severity: v.union(v.literal("high"), v.literal("medium"), v.literal("low")),
+      title: v.string(),
+      detail: v.string(),
+      evidence: v.string(), // redacted description, e.g. "AWS access key ID pattern"
+      file: v.optional(v.string()),
+      remediation: v.string(),
+      createdAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userRepo", ["userId", "repo"])
+      .index("by_userKey", ["userId", "key"]),
+
+    // Dependency intelligence reports (Phase 3): per-package scan results
+    // (installed vs latest from the npm registry, OSV advisory hits). The
+    // security center renders these; upgrades are proposed, never applied.
+    dependencyReports: defineTable({
+      userId: v.id("users"),
+      repo: v.string(),
+      key: v.string(),
+      package: v.string(),
+      installed: v.optional(v.string()),
+      latest: v.optional(v.string()),
+      status: v.union(
+        v.literal("vulnerable"),
+        v.literal("outdated_major"),
+        v.literal("outdated_minor"),
+        v.literal("current"),
+        v.literal("unknown"),
+      ),
+      majorDiff: v.number(),
+      fixedVersion: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userRepo", ["userId", "repo"])
+      .index("by_userKey", ["userId", "key"]),
+
+    // Flight recorder (Phase 3): one record per significant AI operation —
+    // mission, user request, plan summary, files inspected/modified, commands
+    // run, tests, approvals, result. Never stores model chain-of-thought or
+    // secrets.
+    flightRecords: defineTable({
+      userId: v.id("users"),
+      repo: v.optional(v.string()),
+      missionId: v.optional(v.id("missions")),
+      request: v.string(),
+      planSummary: v.string(),
+      filesInspected: v.array(v.string()),
+      filesModified: v.array(v.string()),
+      commands: v.array(v.string()),
+      tests: v.array(v.string()),
+      approvals: v.array(v.string()),
+      result: v.string(),
+      createdAt: v.number(),
+    }).index("by_userId", ["userId"]),
+
+    // Aria health (Phase 3): the latest explainable repo health score per
+    // category (architecture, security, testing, dependencies, docs, CI/CD,
+    // maintainability). Every score carries the evidence that produced it;
+    // a category with no evidence is simply absent, never a fabricated zero.
+    repoHealth: defineTable({
+      userId: v.id("users"),
+      repo: v.string(),
+      scores: v.record(v.string(), v.number()),
+      evidence: v.record(v.string(), v.array(v.string())),
+      updatedAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userRepo", ["userId", "repo"]),
   },
   {
     schemaValidation: false,

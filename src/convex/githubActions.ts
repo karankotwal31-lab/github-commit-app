@@ -1123,6 +1123,45 @@ async function createGitHubCommit(
     throw new Error("A file appears twice in this commit — stage each file once.");
   }
 
+  // Project constitution (Phase 3): "block" rules refuse the commit
+  // server-side; "require_review" rules are recorded in the audit trail.
+  const gate = (await ctx.runQuery(internal.securityCenter.ruleGateForFiles, {
+    repo: `${args.owner}/${args.repo}`,
+    files: textFiles.map((f) => f.path),
+  })) as { blocked: Array<{ file: string; title: string; body: string }>; review: Array<{ file: string; title: string; body: string }> };
+  if (gate.blocked.length > 0) {
+    const first = gate.blocked[0];
+    throw new Error(
+      `Aria refuses to commit ${first.file} — your project constitution rule “${first.title}” blocks it: ${first.body}`,
+    );
+  }
+  if (gate.review.length > 0) {
+    await ctx
+      .runMutation(internal.securityCenter.audit, {
+        userId: (await getAuthUserId(ctx)) ?? undefined,
+        action: "commit.rule_review",
+        repo: `${args.owner}/${args.repo}`,
+        result: "review",
+        detail: `Requires-review rules matched: ${gate.review
+          .map((r) => `${r.title} (${r.file})`)
+          .join(", ")}`,
+      })
+      .catch(() => {});
+  }
+  // Secret override: record that an override happened WITHOUT recording the
+  // secret itself (Phase 3 flight/audit requirement).
+  if (risk.risky && args.allowSecrets) {
+    await ctx
+      .runMutation(internal.securityCenter.audit, {
+        userId: (await getAuthUserId(ctx)) ?? undefined,
+        action: "commit.secret_override",
+        repo: `${args.owner}/${args.repo}`,
+        result: "overridden",
+        detail: `Secret guard overridden for: ${risk.files.join(", ")}`, // paths only
+      })
+      .catch(() => {});
+  }
+
   // Resolve payloads first so chunked uploads can be cleaned up reliably.
   const payloads = new Map<string, string | null>();
   const uploadIds = new Set<Id<"blobUploads">>();
@@ -1485,6 +1524,19 @@ export const createPullRequest = action({
     if (!title || !head || !base) {
       throw new Error("Title, head, and base branch are required.");
     }
+    // Secret guardrail (Phase 3): a PR title/body must not carry live
+    // credentials — no override exists for PRs, only for local commits.
+    const prRisk = anySecretRisk([
+      { path: "PR title", content: title },
+      { path: "PR body", content: body },
+    ]);
+    if (prRisk.risky) {
+      throw new Error(
+        `Aria refuses to open this PR — ${prRisk.files.join(
+          ", ",
+        )} looks like it contains a secret. Remove it and try again.`,
+      );
+    }
     const token = await getToken(ctx);
     const data = await githubFetch<GitHubPullRequest>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls`,
@@ -1500,6 +1552,16 @@ export const createPullRequest = action({
         headers: { "Content-Type": "application/json" },
       },
     );
+    await ctx
+      .runMutation(internal.securityCenter.audit, {
+        userId: (await getAuthUserId(ctx)) ?? undefined,
+        action: "pr.create",
+        repo: `${args.owner}/${args.repo}`,
+        branch: head,
+        result: "ok",
+        detail: `PR #${data.number} ${head} → ${base}`,
+      })
+      .catch(() => {});
     return {
       number: data.number,
       title: data.title,
