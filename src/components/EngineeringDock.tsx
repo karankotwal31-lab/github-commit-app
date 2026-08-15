@@ -937,6 +937,117 @@ function TestLabPanel({
           ))}
         </ul>
       )}
+
+      <VerifyInPreviewChecklist />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Verify in the preview — honest walkthrough (no fake browser automation)
+// ---------------------------------------------------------------------------
+
+const VERIFY_STEPS = [
+  {
+    id: "open",
+    label: "Open the live preview",
+    hint: "The right-side pane in Freebuff — or open it in its own tab from the preview toolbar.",
+  },
+  {
+    id: "signin",
+    label: "Sign in and open the repo",
+    hint: "Connect your GitHub account and open this repository on the branch this change is on.",
+  },
+  {
+    id: "navigate",
+    label: "Navigate to the affected screen",
+    hint: "Go to the page or dialog the change touches (workspace, inbox, dock, admin console).",
+  },
+  {
+    id: "interact",
+    label: "Exercise the changed controls",
+    hint: "Click, type, and submit the flows you changed; watch the browser console for errors.",
+  },
+  {
+    id: "dock",
+    label: "Run the flow in the Engineering Dock",
+    hint: "Terminal (clone → status → commit → amend), time machine, CI, PR tabs — whichever your change touches.",
+  },
+  {
+    id: "note",
+    label: "Note anything unexpected",
+    hint: "If something breaks, capture it and fix it before merging — a pass here is a real pass.",
+  },
+] as const;
+
+function VerifyInPreviewChecklist() {
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const done = VERIFY_STEPS.filter((s) => checked[s.id]).length;
+  const allDone = done === VERIFY_STEPS.length;
+  return (
+    <div className="rounded-lg border border-neutral-200 p-3">
+      <div className="flex items-center gap-2">
+        <Bug className="size-3.5 text-neutral-600" />
+        <p className="text-sm font-medium text-neutral-800">
+          Verify in the preview
+        </p>
+        <span className="ml-auto text-[10px] font-medium text-neutral-400">
+          {done}/{VERIFY_STEPS.length}
+        </span>
+      </div>
+      <p className="mt-1 text-[11px] leading-4 text-neutral-600">
+        Aria can't drive a browser from this hosted environment, so automated
+        click-throughs would be fake. Walk this checklist in the live preview
+        pane instead — it runs the same code, so a pass here is a real pass.
+      </p>
+      <ul className="mt-2 space-y-1">
+        {VERIFY_STEPS.map((s) => {
+          const isChecked = !!checked[s.id];
+          return (
+            <li key={s.id}>
+              <button
+                type="button"
+                onClick={() =>
+                  setChecked((prev) => ({ ...prev, [s.id]: !prev[s.id] }))
+                }
+                className="flex w-full items-start gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-neutral-50"
+              >
+                <span
+                  className={cn(
+                    "mt-0.5 flex size-3.5 shrink-0 items-center justify-center rounded border",
+                    isChecked
+                      ? "border-emerald-600 bg-emerald-600 text-white"
+                      : "border-neutral-300",
+                  )}
+                >
+                  {isChecked && <CheckCircle2 className="size-2.5" />}
+                </span>
+                <span className="min-w-0">
+                  <span
+                    className={cn(
+                      "block text-xs font-medium",
+                      isChecked
+                        ? "text-neutral-400 line-through"
+                        : "text-neutral-800",
+                    )}
+                  >
+                    {s.label}
+                  </span>
+                  <span className="block text-[10px] leading-4 text-neutral-500">
+                    {s.hint}
+                  </span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {allDone && (
+        <p className="mt-2 flex items-center gap-1.5 rounded-md bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-700">
+          <CheckCircle2 className="size-3" />
+          All verified in the preview — ready to merge.
+        </p>
+      )}
     </div>
   );
 }

@@ -3,8 +3,9 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { action, internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { v } from "convex/values";
+import { v, type GenericId } from "convex/values";
 import webpush from "web-push";
+import { emailConfigured } from "./email";
 
 /**
  * Web push delivery — self-hosted over the standard Web Push protocol
@@ -90,21 +91,25 @@ export const sendPushToUser = internalAction({
 });
 
 /**
- * The per-user check: fetch their inbox, push anything not yet notified.
- * Used by the open-app poll (checkNotifications) and by the 24×7 cron
- * (checkAllPush) so closed tabs still get alerts.
+ * The per-user check: fetch their inbox, notify anything not yet notified —
+ * push to subscribed devices and, when email is configured and the user has
+ * an email on file, one digest email per check. Used by the open-app poll
+ * (checkNotifications) and by the 24×7 cron (checkAllPush) so closed tabs
+ * still get alerts.
  */
 export const checkForUser = internalAction({
   args: { userId: v.id("users") },
   handler: async (ctx, args): Promise<{ sent: number }> => {
     const userId = args.userId;
-    if (!pushConfigured()) return { sent: 0 };
-    const subs = await ctx.runQuery(internal.pushSubscriptions.subsForUser, {
-      userId,
-    });
-    if (subs.length === 0) return { sent: 0 };
+    const hasPush = pushConfigured();
+    const hasEmail = emailConfigured();
+    if (!hasPush && !hasEmail) return { sent: 0 };
+    const subs = hasPush
+      ? await ctx.runQuery(internal.pushSubscriptions.subsForUser, { userId })
+      : [];
+    if (subs.length === 0 && !hasEmail) return { sent: 0 };
 
-    // The inbox is Pro-gated; free users simply get nothing pushed.
+    // The inbox is Pro-gated; free users simply get nothing notified.
     let inbox: {
       awaitingReview: Array<{
         repo: string;
@@ -156,26 +161,56 @@ export const checkForUser = internalAction({
     }
 
     let sent = 0;
+    const emailItems: Array<{ title: string; body: string; url: string }> = [];
     for (const item of items) {
-      // Dedup: only push each item once (forever) per user.
+      // Dedup: only notify each item once (forever) per user.
       const seen = await ctx.runQuery(internal.pushSubscriptions.wasSent, {
         userId,
         key: item.key,
       });
       if (seen) continue;
-      await ctx.runAction(internal.notifications.sendPushToUser, {
-        userId,
-        title: item.title.slice(0, 80),
-        body: item.body.slice(0, 140),
-        url: item.url,
-        tag: item.key,
-        kind: item.kind,
+      if (subs.length > 0) {
+        await ctx.runAction(internal.notifications.sendPushToUser, {
+          userId,
+          title: item.title.slice(0, 80),
+          body: item.body.slice(0, 140),
+          url: item.url,
+          tag: item.key,
+          kind: item.kind,
+        });
+      }
+      emailItems.push({
+        title: item.title.slice(0, 120),
+        body: item.body.slice(0, 160),
+        url: item.url.slice(0, 200),
       });
       await ctx.runMutation(internal.pushSubscriptions.markSent, {
         userId,
         key: item.key,
       });
       sent += 1;
+    }
+
+    // One digest email per check for every new item (fail-open — a mail
+    // failure must never affect push or the check itself).
+    if (emailItems.length > 0) {
+      await ctx
+        .runAction(internal.email.sendInboxDigest, {
+          userId,
+          items: emailItems,
+        })
+        .catch((e) =>
+          ctx
+            .runMutation(internal.security.logError, {
+              source: "email",
+              message:
+                e instanceof Error
+                  ? e.message.slice(0, 300)
+                  : "email digest failed",
+              userId,
+            })
+            .catch(() => {}),
+        );
     }
     return { sent };
   },
@@ -191,14 +226,31 @@ export const checkNotifications = action({
   },
 });
 
-/** Cron entry: check every subscribed user (runs 24×7 on the Convex cloud). */
+/**
+ * Cron entry: check every user who can be notified (push subscription or an
+ * email on file) — runs 24×7 on the Convex cloud. Email-only users are
+ * covered too, so notifications don't depend on having a subscribed device.
+ */
 export const checkAllPush = internalAction({
   args: {},
   handler: async (ctx): Promise<{ checked: number }> => {
-    if (!pushConfigured()) return { checked: 0 };
-    const users = await ctx.runQuery(
-      internal.pushSubscriptions.usersWithSubscriptions,
-    );
+    const hasPush = pushConfigured();
+    const hasEmail = emailConfigured();
+    if (!hasPush && !hasEmail) return { checked: 0 };
+    const pushUsers = hasPush
+      ? await ctx.runQuery(
+          internal.pushSubscriptions.usersWithSubscriptions,
+        )
+      : [];
+    const emailUsers = hasEmail
+      ? await ctx.runQuery(internal.email.userEmails)
+      : [];
+    const users = [
+      ...new Set([
+        ...pushUsers,
+        ...emailUsers.map((u) => u.userId),
+      ]),
+    ] as Array<GenericId<"users">>;
     let checked = 0;
     for (const userId of users) {
       try {

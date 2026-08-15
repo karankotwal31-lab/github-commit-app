@@ -140,3 +140,21 @@ if (!hasIntegration) {
   console.error("VLY integration key not found");
 }
 ```
+
+## Aria Optional Integrations (batch added)
+
+These are additive and fail-open: without the keys below, each one is a no-op
+and the app behaves exactly as before.
+
+| Service | What it powers | Keys (project keys UI) | Status |
+| ------- | -------------- | ---------------------- | ------ |
+| Resend | Email digest notifications (inbox fallback to push) | `RESEND_API_KEY`, optional `RESEND_FROM` | Wired (backend `src/convex/email.ts`, cron + open-app poll) |
+| Airbrake | External error monitoring — mirrors the app's error log | `AIRBRAKE_PROJECT_ID`, `AIRBRAKE_API_KEY` | Wired (`src/convex/errorReporting.ts`, hooked into `security.logError`) |
+| PostHog | Server-side product analytics (AI usage events) | `POSTHOG_API_KEY`, optional `POSTHOG_API_HOST` | Wired (`src/convex/analytics.ts`, events from all 6 AI actions) |
+| Health probes | Hourly checks for login, GitHub, AI, email, Airbrake, PostHog | — | Wired (`src/convex/health.ts`, admin console) |
+
+Admin console (Team plan) shows each integration as **Configured / Not set**
+and labels all six health probes; the Engineering Dock's Test lab gained a
+**Verify in the preview** checklist (Phase 2C) that walks the user through
+real verification in the live preview — no faked browser automation.
+

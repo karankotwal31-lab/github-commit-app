@@ -7,6 +7,7 @@ import { v } from "convex/values";
 import { anySecretRisk } from "../lib/secrets";
 import { cleanMultiline, cleanPath } from "../lib/sanitize";
 import { fetchWithRetry } from "./net";
+import { captureEvent } from "./analytics";
 import {
   AI_REQUESTS_PER_MINUTE,
   FEATURE_FLAGS,
@@ -480,6 +481,10 @@ ${instruction}`;
     // and leave an audit trail (Team/Enterprise) for who asked what, when.
     if (userId !== null) {
       await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+      await captureEvent(ctx, "ai.ask", userId, {
+        repo: `${args.owner}/${args.repo}`,
+        branch: args.branch ?? null,
+      });
       await ctx.runMutation(internal.aiUsage.logAudit, {
         userId,
         action: "ai.ask",
@@ -646,6 +651,11 @@ Rules:
 
     // Metering + audit: this counts against the plan's monthly quota.
     await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await captureEvent(ctx, "ai.review", userId, {
+      repo: `${args.owner}/${args.repo}`,
+      branch: args.branch,
+      base: args.base,
+    });
     await ctx.runMutation(internal.aiUsage.logAudit, {
       userId,
       action: "ai.review",
@@ -802,6 +812,10 @@ Rules:
     }
 
     await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await captureEvent(ctx, "ai.commit_message", userId, {
+      repo: args.repo ?? null,
+      files: args.changes.length,
+    });
     await ctx.runMutation(internal.aiUsage.logAudit, {
       userId,
       action: "ai.commit_message",
@@ -944,6 +958,9 @@ ${theirs || "(empty)"}`;
     }
 
     await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await captureEvent(ctx, "ai.conflict", userId, {
+      path: args.path.slice(0, 200),
+    });
     await ctx.runMutation(internal.aiUsage.logAudit, {
       userId,
       action: "ai.conflict",
@@ -1107,6 +1124,10 @@ Rules:
     }
 
     await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await captureEvent(ctx, "ai.why_changed", userId, {
+      repo,
+      path: args.path.slice(0, 200),
+    });
     await ctx.runMutation(internal.aiUsage.logAudit, {
       userId,
       action: "ai.why_changed",
@@ -1398,6 +1419,10 @@ Rules:
 
     const withChanges = results.filter((r) => r.changes.length > 0).length;
     await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await captureEvent(ctx, "ai.cross_repo", userId, {
+      repos: targets.length,
+      withChanges,
+    });
     await ctx.runMutation(internal.aiUsage.logAudit, {
       userId,
       action: "ai.cross_repo",

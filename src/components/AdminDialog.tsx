@@ -75,6 +75,36 @@ const ACTION_LABELS: Record<string, string> = {
   "ai.review": "AI review",
 };
 
+const CHECK_LABELS: Record<string, string> = {
+  auth: "Login / auth",
+  github: "GitHub connection",
+  ai: "AI connection",
+  email: "Email notifications (Resend)",
+  airbrake: "Error monitoring (Airbrake)",
+  posthog: "Analytics (PostHog)",
+};
+
+const INTEGRATIONS = [
+  {
+    key: "email" as const,
+    label: "Email notifications",
+    provider: "Resend",
+    env: "RESEND_API_KEY",
+  },
+  {
+    key: "airbrake" as const,
+    label: "Error monitoring",
+    provider: "Airbrake",
+    env: "AIRBRAKE_PROJECT_ID + AIRBRAKE_API_KEY",
+  },
+  {
+    key: "posthog" as const,
+    label: "Product analytics",
+    provider: "PostHog",
+    env: "POSTHOG_API_KEY",
+  },
+];
+
 /**
  * Team/Enterprise admin console: seat count (prorated via Stripe), AI usage
  * analytics by month, and the audit trail — who did what, when. Gated
@@ -93,6 +123,7 @@ export function AdminDialog({
   const setFlag = useMutation(api.security.setFeatureFlag);
   const health = useQuery(api.health.recentHealthChecks);
   const errorLog = useQuery(api.security.recentErrors);
+  const integration = useQuery(api.analytics.integrationStatus);
   const [seats, setSeats] = useState(5);
   const [saving, setSaving] = useState(false);
   const [flagSaving, setFlagSaving] = useState<keyof FeatureFlags | null>(null);
@@ -297,11 +328,7 @@ export function AdminDialog({
                         >
                           <div className="min-w-0">
                             <p className="text-xs font-medium text-neutral-700">
-                              {name === "auth"
-                                ? "Login / auth"
-                                : name === "github"
-                                  ? "GitHub connection"
-                                  : "AI connection"}
+                              {CHECK_LABELS[name] ?? name}
                             </p>
                             {check.detail && (
                               <p className="mt-0.5 truncate text-[11px] text-neutral-400">
@@ -321,6 +348,42 @@ export function AdminDialog({
                   </>
                 )}
               </div>
+            </div>
+
+            {/* Optional integrations */}
+            <div className="rounded-lg border border-neutral-200 p-4">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-neutral-800">
+                <Bot className="size-4 text-neutral-500" /> Integrations
+              </p>
+              <p className="mt-1 text-xs leading-4 text-neutral-400">
+                Optional services — each one degrades to a no-op until its key
+                is set in project keys. Nothing here ships keys to the browser.
+              </p>
+              <ul className="mt-3 divide-y divide-neutral-100">
+                {INTEGRATIONS.map((it) => {
+                  const on =
+                    integration?.signedIn === true && integration[it.key];
+                  return (
+                    <li
+                      key={it.key}
+                      className="flex items-start justify-between gap-3 py-2.5"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm text-neutral-800">{it.label}</p>
+                        <p className="mt-0.5 font-mono text-[10px] text-neutral-400">
+                          {it.provider} · {it.env}
+                        </p>
+                      </div>
+                      <Badge
+                        variant={on ? "secondary" : "outline"}
+                        className="shrink-0"
+                      >
+                        {on ? "Configured" : "Not set"}
+                      </Badge>
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
 
             {/* Error log (Part D) */}

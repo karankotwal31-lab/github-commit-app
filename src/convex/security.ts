@@ -7,6 +7,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { type PlanId } from "../lib/plans";
 
@@ -219,13 +220,32 @@ export const logError = internalMutation({
         .slice(0, rows.length - 500);
       for (const row of toDelete) await ctx.db.delete(row._id);
     }
+    // Mirror every logged failure to Airbrake (fail-open — reporting can
+    // never block the error log or the caller).
+    try {
+      await ctx.scheduler.runAfter(0, internal.errorReporting.report, {
+        source: args.source.slice(0, 100),
+        message: args.message.slice(0, 2000),
+        userId: args.userId,
+        detail: args.detail ? args.detail.slice(0, 2000) : undefined,
+      });
+    } catch {
+      // never block the log
+    }
   },
 });
 
 /** Internal: record one health-check probe result (written by the cron). */
 export const healthRecord = internalMutation({
   args: {
-    check: v.union(v.literal("auth"), v.literal("github"), v.literal("ai")),
+    check: v.union(
+      v.literal("auth"),
+      v.literal("github"),
+      v.literal("ai"),
+      v.literal("email"),
+      v.literal("airbrake"),
+      v.literal("posthog"),
+    ),
     ok: v.boolean(),
     detail: v.optional(v.string()),
   },

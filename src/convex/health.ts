@@ -5,13 +5,14 @@ import { fetchWithRetry } from "./net";
 
 /**
  * Health checks (Part D, step 7): a scheduled background probe that verifies
- * the three critical connections — login/auth, GitHub, and the AI provider —
- * and records the result in `healthChecks` so a human can review it in the
- * admin console.
+ * the critical connections — login/auth, GitHub, the AI provider, and the
+ * optional integrations (Resend email, Airbrake, PostHog) — and records the
+ * result in `healthChecks` so a human can review it in the admin console.
  *
  * What's automatic vs. what still needs a human:
  *   - automatic: the probes run hourly (see crons.ts), results are stored,
- *     and failures are written to the error log.
+ *     and failures are written to the error log (and mirrored to Airbrake
+ *     when configured).
  *   - still needs a human: reading the results/error log and acting on them.
  *     The checks never page anyone and never self-heal.
  */
@@ -19,7 +20,7 @@ import { fetchWithRetry } from "./net";
 const GITHUB_API = "https://api.github.com";
 
 interface ProbeResult {
-  check: "auth" | "github" | "ai";
+  check: "auth" | "github" | "ai" | "email" | "airbrake" | "posthog";
   ok: boolean;
   detail?: string;
 }
@@ -123,11 +124,108 @@ async function probeAi(): Promise<ProbeResult> {
   }
 }
 
+/** Email probe: Resend key configured + API reachable. */
+async function probeEmail(): Promise<ProbeResult> {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    return {
+      check: "email",
+      ok: true,
+      detail: "RESEND_API_KEY not configured — skipping.",
+    };
+  }
+  try {
+    const res = await fetchWithRetry(
+      "https://api.resend.com/domains",
+      { headers: { Authorization: `Bearer ${key}` } },
+      { attempts: 2 },
+    );
+    return res.ok
+      ? { check: "email", ok: true, detail: "Resend API key valid; API reachable." }
+      : { check: "email", ok: false, detail: `Resend returned HTTP ${res.status}.` };
+  } catch (e) {
+    return {
+      check: "email",
+      ok: false,
+      detail: e instanceof Error ? e.message.slice(0, 300) : "Resend probe failed",
+    };
+  }
+}
+
+/** Airbrake probe: project id + key configured, projects API reachable. */
+async function probeAirbrake(): Promise<ProbeResult> {
+  const projectId = process.env.AIRBRAKE_PROJECT_ID;
+  const key = process.env.AIRBRAKE_API_KEY;
+  if (!projectId || !key) {
+    return {
+      check: "airbrake",
+      ok: true,
+      detail: "AIRBRAKE_PROJECT_ID/API_KEY not configured — skipping.",
+    };
+  }
+  try {
+    const res = await fetchWithRetry(
+      `https://api.airbrake.io/api/v4/projects/${encodeURIComponent(projectId)}`,
+      { headers: { Authorization: `Bearer ${key}` } },
+      { attempts: 2 },
+    );
+    return res.ok
+      ? { check: "airbrake", ok: true, detail: "Airbrake project key valid; API reachable." }
+      : { check: "airbrake", ok: false, detail: `Airbrake returned HTTP ${res.status}.` };
+  } catch (e) {
+    return {
+      check: "airbrake",
+      ok: false,
+      detail: e instanceof Error ? e.message.slice(0, 300) : "Airbrake probe failed",
+    };
+  }
+}
+
+/** PostHog probe: key configured + decide endpoint reachable. */
+async function probePosthog(): Promise<ProbeResult> {
+  const key = process.env.POSTHOG_API_KEY;
+  if (!key) {
+    return {
+      check: "posthog",
+      ok: true,
+      detail: "POSTHOG_API_KEY not configured — skipping.",
+    };
+  }
+  try {
+    const host = process.env.POSTHOG_API_HOST ?? "https://us.i.posthog.com";
+    const res = await fetchWithRetry(
+      `${host}/decide/?v=3`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: key }),
+      },
+      { attempts: 2 },
+    );
+    return res.ok
+      ? { check: "posthog", ok: true, detail: "PostHog key valid; API reachable." }
+      : { check: "posthog", ok: false, detail: `PostHog returned HTTP ${res.status}.` };
+  } catch (e) {
+    return {
+      check: "posthog",
+      ok: false,
+      detail: e instanceof Error ? e.message.slice(0, 300) : "PostHog probe failed",
+    };
+  }
+}
+
 /** Run every probe and record results + failures. Called hourly by the cron. */
 export const runHealthChecks = internalAction({
   args: {},
   handler: async (ctx): Promise<{ results: ProbeResult[] }> => {
-    const results = await Promise.all([probeAuth(), probeGithub(), probeAi()]);
+    const results = await Promise.all([
+      probeAuth(),
+      probeGithub(),
+      probeAi(),
+      probeEmail(),
+      probeAirbrake(),
+      probePosthog(),
+    ]);
     for (const result of results) {
       await ctx.runMutation(internal.security.healthRecord, result).catch(() => {});
       if (!result.ok) {
