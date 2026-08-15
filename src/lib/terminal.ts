@@ -44,6 +44,7 @@ export const GIT_COMMANDS = [
   "add",
   "unstage",
   "commit",
+  "amend",
   "stash",
   "reset",
   "clear",
@@ -59,6 +60,7 @@ export const COMMAND_HELP: Record<string, string> = {
   add: "add <path> — stage a file",
   unstage: "unstage <path> — unstage a file",
   commit: 'commit -m "message" — local commit (secret scan enforced)',
+  amend: 'amend [-m "message"] — replace the last local commit; folds in staged changes, keeps the message if -m is omitted',
   stash: "stash — save changes; stash list / stash pop [n] / stash drop [n]",
   reset: "reset — wipe the local clone and restore from GitHub (destructive)",
   clear: "clear — clear the terminal output",
@@ -85,6 +87,13 @@ export function classifyDanger(cmd: ParsedCommand): {
       dangerous: true,
       reason:
         "reset wipes this device's local clone and re-downloads the branch — local-only commits you haven't pushed will be lost.",
+    };
+  }
+  if (cmd.command === "amend") {
+    return {
+      dangerous: true,
+      reason:
+        "amend rewrites the last local commit. If that commit was already pushed, the next push will need force confirmation; un-pushed commits are safe to amend.",
     };
   }
   if (tokens.some((t) => t === "force" || t === "--force" || t === "-f")) {

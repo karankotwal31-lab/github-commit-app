@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { DiffView } from "@/components/workspace-shared";
 import { diffLines, parseUnifiedPatch } from "@/lib/diff";
 import {
+  amendLocal,
   cloneRepo,
   commitLocal,
   getFs,
@@ -65,6 +66,7 @@ import {
   Tag,
   TerminalSquare,
   Trash2,
+  Undo2,
   XCircle,
 } from "lucide-react";
 
@@ -238,6 +240,7 @@ export function EngineeringDock({
               repo={repo}
               branch={branch}
               defaultPath={openPath}
+              onRefresh={onRefresh}
             />
           )}
           {tab === "impact" && (
@@ -472,6 +475,33 @@ function TerminalPanel({
                 author,
               });
               push(`Committed ${result.oid.slice(0, 7)} — ${message}`);
+              break;
+            } catch (e) {
+              push(`error: ${errorMessage(e)}`);
+              return;
+            }
+          }
+          case "amend": {
+            if (!exists) {
+              push("No local clone — run “clone” first.");
+              return;
+            }
+            const mIdx = cmd.args.indexOf("-m");
+            const message =
+              mIdx !== -1 ? cmd.args.slice(mIdx + 1).join(" ") : undefined;
+            try {
+              const result = await amendLocal({
+                owner,
+                repo,
+                message,
+                author,
+              });
+              push(
+                `Amended ${result.replaced.slice(0, 7)} → ${result.oid.slice(0, 7)} — ${result.message}` +
+                  (message
+                    ? ""
+                    : " (message kept from the previous commit)"),
+              );
               break;
             } catch (e) {
               push(`error: ${errorMessage(e)}`);
@@ -920,14 +950,17 @@ function TimeMachinePanel({
   repo,
   branch,
   defaultPath,
+  onRefresh,
 }: {
   owner: string;
   repo: string;
   branch: string;
   defaultPath: string;
+  onRefresh: () => void;
 }) {
   const getFileHistory = useAction(api.engineering.getFileHistory);
   const getFile = useAction(api.githubActions.getFile);
+  const revertCommit = useAction(api.githubActions.revertCommit);
   const [path, setPath] = useState(defaultPath || "");
   const [history, setHistory] = useState<
     Awaited<ReturnType<typeof getFileHistory>>["commits"] | null
@@ -939,6 +972,11 @@ function TimeMachinePanel({
   >(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmRevert, setConfirmRevert] = useState<{
+    sha: string;
+    message: string;
+  } | null>(null);
+  const [reverting, setReverting] = useState(false);
 
   const load = useCallback(async () => {
     if (!path.trim()) return;
@@ -1016,13 +1054,39 @@ function TimeMachinePanel({
     [owner, repo, path, history, getFile],
   );
 
+  const doRevert = useCallback(async () => {
+    if (!confirmRevert) return;
+    setReverting(true);
+    setError(null);
+    try {
+      await revertCommit({
+        owner,
+        repo,
+        branch,
+        commitSha: confirmRevert.sha,
+      });
+      toast.success(
+        `Reverted ${confirmRevert.sha.slice(0, 7)} — a new commit now undoes it on ${branch}.`,
+      );
+      setConfirmRevert(null);
+      onRefresh();
+      await load();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setReverting(false);
+    }
+  }, [confirmRevert, owner, repo, branch, revertCommit, onRefresh, load]);
+
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-3 text-[11px] leading-5 text-neutral-600">
         Navigate every version of one file on this branch. Each entry shows
         the commit, author, date, and the PR that introduced it (when GitHub
         can associate one). Click a commit to diff it against the version
-        before it.
+        before it, or use the ↺ button to create a revert commit on the branch
+        (GitHub API, with confirmation — the original commit is never
+        rewritten).
       </div>
       <div className="flex items-center gap-2">
         <Input
@@ -1062,40 +1126,59 @@ function TimeMachinePanel({
           <ul className="max-h-[28rem] divide-y divide-neutral-100 overflow-y-auto rounded-lg border border-neutral-200">
             {history.map((c) => (
               <li key={c.sha}>
-                <button
-                  type="button"
-                  onClick={() => void select(c.sha)}
+                <div
                   className={cn(
-                    "flex w-full items-start gap-2 px-3 py-2 text-left",
-                    selected === c.sha ? "bg-neutral-50" : "hover:bg-neutral-50/60",
+                    "group flex items-stretch",
+                    selected === c.sha
+                      ? "bg-neutral-50"
+                      : "hover:bg-neutral-50/60",
                   )}
                 >
-                  <GitCommitHorizontal
-                    className={cn(
-                      "mt-0.5 size-3.5 shrink-0",
-                      selected === c.sha
-                        ? "text-neutral-700"
-                        : "text-neutral-300",
-                    )}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium text-neutral-800">
-                      {c.message.split("\n")[0]}
-                    </p>
-                    <p className="mt-0.5 text-[10px] text-neutral-400">
-                      {c.author} ·{" "}
-                      {c.date ? new Date(c.date).toLocaleString() : ""}
-                    </p>
-                    {c.pr && (
-                      <p className="mt-1 inline-block rounded border border-neutral-200 px-1 py-0.5 text-[9px] text-neutral-500">
-                        PR #{c.pr.number} — {c.pr.title.slice(0, 48)}
+                  <button
+                    type="button"
+                    onClick={() => void select(c.sha)}
+                    className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2 text-left"
+                  >
+                    <GitCommitHorizontal
+                      className={cn(
+                        "mt-0.5 size-3.5 shrink-0",
+                        selected === c.sha
+                          ? "text-neutral-700"
+                          : "text-neutral-300",
+                      )}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs font-medium text-neutral-800">
+                        {c.message.split("\n")[0]}
                       </p>
-                    )}
-                  </div>
-                  <span className="shrink-0 font-mono text-[10px] text-neutral-300">
-                    {c.sha.slice(0, 7)}
-                  </span>
-                </button>
+                      <p className="mt-0.5 text-[10px] text-neutral-400">
+                        {c.author} ·{" "}
+                        {c.date ? new Date(c.date).toLocaleString() : ""}
+                      </p>
+                      {c.pr && (
+                        <p className="mt-1 inline-block rounded border border-neutral-200 px-1 py-0.5 text-[9px] text-neutral-500">
+                          PR #{c.pr.number} — {c.pr.title.slice(0, 48)}
+                        </p>
+                      )}
+                    </div>
+                    <span className="shrink-0 font-mono text-[10px] text-neutral-300">
+                      {c.sha.slice(0, 7)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setConfirmRevert({
+                        sha: c.sha,
+                        message: c.message.split("\n")[0],
+                      })
+                    }
+                    className="flex shrink-0 items-center px-2.5 text-neutral-300 transition-colors hover:bg-red-50 hover:text-red-600"
+                    title={`Revert ${c.sha.slice(0, 7)} on ${branch} — creates a new commit that undoes it`}
+                  >
+                    <Undo2 className="size-3.5" />
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -1120,6 +1203,45 @@ function TimeMachinePanel({
                 Select a commit to see the diff.
               </p>
             )}
+          </div>
+        </div>
+      )}
+
+      {confirmRevert && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+          <p className="text-xs font-medium text-amber-900">
+            Revert {confirmRevert.sha.slice(0, 7)} on {branch}?
+          </p>
+          <p className="mt-1 text-[11px] leading-4 text-amber-800">
+            “{confirmRevert.message.slice(0, 80)}” — Aria creates a brand-new
+            commit on {branch} that undoes this one's changes. Nothing is
+            rewritten or deleted; the original commit stays in history.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 text-[11px]"
+              disabled={reverting}
+              onClick={() => void doRevert()}
+            >
+              {reverting ? (
+                <Loader2 className="mr-1 size-3 animate-spin" />
+              ) : (
+                <Undo2 className="mr-1 size-3" />
+              )}
+              Create revert commit
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8 text-[11px]"
+              disabled={reverting}
+              onClick={() => setConfirmRevert(null)}
+            >
+              Cancel
+            </Button>
           </div>
         </div>
       )}

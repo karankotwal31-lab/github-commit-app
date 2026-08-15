@@ -46,6 +46,12 @@ describe("classifyDanger", () => {
     );
   });
 
+  test("amend is dangerous (rewrites the last commit)", () => {
+    const r = classifyDanger(parseCommand('amend -m "oops"'));
+    expect(r.dangerous).toBe(true);
+    expect(r.reason).toContain("rewrites");
+  });
+
   test("safe commands are not dangerous", () => {
     expect(classifyDanger(parseCommand("status")).dangerous).toBe(false);
     expect(classifyDanger(parseCommand('commit -m "hi"')).dangerous).toBe(
@@ -69,6 +75,7 @@ describe("isBlockedShellCommand", () => {
       "add",
       "unstage",
       "commit",
+      "amend",
       "stash",
       "reset",
       "clear",

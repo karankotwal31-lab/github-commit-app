@@ -23,6 +23,7 @@ import LightningFS from "@isomorphic-git/lightning-fs";
 import {
   abortSession,
   allResolved,
+  amendLocal,
   cherryPickCommit,
   clearActiveSession,
   cloneRepo,
@@ -727,6 +728,110 @@ describe("status / stage / commit", () => {
     const commit = graph.commits.find((c) => c.oid === oid);
     expect(commit?.message.trim()).toBe("feat: greet in Hindi");
     expect(commit?.parents).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Amend (git commit --amend) — message-only and folding staged changes
+// ---------------------------------------------------------------------------
+
+describe("amend", () => {
+  test("message-only amend replaces the tip, keeps tree, parents and author", async () => {
+    await freshClone();
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    const { oid } = await localCommit("feat: greet in Hindi");
+    const parent = (
+      await git.readCommit({ ...(await repoCtx(OWNER, REPO)), oid })
+    ).commit.parent[0];
+
+    const amended = await amendLocal({
+      owner: OWNER,
+      repo: REPO,
+      message: "feat: greet in Hindi (fixed title)",
+      author: AUTHOR,
+    });
+    expect(amended.replaced).toBe(oid);
+    expect(amended.oid).not.toBe(oid);
+    expect(amended.message).toBe("feat: greet in Hindi (fixed title)");
+    expect(await localBranchTip(OWNER, REPO, "main")).toBe(amended.oid);
+
+    const tip = (
+      await git.readCommit({ ...(await repoCtx(OWNER, REPO)), oid: amended.oid })
+    ).commit;
+    expect(tip.parent).toEqual([parent]);
+    expect(tip.author.name).toBe("Karan Kotwal");
+    // Tree unchanged: the file content survives the message-only amend.
+    expect(await localRead("hello.ts")).toBe(EDITED_HELLO);
+    expect(await getStatus(OWNER, REPO)).toEqual([]);
+
+    const graph = await getGraph(OWNER, REPO);
+    expect(graph.commits[0].message.trim()).toBe(
+      "feat: greet in Hindi (fixed title)",
+    );
+  });
+
+  test("amend folds staged changes into the previous commit", async () => {
+    await freshClone();
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    const { oid } = await localCommit("feat: greet in Hindi");
+
+    // A second, separate change gets folded in instead of becoming commit #2.
+    await writeWorkFile(OWNER, REPO, "greet.ts", encodeText("// extra\n"));
+    await stageFile(OWNER, REPO, "greet.ts");
+    const amended = await amendLocal({
+      owner: OWNER,
+      repo: REPO,
+      message: "feat: greet in Hindi + extra",
+      author: AUTHOR,
+    });
+
+    expect(await localRead("greet.ts")).toBe("// extra\n");
+    expect(await getStatus(OWNER, REPO)).toEqual([]);
+    const graph = await getGraph(OWNER, REPO);
+    expect(graph.commits).toHaveLength(2); // base + amended tip — no extra commit
+    expect(graph.commits[0].oid).toBe(amended.oid);
+    expect(graph.commits[0].parents).toHaveLength(1);
+  });
+
+  test("amend without -m keeps the previous message", async () => {
+    await freshClone();
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    await localCommit("feat: greet in Hindi");
+
+    await writeWorkFile(OWNER, REPO, "greet.ts", encodeText("// extra\n"));
+    await stageFile(OWNER, REPO, "greet.ts");
+    const amended = await amendLocal({
+      owner: OWNER,
+      repo: REPO,
+      author: AUTHOR,
+    });
+    expect(amended.message).toBe("feat: greet in Hindi");
+    expect(await localRead("greet.ts")).toBe("// extra\n");
+  });
+
+  test("amend refuses staged secret-like content without confirmation", async () => {
+    await freshClone();
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    await localCommit("feat: greet in Hindi");
+
+    await writeWorkFile(
+      OWNER,
+      REPO,
+      ".env",
+      encodeText("GITHUB_TOKEN=ghp_supersecretvalue\n"),
+    );
+    await stageFile(OWNER, REPO, ".env");
+    await expect(
+      amendLocal({ owner: OWNER, repo: REPO, author: AUTHOR }),
+    ).rejects.toThrow(/secrets/);
+    // The tip is untouched and the .env stays staged.
+    expect(await getStatus(OWNER, REPO)).toEqual([
+      { path: ".env", label: "added", staged: true },
+    ]);
   });
 });
 

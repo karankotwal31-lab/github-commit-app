@@ -824,6 +824,68 @@ export async function commitLocal(
   return { oid, message: input.message };
 }
 
+export interface LocalAmendInput {
+  owner: string;
+  repo: string;
+  /** New message. Omitted → the current tip's message is kept. */
+  message?: string;
+  author: GitPerson;
+  allowSecrets?: boolean;
+}
+
+/**
+ * Replace the last local commit with a new one (git commit --amend).
+ *
+ * With staged changes, they are folded into the amended commit. With a clean
+ * index, the commit keeps its tree and only the message/author/committer
+ * change. The commit's parents are preserved, so the history stays linear and
+ * the amended commit sits exactly where the old tip was. The remote is never
+ * touched here — if the old tip was already pushed, the next push will hit the
+ * diverged-remote guard and require explicit confirmation.
+ */
+export async function amendLocal(
+  input: LocalAmendInput,
+): Promise<{ oid: string; message: string; replaced: string }> {
+  const { owner, repo } = input;
+  const { fs, pfs, dir, gitdir } = await repoCtx(owner, repo);
+  const head = await git
+    .resolveRef({ fs, dir, gitdir, ref: "HEAD" })
+    .catch(() => null);
+  if (head === null) {
+    throw new Error("No commits on this branch yet — nothing to amend.");
+  }
+  const current = await git.readCommit({ fs, dir, gitdir, oid: head });
+  const message = input.message?.trim() || current.commit.message.trim();
+  if (!message) {
+    throw new Error("A commit message is required.");
+  }
+  // Secret guardrails mirror commitLocal: staged content is about to become
+  // part of the amended commit, so it must pass the same scan.
+  const staged = (await getStatus(owner, repo)).filter((r) => r.staged);
+  for (const row of staged) {
+    if (row.label === "deleted") continue;
+    const bytes = (await pfs.readFile(`${dir}/${row.path}`)) as Uint8Array;
+    if (isBinaryBytes(bytes)) continue;
+    const risk = secretRisk(row.path, decodeText(bytes));
+    if (risk.risky && !input.allowSecrets) {
+      throw new Error(
+        `${row.path} looks like it contains secrets — Aria won't amend it in without confirmation.`,
+      );
+    }
+  }
+  const person = gitPerson(input.author);
+  const oid = await git.commit({
+    fs,
+    dir,
+    gitdir,
+    message,
+    author: person,
+    committer: person,
+    amend: true,
+  });
+  return { oid, message, replaced: head };
+}
+
 // ---------------------------------------------------------------------------
 // Push (local commits → GitHub via API, exact ancestry reconstruction)
 // ---------------------------------------------------------------------------
