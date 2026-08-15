@@ -5,6 +5,7 @@ import "@/lib/monaco";
 import { languageForPath } from "@/lib/monaco";
 import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
 import { getScrollSync, setScrollSync } from "@/lib/scrollSync";
+import { FileTabs } from "@/components/FileTabs";
 import {
   notifyCursorMove,
   notifyFocus,
@@ -126,69 +127,78 @@ export function CodeEditor({
   }, [peers]);
 
   return (
-    <Editor
-      language={languageForPath(path)}
-      value={value}
-      onChange={(next) => onChange(next ?? "")}
-      theme="aria"
-      onMount={(editor) => {
-        editorRef.current = editor;
-        setActiveEditor(editor);
-        editor.onDidFocusEditorText(() => notifyFocus(true));
-        editor.onDidBlurEditorText(() => notifyFocus(false));
-        editor.onDidDispose(() => {
-          setActiveEditor(null);
-          notifyFocus(false);
-        });
-        editor.onDidChangeCursorPosition((e) => {
-          const cursor = {
-            line: e.position.lineNumber,
-            column: e.position.column,
-          };
-          setCursorSync(cursor);
-          notifyCursorMove(cursor);
-        });
-        // Scroll position (Phase 1): mirror the caret — write on scroll for
-        // the debounced workspace save, restore on mount so the file opens
-        // exactly where it was left (cross-device via the saved state).
-        editor.onDidScrollChange(() => {
-          setScrollSync({
-            top: editor.getScrollTop(),
-            left: editor.getScrollLeft(),
-          });
-        });
-        const restored = getCursorSync();
-        if (restored) {
-          editor.setPosition({
-            lineNumber: Math.max(1, restored.line),
-            column: Math.max(1, restored.column),
-          });
-          editor.revealLineInCenter(Math.max(1, restored.line));
-        }
-        const restoredScroll = getScrollSync();
-        if (restoredScroll) {
-          editor.setScrollTop(Math.max(0, restoredScroll.top));
-          editor.setScrollLeft(Math.max(0, restoredScroll.left));
-        }
-      }}
-      options={{
-        minimap: { enabled: false },
-        fontSize: 13,
-        fontFamily:
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, 'Cascadia Code', monospace",
-        lineHeight: 21,
-        wordWrap: "off",
-        scrollBeyondLastLine: false,
-        automaticLayout: true,
-        tabSize: 2,
-        renderWhitespace: "none",
-        smoothScrolling: true,
-        padding: { top: 16, bottom: 16 },
-        scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
-        fixedOverflowWidgets: true,
-        overviewRulerLanes: 0,
-        hideCursorInOverviewRuler: true,
-      }}
-    />
+    <div className="flex h-full flex-col">
+      {/* Open-file tabs (Phase 1): renders only when 2+ files are open;
+          switching/closing flushes the outgoing tab's content to the draft
+          vault via the tabs bus. Lives here so the bar sits directly above
+          the code, inside the editor column. */}
+      <FileTabs />
+      <div className="min-h-0 flex-1">
+        <Editor
+          language={languageForPath(path)}
+          value={value}
+          onChange={(next) => onChange(next ?? "")}
+          theme="aria"
+          onMount={(editor) => {
+            editorRef.current = editor;
+            setActiveEditor(editor);
+            editor.onDidFocusEditorText(() => notifyFocus(true));
+            editor.onDidBlurEditorText(() => notifyFocus(false));
+            editor.onDidDispose(() => {
+              setActiveEditor(null);
+              notifyFocus(false);
+            });
+            editor.onDidChangeCursorPosition((e) => {
+              const cursor = {
+                line: e.position.lineNumber,
+                column: e.position.column,
+              };
+              setCursorSync(cursor);
+              notifyCursorMove(cursor);
+            });
+            // Scroll position (Phase 1): mirror the caret — write on scroll for
+            // the debounced workspace save, restore on mount so the file opens
+            // exactly where it was left (cross-device via the saved state).
+            editor.onDidScrollChange(() => {
+              setScrollSync({
+                top: editor.getScrollTop(),
+                left: editor.getScrollLeft(),
+              });
+            });
+            const restored = getCursorSync();
+            if (restored) {
+              editor.setPosition({
+                lineNumber: Math.max(1, restored.line),
+                column: Math.max(1, restored.column),
+              });
+              editor.revealLineInCenter(Math.max(1, restored.line));
+            }
+            const restoredScroll = getScrollSync();
+            if (restoredScroll) {
+              editor.setScrollTop(Math.max(0, restoredScroll.top));
+              editor.setScrollLeft(Math.max(0, restoredScroll.left));
+            }
+          }}
+          options={{
+            minimap: { enabled: false },
+            fontSize: 13,
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, 'Cascadia Code', monospace",
+            lineHeight: 21,
+            wordWrap: "off",
+            scrollBeyondLastLine: false,
+            automaticLayout: true,
+            tabSize: 2,
+            renderWhitespace: "none",
+            smoothScrolling: true,
+            padding: { top: 16, bottom: 16 },
+            scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+            fixedOverflowWidgets: true,
+            overviewRulerLanes: 0,
+            hideCursorInOverviewRuler: true,
+          }}
+          />
+      </div>
+    </div>
   );
 }

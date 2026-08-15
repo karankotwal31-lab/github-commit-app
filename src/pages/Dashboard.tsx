@@ -170,6 +170,23 @@ function Workspace({
     [],
   );
 
+  // Editor state (declared before the tab handlers so the registry effects
+  // and loadFileIntoEditor below can reference them — they're owned here,
+  // not in WorkspaceView, so they persist/restore with the workspace).
+  const [editorContent, setEditorContent] = useState("");
+  const [viewMode, setViewMode] = useState<"edit" | "diff" | "preview">("edit");
+  // Layout (Phase 1): focus mode collapses the sidebars while typing — lifted
+  // from WorkspaceView so it can be persisted/restored with the workspace.
+  const [focusMode, setFocusMode] = useState(false);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [status, setStatus] = useState<{ kind: "ok" | "err"; text: string } | null>(
+    null,
+  );
+  // Stale-response guard: every file-open bumps this counter, so a slow older
+  // request can't clobber the file the user just opened.
+  const fileRequestRef = useRef(0);
+  const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
+
   // Tab registry: keep the active file present in the tab list. Every open
   // flow (tree click, draft restore, new file, commit refresh) sets openFile
   // directly, and this effect makes sure it also becomes/updates a tab — so
@@ -188,17 +205,6 @@ function Workspace({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openFile?.path, isNewFile]);
-
-  // Tabs bus: publish the tab list + active path for the tab bar, and expose
-  // the switch/close handlers to it. (The bar lives in WorkspaceView; this
-  // keeps the two decoupled without threading more props through the giant
-  // workspace prop surface.)
-  useEffect(() => {
-    publishTabs(tabs, openFile?.path ?? null);
-  }, [tabs, openFile?.path]);
-  useEffect(() => {
-    registerTabActions({ switchTab, closeTab });
-  }, [switchTab, closeTab]);
 
   /**
    * Load a file (by path) into the editor, pulling its vault draft on top of
@@ -279,14 +285,14 @@ function Workspace({
       branch: currentBranch,
       path: openFile.path,
       content: editorContent,
-      cursorLine: getCursorSync()?.line ?? null,
-      cursorColumn: getCursorSync()?.column ?? null,
+      cursorLine: getCursorSync()?.line,
+      cursorColumn: getCursorSync()?.column,
     };
     void saveDraft(draftArgs).catch(() => {
       queueDraft({
         ...draftArgs,
-        cursorLine: draftArgs.cursorLine,
-        cursorColumn: draftArgs.cursorColumn,
+        cursorLine: draftArgs.cursorLine ?? null,
+        cursorColumn: draftArgs.cursorColumn ?? null,
         updatedAt: Date.now(),
       });
     });
@@ -324,18 +330,20 @@ function Workspace({
     },
     [tabs, openFile, flushCurrentDraft, loadFileIntoEditor],
   );
-  const [editorContent, setEditorContent] = useState("");
-  const [viewMode, setViewMode] = useState<"edit" | "diff" | "preview">("edit");
-  // Layout (Phase 1): focus mode collapses the sidebars while typing — lifted
-  // from WorkspaceView so it can be persisted/restored with the workspace.
-  const [focusMode, setFocusMode] = useState(false);
-  const [fileLoading, setFileLoading] = useState(false);
+
+  // Tabs bus: publish the tab list + active path for the tab bar, and expose
+  // the switch/close handlers to it. (The bar lives in WorkspaceView; this
+  // keeps the two decoupled without threading more props through the giant
+  // workspace prop surface.)
+  useEffect(() => {
+    publishTabs(tabs, openFile?.path ?? null);
+  }, [tabs, openFile?.path]);
+  useEffect(() => {
+    registerTabActions({ switchTab, closeTab });
+  }, [switchTab, closeTab]);
+
   const [commitMessage, setCommitMessage] = useState("");
   const [committing, setCommitting] = useState(false);
-  const [status, setStatus] = useState<{ kind: "ok" | "err"; text: string } | null>(
-    null,
-  );
-
   const [dialog, setDialog] = useState<
     { kind: "newFile" | "rename" | "branch" } | null
   >(null);
@@ -546,12 +554,6 @@ function Workspace({
   // store (see @/lib/cursorSync) — the editor writes it, we read it to save.
   const restoredRef = useRef(false);
   const restoringRef = useRef(false);
-
-  // Stale-response guard: every file-open bumps this counter, so a slow older
-  // request can't clobber the file the user just opened.
-  const fileRequestRef = useRef(0);
-
-  const currentBranch = branch ?? selectedRepo?.defaultBranch ?? null;
 
   // Live deployment preview — fetch + 30s polling for the branch's latest
   // GitHub deployment (Vercel / Netlify / Actions register these on push).

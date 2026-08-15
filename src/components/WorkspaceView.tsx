@@ -6,18 +6,11 @@ const CodeEditor = lazy(() =>
   import("@/components/CodeEditor").then((m) => ({ default: m.CodeEditor })),
 );
 import { insertTextAtCursor, onActiveEditorFocus } from "@/lib/editorRegistry";
-import {
-  closeTab as busCloseTab,
-  getTabsSnapshot,
-  subscribeTabs,
-  switchTab as busSwitchTab,
-} from "@/lib/tabsBus";
 import { CodingAccessoryBar } from "@/components/CodingAccessoryBar";
 import { PreviewPanel, type DeploymentInfo } from "@/components/PreviewPanel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { RuntimeDialog } from "@/components/RuntimeDialog";
-import { FileTabs } from "@/components/FileTabs";
 // LocalGitDialog pulls in isomorphic-git + LightningFS (≈500 KB gzipped) —
 // lazy-load it so the browser git engine only loads when the user opens it.
 const LocalGitDialog = lazy(() =>
@@ -777,13 +770,6 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const vv = useVisualViewport(); // publishes --vvh + measured keyboard inset
   const [editorFocused, setEditorFocused] = useState(false);
 
-  // Tabs bar (Phase 1): Dashboard owns the tab list and the switch/close
-  // logic; this component subscribes to the tabs bus and just renders it.
-  const [tabState, setTabState] = useState(() => getTabsSnapshot());
-  useEffect(
-    () => subscribeTabs(() => setTabState(getTabsSnapshot())),
-    [],
-  );
   const [accessoryHidden, setAccessoryHidden] = useState(false);
 
   // Aggressive focus mode: typing on a phone collapses the header, editor
@@ -1452,7 +1438,6 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Ask Aria</DialogTitle>
-            {/* visibility-test */}
           </DialogHeader>
           <AiUsageMeter onUpgrade={() => setBillingOpen(true)} />
           <AiCommitMessageButton
