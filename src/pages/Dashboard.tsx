@@ -1,6 +1,10 @@
 import { api } from "@/convex/_generated/api";
 import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
 import { getScrollSync, setScrollSync } from "@/lib/scrollSync";
+import {
+  publishTabs,
+  registerTabActions,
+} from "@/lib/tabsBus";
 import { onEditorCursorMove } from "@/lib/editorRegistry";
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -156,6 +160,170 @@ function Workspace({
     null,
   );
   const [isNewFile, setIsNewFile] = useState(false);
+
+  // Tabs (Phase 1): the ordered list of open files (content lives in the draft vault). Content is NOT cached
+  // here — the active tab's buffer is `editorContent`, and every tab's
+  // unsaved content is flushed to the draft vault on switch/close, so each
+  // tab is independently resumable and cross-device safe (the vault is the
+  // per-tab buffer, matching the draft-vault architecture).
+  const [tabs, setTabs] = useState<Array<{ path: string; isNewFile: boolean }>>(
+    [],
+  );
+
+  // Tab registry: keep the active file present in the tab list. Every open
+  // flow (tree click, draft restore, new file, commit refresh) sets openFile
+  // directly, and this effect makes sure it also becomes/updates a tab — so
+  // no existing open flow needed rewriting.
+  useEffect(() => {
+    if (!openFile) return;
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.path === openFile!.path);
+      if (existing) {
+        if (existing.isNewFile === isNewFile) return prev;
+        return prev.map((t) =>
+          t.path === openFile!.path ? { ...t, isNewFile } : t,
+        );
+      }
+      return [...prev, { path: openFile!.path, isNewFile }];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openFile?.path, isNewFile]);
+
+  // Tabs bus: publish the tab list + active path for the tab bar, and expose
+  // the switch/close handlers to it. (The bar lives in WorkspaceView; this
+  // keeps the two decoupled without threading more props through the giant
+  // workspace prop surface.)
+  useEffect(() => {
+    publishTabs(tabs, openFile?.path ?? null);
+  }, [tabs, openFile?.path]);
+  useEffect(() => {
+    registerTabActions({ switchTab, closeTab });
+  }, [switchTab, closeTab]);
+
+  /**
+   * Load a file (by path) into the editor, pulling its vault draft on top of
+   * the committed content — the same logic the draft restorer uses. Falls
+   * back to new-file mode when the file doesn't exist in the repo yet.
+   */
+  const loadFileIntoEditor = useCallback(
+    async (path: string) => {
+      if (!selectedRepo || !currentBranch) return;
+      const tab = tabs.find((t) => t.path === path);
+      const requestId = ++fileRequestRef.current;
+      setFileLoading(true);
+      setStatus(null);
+      setCursorSync(null);
+      try {
+        let draftData: { content: string } | null = null;
+        try {
+          draftData = await getDraftContent({
+            repo: selectedRepo.fullName,
+            branch: currentBranch,
+            path,
+          });
+        } catch {
+          draftData = null; // vault hiccup — open committed content
+        }
+        if (tab?.isNewFile) {
+          setOpenFile({ content: "", sha: "", size: 0, truncated: false, path });
+          setIsNewFile(true);
+          setEditorContent(draftData?.content ?? "");
+          setViewMode("edit");
+          return;
+        }
+        const data = await getFile({
+          owner: ownerOf(selectedRepo.fullName),
+          repo: repoNameOf(selectedRepo.fullName),
+          path,
+          branch: currentBranch,
+        });
+        if (requestId !== fileRequestRef.current) return;
+        setOpenFile({ ...data, path });
+        setIsNewFile(false);
+        setEditorContent(
+          draftData && draftData.content !== data.content
+            ? draftData.content
+            : data.content,
+        );
+        setViewMode("edit");
+      } catch {
+        if (requestId !== fileRequestRef.current) return;
+        // The file isn't in the repo — if a vault draft exists, open as new.
+        setOpenFile({ content: "", sha: "", size: 0, truncated: false, path });
+        setIsNewFile(true);
+        setEditorContent("");
+        setStatus(null);
+        setViewMode("edit");
+      } finally {
+        if (requestId === fileRequestRef.current) setFileLoading(false);
+      }
+    },
+    [
+      selectedRepo,
+      currentBranch,
+      tabs,
+      getFile,
+      getDraftContent,
+      setViewMode,
+      setStatus,
+    ],
+  );
+
+  /** Immediately flush the active tab's unsaved content to the vault. */
+  const flushCurrentDraft = useCallback(() => {
+    if (!selectedRepo || !currentBranch || !openFile) return;
+    const dirty = !isNewFile && editorContent !== openFile.content;
+    if (!isNewFile && !dirty) return;
+    const draftArgs = {
+      repo: selectedRepo.fullName,
+      branch: currentBranch,
+      path: openFile.path,
+      content: editorContent,
+      cursorLine: getCursorSync()?.line ?? null,
+      cursorColumn: getCursorSync()?.column ?? null,
+    };
+    void saveDraft(draftArgs).catch(() => {
+      queueDraft({
+        ...draftArgs,
+        cursorLine: draftArgs.cursorLine,
+        cursorColumn: draftArgs.cursorColumn,
+        updatedAt: Date.now(),
+      });
+    });
+  }, [selectedRepo, currentBranch, openFile, isNewFile, editorContent, saveDraft]);
+
+  /** Switch to another open tab (flushing the outgoing tab's content). */
+  const switchTab = useCallback(
+    (path: string) => {
+      if (!openFile || openFile.path === path) return;
+      flushCurrentDraft();
+      void loadFileIntoEditor(path);
+    },
+    [openFile, flushCurrentDraft, loadFileIntoEditor],
+  );
+
+  /** Close a tab; when it was active, activate the neighbor (or clear). */
+  const closeTab = useCallback(
+    (path: string) => {
+      const idx = tabs.findIndex((t) => t.path === path);
+      const wasActive = openFile?.path === path;
+      const next = tabs.filter((t) => t.path !== path);
+      if (wasActive) flushCurrentDraft();
+      setTabs(next);
+      if (wasActive) {
+        const neighbor = next[idx] ?? next[idx - 1] ?? null;
+        if (neighbor) {
+          void loadFileIntoEditor(neighbor.path);
+        } else {
+          setOpenFile(null);
+          setIsNewFile(false);
+          setEditorContent("");
+          setCursorSync(null);
+        }
+      }
+    },
+    [tabs, openFile, flushCurrentDraft, loadFileIntoEditor],
+  );
   const [editorContent, setEditorContent] = useState("");
   const [viewMode, setViewMode] = useState<"edit" | "diff" | "preview">("edit");
   // Layout (Phase 1): focus mode collapses the sidebars while typing — lifted
@@ -566,6 +734,15 @@ function Workspace({
       setPrs(null);
       setChecks(null);
       setPath(saved.path ?? "");
+      // Restore the open tabs (paths only — content loads on demand from
+      // GitHub + the draft vault when each tab is activated). The active tab
+      // is added/kept by the tab-registry effect.
+      setTabs(
+        (saved.openTabs ?? [])
+          .filter((p) => p)
+          .slice(0, 10)
+          .map((p) => ({ path: p, isNewFile: false })),
+      );
       // Restore the active panel + layout exactly as left (defaults when
       // missing — older saves predate these fields).
       setViewMode(saved.viewMode ?? "edit");
@@ -649,8 +826,9 @@ function Workspace({
         draft: openFile && (isNewFile || dirty) ? editorContent : undefined,
         cursorLine: getCursorSync()?.line,
         cursorColumn: getCursorSync()?.column,
-        // Phase 1: scroll offset + active panel + layout so the restored
-        // workspace looks and feels exactly like it was left.
+        // Phase 1: open tabs + scroll offset + active panel + layout so the
+        // restored workspace looks and feels exactly like it was left.
+        openTabs: tabs.map((t) => t.path),
         scrollTop: getScrollSync()?.top,
         scrollLeft: getScrollSync()?.left,
         viewMode,
@@ -689,6 +867,7 @@ function Workspace({
     openFile,
     isNewFile,
     editorContent,
+    tabs,
     viewMode,
     focusMode,
     saveWorkspaceState,

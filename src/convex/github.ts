@@ -154,6 +154,7 @@ export const getWorkspaceState = query({
       branch: state.branch,
       path: state.path ?? null,
       openPath: state.openPath ?? null,
+      openTabs: state.openTabs ?? null,
       draft: state.draft ?? null,
       cursorLine: state.cursorLine ?? null,
       cursorColumn: state.cursorColumn ?? null,
@@ -173,6 +174,7 @@ export const saveWorkspaceState = mutation({
     branch: v.string(),
     path: v.optional(v.string()),
     openPath: v.optional(v.string()),
+    openTabs: v.optional(v.array(v.string())),
     draft: v.optional(v.string()),
     cursorLine: v.optional(v.number()),
     cursorColumn: v.optional(v.number()),
@@ -198,6 +200,12 @@ export const saveWorkspaceState = mutation({
       branch,
       path: args.path ? cleanPath(args.path) || undefined : undefined,
       openPath: args.openPath ? cleanPath(args.openPath) || undefined : undefined,
+      // Ordered open-tab paths: validated, deduped, capped at 10.
+      openTabs: (args.openTabs ?? [])
+        .map((p) => cleanPath(p))
+        .filter((p) => p !== "")
+        .filter((p, i, arr) => arr.indexOf(p) === i)
+        .slice(0, 10),
       // Cap the draft so a huge file doesn't bloat the row.
       draft: args.draft && args.draft.length <= 500_000 ? args.draft : undefined,
       cursorLine: args.cursorLine,

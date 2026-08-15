@@ -61,7 +61,11 @@ const schema = defineSchema(
       repo: v.string(), // full name, e.g. "owner/name"
       branch: v.string(),
       path: v.optional(v.string()), // last browsed folder, if any
-      openPath: v.optional(v.string()), // open file path, if any
+      openPath: v.optional(v.string()), // active file path, if any
+      // Ordered list of open tabs (paths only — each tab's unsaved content
+      // lives in the draft vault keyed by (repo, branch, path), so every tab
+      // is independently resumable and cross-device safe). Capped at 10.
+      openTabs: v.optional(v.array(v.string())),
       draft: v.optional(v.string()), // unsaved editor content (capped)
       cursorLine: v.optional(v.number()),
       cursorColumn: v.optional(v.number()),
