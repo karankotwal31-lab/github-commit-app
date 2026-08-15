@@ -17,6 +17,7 @@ import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { cleanMultiline, cleanName, cleanPath } from "../lib/sanitize";
 import { fetchWithRetry } from "./net";
+import { chatCompletion, hasAnyAiProvider } from "./aiProvider";
 import {
   AI_REQUESTS_PER_MINUTE,
   GITHUB_ACTIONS_PER_MINUTE,
@@ -24,8 +25,6 @@ import {
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "aria";
-const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
 
 function githubHeaders(token: string, extra?: Record<string, string>) {
   return {
@@ -714,10 +713,9 @@ export const aiInvestigateCiFailure = action({
         "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
       );
     }
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
+    if (!hasAnyAiProvider()) {
       throw new Error(
-        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys, then try again.",
       );
     }
 
@@ -755,45 +753,28 @@ Rules:
         : "Annotations: (none)",
     ].join("\n\n");
 
-    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
-    let data: {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-    try {
-      const res = await fetch(OPENROUTER_API, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-Title": "Aria",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-        }),
-      });
-      data = (await res.json()) as typeof data;
-      if (!res.ok) {
-        const detail = data?.error?.message ?? `HTTP ${res.status}`;
-        throw new Error(
-          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
-        );
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
-        throw e;
-      }
+    const acquired = await ctx.runMutation(internal.aiUsage.acquireAiInflight, {
+      userId,
+    });
+    if (!acquired) {
       throw new Error(
-        "Couldn't reach the AI provider — check your network and try again.",
+        "An AI request is already running for your account — wait for it to finish, then try again.",
       );
     }
-
-    const reply = data?.choices?.[0]?.message?.content ?? "";
+    const completion = await chatCompletion({
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    await ctx.runMutation(internal.aiUsage.releaseAiInflight, { userId });
+    if (!completion.ok) {
+      throw new Error(
+        `The AI model replied with an error (${completion.error}). If no provider is configured, add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys.`,
+      );
+    }
+    const reply = completion.content;
     if (!reply.trim()) {
       throw new Error("The AI replied with nothing — try again or rephrase.");
     }
