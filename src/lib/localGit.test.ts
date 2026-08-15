@@ -26,9 +26,11 @@ import {
   cherryPickCommit,
   clearActiveSession,
   cloneRepo,
+  commitDiff,
   commitLocal,
   decodeText,
   encodeText,
+  finishCherryPick,
   finishMerge,
   getActiveSession,
   getGraph,
@@ -42,7 +44,11 @@ import {
   repoCtx,
   resetEngine,
   resolveConflictFile,
+  runRebase,
   stageFile,
+  startRebase,
+  stashClear,
+  stashDrop,
   stashList,
   stashPop,
   stashPush,
@@ -249,6 +255,8 @@ const TWO_THEIRS = [
   "}",
   "",
 ].join("\n");
+
+const README_TWEAKED = "# Notes\nA calm place for code notes.\n\nRebase me.\n";
 
 // ours for the first hunk, theirs for the second.
 const TWO_RESOLVED = [
@@ -1057,5 +1065,283 @@ describe("push guards", () => {
     expect(forced.replayed).toBe(true);
     expect(forced.finalSha).toBe(localTip);
     expect(await remoteMainTip()).toBe(localTip);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Rebase (interactive: reorder, squash, drop) + push of the rebased chain
+// ---------------------------------------------------------------------------
+
+describe("rebase (interactive)", () => {
+  test("reorder + squash + drop replays a clean linear history and pushes it", async () => {
+    const backend = await freshClone();
+
+    // Feature: four commits on top of the base.
+    await makeBranch("feature", "main");
+    await remoteCreateBranch("feature", await remoteMainTip());
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "feature" });
+
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    await localCommit("feat: greet in Hindi");
+
+    await writeWorkFile(OWNER, REPO, "notes.txt", encodeText("f2\n"));
+    await stageFile(OWNER, REPO, "notes.txt");
+    await localCommit("chore: add notes");
+
+    await writeWorkFile(OWNER, REPO, "README.md", encodeText(README_TWEAKED));
+    await stageFile(OWNER, REPO, "README.md");
+    await localCommit("docs: tweak readme");
+
+    await writeWorkFile(OWNER, REPO, "dropme.txt", encodeText("nope\n"));
+    await stageFile(OWNER, REPO, "dropme.txt");
+    await localCommit("chore: dropme");
+
+    // Main moves forward while we work.
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "main" });
+    await writeWorkFile(OWNER, REPO, "main.txt", encodeText("main\n"));
+    await stageFile(OWNER, REPO, "main.txt");
+    await localCommit("feat(main): main change");
+    const mainTip = (await localBranchTip(OWNER, REPO, "main"))!;
+
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "feature" });
+    const plan = await startRebase({ owner: OWNER, repo: REPO, base: "main" });
+    expect(plan.autoDroppedMerges).toBe(0);
+    expect(plan.todos.map((t) => t.message.split("\n")[0])).toEqual([
+      "feat: greet in Hindi",
+      "chore: add notes",
+      "docs: tweak readme",
+      "chore: dropme",
+    ]);
+
+    // Edit the plan like the UI does: reorder (readme first), squash notes
+    // into the Hindi commit, drop the last commit.
+    const session = getActiveSession();
+    if (session?.kind !== "rebase") throw new Error("expected a rebase session");
+    const edited = [session.todos[2], session.todos[1], session.todos[0], session.todos[3]];
+    edited[1] = { ...edited[1], action: "squash" };
+    edited[3] = { ...edited[3], action: "drop" };
+    session.todos = edited;
+
+    const outcome = await runRebase(backend, { owner: OWNER, repo: REPO });
+    expect(outcome.conflict).toBe(false);
+    if (outcome.conflict) throw new Error("expected a clean rebase");
+    expect(outcome.done).toBe(true);
+    expect(getActiveSession()).toBeNull();
+
+    // The replayed history sits on top of main: [squashed, readme, mainTip,
+    // base] — the reordered readme commit, then the Hindi commit with notes
+    // squashed in.
+    const { fs, dir, gitdir } = await repoCtx(OWNER, REPO);
+    const log = await git.log({ fs, dir, gitdir, ref: "refs/heads/feature", depth: 5 });
+    expect(log.map((e) => e.oid)).toHaveLength(4);
+    expect(log[2].oid).toBe(mainTip);
+    expect(log[0].commit.parent).toEqual([log[1].oid]);
+    expect(log[1].commit.parent).toEqual([log[2].oid]);
+    expect(log[2].commit.parent).toEqual([log[3].oid]);
+    expect(log[3].oid).toBe(
+      await git.resolveRef({ fs, dir, gitdir, ref: "refs/remotes/origin/main" }),
+    );
+
+    const squashed = log[0];
+    const readmeCommit = log[1];
+    expect(readmeCommit.commit.message.split("\n")[0]).toBe("docs: tweak readme");
+    expect(squashed.commit.message.split("\n")[0]).toBe("chore: add notes");
+    expect(squashed.commit.message).toContain("feat: greet in Hindi");
+
+    // Worktree reflects the replayed (and squashed) history; the dropped
+    // commit's file is gone.
+    expect(await localRead("hello.ts")).toBe(EDITED_HELLO);
+    expect(await localRead("notes.txt")).toBe("f2\n");
+    expect(await localRead("README.md")).toBe(README_TWEAKED);
+    expect(await localRead("main.txt")).toBe("main\n");
+    await expect(localRead("dropme.txt")).rejects.toThrow();
+    expect(await getStatus(OWNER, REPO)).toEqual([]);
+
+    // Push the rebased chain: main's commit plus the two replayed commits.
+    const localTip = (await localBranchTip(OWNER, REPO, "feature"))!;
+    const push = await pushLocal(backend, {
+      owner: OWNER,
+      repo: REPO,
+      branch: "feature",
+    });
+    expect(push.pushed).toBe(3);
+    expect(push.finalSha).toBe(localTip);
+    expect(push.ancestryReplayed).toBe(false);
+    expect(
+      await git.resolveRef({
+        fs: remote.fs,
+        dir: remote.dir,
+        gitdir: remote.gitdir,
+        ref: "refs/heads/feature",
+      }),
+    ).toBe(localTip);
+  });
+
+  test("rebase with a conflict resolves per-file and continues", async () => {
+    const backend = await freshClone();
+
+    await makeBranch("feature", "main");
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "feature" });
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    await localCommit("feat: greet in Hindi");
+
+    // Main edits the same line, so replaying the feature commit conflicts.
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "main" });
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(MAIN_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    await localCommit("feat(main): hi greeting");
+    const mainTip = (await localBranchTip(OWNER, REPO, "main"))!;
+
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "feature" });
+    await startRebase({ owner: OWNER, repo: REPO, base: "main" });
+    const first = await runRebase(backend, { owner: OWNER, repo: REPO });
+    expect(first.conflict).toBe(true);
+    if (!first.conflict) throw new Error("expected a rebase conflict");
+    expect(first.step).toBe(0);
+
+    const file = first.files.find((f) => f.path === "hello.ts");
+    expect(file).toBeDefined();
+    expect(decodeText(file!.base!)).toBe(BASE_HELLO);
+    expect(decodeText(file!.ours!)).toBe(MAIN_HELLO);
+    expect(decodeText(file!.theirs!)).toBe(EDITED_HELLO);
+    expect(getActiveSession()?.kind).toBe("rebase");
+
+    // Keep theirs (the feature's own edit) and continue the rebase.
+    await resolveConflictFile(OWNER, REPO, "hello.ts", file!.theirs);
+    expect(allResolved()).toBe(true);
+    const resumed = await runRebase(backend, { owner: OWNER, repo: REPO });
+    expect(resumed.conflict).toBe(false);
+    if (resumed.conflict) throw new Error("expected the rebase to finish");
+    expect(resumed.done).toBe(true);
+    expect(getActiveSession()).toBeNull();
+
+    expect(await localRead("hello.ts")).toBe(EDITED_HELLO);
+    expect(await getStatus(OWNER, REPO)).toEqual([]);
+    const log = await git.log({
+      ...(await repoCtx(OWNER, REPO)),
+      ref: "refs/heads/feature",
+      depth: 3,
+    });
+    expect(log[1].oid).toBe(mainTip);
+    expect(log[0].commit.parent).toEqual([mainTip]);
+    expect(log[0].commit.message.split("\n")[0]).toBe("feat: greet in Hindi");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Cherry-pick with a conflict
+// ---------------------------------------------------------------------------
+
+describe("cherry-pick with a conflict", () => {
+  test("resolves per-file and finishes", async () => {
+    const backend = await freshClone();
+
+    await makeBranch("feature", "main");
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "feature" });
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(FEATURE_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    await localCommit("feat(feature): howdy greeting");
+    const featureTip = (await localBranchTip(OWNER, REPO, "feature"))!;
+
+    await git.checkout({ ...(await repoCtx(OWNER, REPO)), ref: "main" });
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(MAIN_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    await localCommit("feat(main): hi greeting");
+    const mainTip = (await localBranchTip(OWNER, REPO, "main"))!;
+
+    const outcome = await cherryPickCommit(backend, {
+      owner: OWNER,
+      repo: REPO,
+      oid: featureTip,
+    });
+    expect(outcome.conflict).toBe(true);
+    if (!outcome.conflict) throw new Error("expected a cherry-pick conflict");
+
+    const file = outcome.files.find((f) => f.path === "hello.ts");
+    expect(file).toBeDefined();
+    expect(decodeText(file!.base!)).toBe(BASE_HELLO);
+    expect(decodeText(file!.ours!)).toBe(MAIN_HELLO);
+    expect(decodeText(file!.theirs!)).toBe(FEATURE_HELLO);
+    expect(getActiveSession()?.kind).toBe("cherry-pick");
+
+    // Keep theirs — the cherry-picked commit's own version.
+    await resolveConflictFile(OWNER, REPO, "hello.ts", file!.theirs);
+    expect(allResolved()).toBe(true);
+    const oid = await finishCherryPick({ owner: OWNER, repo: REPO });
+    expect(getActiveSession()).toBeNull();
+
+    expect(await localRead("hello.ts")).toBe(FEATURE_HELLO);
+    expect(await getStatus(OWNER, REPO)).toEqual([]);
+    const commit = (
+      await git.readCommit({ ...(await repoCtx(OWNER, REPO)), oid })
+    ).commit;
+    expect(commit.message.split("\n")[0]).toBe("feat(feature): howdy greeting");
+    expect(commit.parent).toEqual([mainTip]);
+    expect(await localBranchTip(OWNER, REPO, "main")).toBe(oid);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Stash drop + clear
+// ---------------------------------------------------------------------------
+
+describe("stash drop and clear", () => {
+  test("drop removes one stash; pop still applies the rest; clear empties", async () => {
+    await freshClone();
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stashPush(OWNER, REPO, "wip1: hello");
+    await writeWorkFile(OWNER, REPO, "greet.ts", encodeText(TWO_OURS));
+    await stashPush(OWNER, REPO, "wip2: greet");
+
+    // Newest stash first, like git's stash@{0}.
+    let list = await stashList(OWNER, REPO);
+    expect(list.length).toBe(2);
+    expect(list[0].label).toContain("wip2: greet");
+    expect(list[1].label).toContain("wip1: hello");
+
+    // Dropping index 0 removes the newest stash; the older one survives.
+    await stashDrop(OWNER, REPO, 0);
+    list = await stashList(OWNER, REPO);
+    expect(list.length).toBe(1);
+    expect(list[0].label).toContain("wip1: hello");
+
+    // Popping it restores the older change.
+    await stashPop(OWNER, REPO, 0);
+    expect(await getStatus(OWNER, REPO)).toEqual([
+      { path: "hello.ts", label: "modified", staged: false },
+    ]);
+    expect(await localRead("hello.ts")).toBe(EDITED_HELLO);
+
+    await stashClear(OWNER, REPO);
+    expect(await stashList(OWNER, REPO)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Graph click-to-view (commitDiff)
+// ---------------------------------------------------------------------------
+
+describe("graph click-to-view", () => {
+  test("commitDiff shows exactly what a commit changed against its parent", async () => {
+    const backend = await freshClone();
+
+    await writeWorkFile(OWNER, REPO, "hello.ts", encodeText(EDITED_HELLO));
+    await stageFile(OWNER, REPO, "hello.ts");
+    const { oid } = await localCommit("feat: greet in Hindi");
+
+    const diffs = await commitDiff(backend, OWNER, REPO, oid);
+    const hello = diffs.find((d) => d.path === "hello.ts");
+    expect(hello).toBeDefined();
+    expect(hello!.oldText).toBe(BASE_HELLO);
+    expect(hello!.newText).toBe(EDITED_HELLO);
+    expect(hello!.binary).toBe(false);
+
+    const graph = await getGraph(OWNER, REPO);
+    expect(graph.headOid).toBe(oid);
+    const commit = graph.commits.find((c) => c.oid === oid);
+    expect(commit?.message.trim()).toBe("feat: greet in Hindi");
+    expect(graph.branches.find((b) => b.name === "main")?.oid).toBe(oid);
   });
 });
