@@ -172,6 +172,48 @@ export const recordAiUse = internalMutation({
   },
 });
 
+// In-flight window: a slot is held for at most this long before it is
+// treated as stale (crashed request) and can be re-acquired.
+const INFLIGHT_TTL_MS = 60_000;
+
+/**
+ * Acquire the per-user in-flight slot before an AI call. Returns false when
+ * another call is already running (or died < TTL ago) — the caller aborts,
+ * so concurrent duplicate submissions can't double-fire a paid AI call.
+ * Stale slots (older than TTL) are reclaimed automatically.
+ */
+export const acquireAiInflight = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("aiInflight")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .unique();
+    const now = Date.now();
+    if (existing) {
+      if (now - existing.updatedAt < INFLIGHT_TTL_MS) {
+        return false; // a request is already running
+      }
+      await ctx.db.patch(existing._id, { updatedAt: now });
+      return true;
+    }
+    await ctx.db.insert("aiInflight", { userId: args.userId, updatedAt: now });
+    return true;
+  },
+});
+
+/** Release the in-flight slot after the AI call completes (or fails). */
+export const releaseAiInflight = internalMutation({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("aiInflight")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .unique();
+    if (existing) await ctx.db.delete(existing._id);
+  },
+});
+
 /** Audit trail (Team/Enterprise): who did what and when. */
 export const logAudit = internalMutation({
   args: {

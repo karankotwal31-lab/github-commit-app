@@ -1097,6 +1097,7 @@ async function createGitHubCommit(
     token: string;
     owner: string;
     repo: string;
+    branch?: string; // used by the approval-policy gate
     message: string;
     parents: string[];
     baseTreeSha: string;
@@ -1147,6 +1148,37 @@ async function createGitHubCommit(
           .join(", ")}`,
       })
       .catch(() => {});
+  }
+  // Approval policies (Phase 4 C): when the actor belongs to an org whose
+  // protected-branch policy matches this commit, the action is blocked
+  // server-side until the policy is satisfied (role + approval count).
+  const commitUserId = await getAuthUserId(ctx);
+  if (commitUserId !== null) {
+    const policyGate = await ctx
+      .runQuery(internal.organizations.internalCommitGate, {
+        userId: commitUserId,
+        branch: args.branch ?? "",
+        paths: textFiles.map((f) => f.path),
+      })
+      .catch(() => null);
+    if (policyGate && !policyGate.satisfied) {
+      throw new Error(
+        `Aria refuses this commit: your organization “${policyGate.orgName}” requires the ${policyGate.minRole} role (or higher) and ${policyGate.minApprovers} approval(s) for changes to ${args.branch || "this branch"} (${policyGate.approvalCount} recorded so far). Approve it in the Release center, or work on a non-protected branch.`,
+      );
+    }
+    if (policyGate && policyGate.satisfied) {
+      await ctx
+        .runMutation(internal.securityCenter.audit, {
+          userId: commitUserId,
+          action: "commit.approval_gate",
+          repo: `${args.owner}/${args.repo}`,
+          branch: args.branch,
+          result: "approved",
+          approval: true,
+          detail: `Protected-branch policy satisfied (${policyGate.minRole}+, ${policyGate.approvalCount}/${policyGate.minApprovers} approvals)`,
+        })
+        .catch(() => {});
+    }
   }
   // Secret override: record that an override happened WITHOUT recording the
   // secret itself (Phase 3 flight/audit requirement).

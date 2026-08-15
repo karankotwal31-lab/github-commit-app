@@ -37,6 +37,9 @@ interface AiFinding {
     | "dependency_upgrade"
     | "docs"
     | "mission";
+  priority: "high" | "medium" | "low";
+  readAt?: number | null;
+  dismissedAt?: number | null;
   repo: string;
   title: string;
   detail: string;
@@ -135,7 +138,9 @@ export function InboxDialog({
   const getInbox = useAction(api.githubActions.getInbox);
   const scanRepos = useAction(api.aiFindings.scanRepos);
   const dismissFinding = useMutation(api.aiFindingsStore.dismissFinding);
+  const markRead = useMutation(api.aiFindingsStore.markFindingRead);
   const findings = useQuery(api.aiFindingsStore.listFindings);
+  const unread = useQuery(api.aiFindingsStore.unreadCount);
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
   const [data, setData] = useState<{
@@ -175,6 +180,11 @@ export function InboxDialog({
           <DialogTitle className="flex items-center gap-2">
             <Inbox className="size-4 text-neutral-500" />
             Inbox
+            {typeof unread === "number" && unread > 0 && (
+              <span className="ml-1 rounded-full bg-neutral-900 px-2 py-0.5 text-[10px] font-medium text-white">
+                {unread} new
+              </span>
+            )}
           </DialogTitle>
           <DialogDescription>
             Across every repo you can access — PRs waiting on your review and
@@ -249,57 +259,94 @@ export function InboxDialog({
                   <p className="px-2 py-1 text-sm text-neutral-400">
                     Loading findings…
                   </p>
-                ) : findings.length === 0 ? (
+                ) : findings.filter((f) => !f.dismissedAt).length === 0 ? (
                   <p className="px-2 py-1 text-sm text-neutral-400">
                     No findings right now — Aria scans your repos automatically
                     and surfaces issues here for review. Nothing is ever
                     auto-fixed.
                   </p>
                 ) : (
-                  findings.map((f) => (
-                    <div
-                      key={f._id}
-                      className="rounded-lg border border-neutral-200 p-2.5"
-                    >
-                      <div className="flex items-start gap-2">
-                        <FindingIcon kind={f.kind} />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-neutral-800">
-                            {f.title}
-                          </p>
-                          <p className="mt-0.5 text-xs leading-5 text-neutral-500">
-                            {f.detail}
-                          </p>
-                          <div className="mt-1.5 flex items-center gap-2">
-                            <span className="font-mono text-[10px] text-neutral-400">
-                              {f.repo}
-                            </span>
-                            {f.url && (
-                              <a
-                                href={f.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-[10px] text-neutral-500 underline underline-offset-2 hover:text-neutral-900"
+                  findings
+                    .filter((f) => !f.dismissedAt)
+                    .map((f) => (
+                      <div
+                        key={f._id}
+                        className={cn(
+                          "rounded-lg border p-2.5",
+                          !f.readAt
+                            ? "border-neutral-800 bg-neutral-50"
+                            : "border-neutral-200",
+                        )}
+                        onMouseDown={() => {
+                          if (!f.readAt) void markRead({ id: f._id });
+                        }}
+                      >
+                        <div className="flex items-start gap-2">
+                          <FindingIcon kind={f.kind} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <p
+                                className={cn(
+                                  "text-sm",
+                                  f.readAt
+                                    ? "font-normal text-neutral-700"
+                                    : "font-medium text-neutral-900",
+                                )}
                               >
-                                Open
-                              </a>
-                            )}
-                            <span className="text-[10px] text-neutral-300">
-                              {new Date(f.createdAt).toLocaleDateString()}
-                            </span>
+                                {f.title}
+                              </p>
+                              {!f.readAt && (
+                                <span className="size-1.5 shrink-0 rounded-full bg-neutral-800" />
+                              )}
+                            </div>
+                            <p className="mt-0.5 text-xs leading-5 text-neutral-500">
+                              {f.detail}
+                            </p>
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  "rounded-full px-1.5 py-px text-[10px] font-medium uppercase tracking-wide",
+                                  f.priority === "high"
+                                    ? "bg-rose-100 text-rose-700"
+                                    : f.priority === "medium"
+                                      ? "bg-amber-100 text-amber-700"
+                                      : "bg-neutral-100 text-neutral-500",
+                                )}
+                              >
+                                {f.priority}
+                              </span>
+                              <span className="font-mono text-[10px] text-neutral-400">
+                                {f.repo}
+                              </span>
+                              {f.url && (
+                                <a
+                                  href={f.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={() => {
+                                    if (!f.readAt) void markRead({ id: f._id });
+                                  }}
+                                  className="text-[10px] text-neutral-500 underline underline-offset-2 hover:text-neutral-900"
+                                >
+                                  Open
+                                </a>
+                              )}
+                              <span className="text-[10px] text-neutral-300">
+                                {new Date(f.createdAt).toLocaleDateString()}
+                              </span>
+                            </div>
                           </div>
+                          <button
+                            type="button"
+                            onClick={() => void dismissFinding({ id: f._id })}
+                            className="shrink-0 rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-700"
+                            title="Dismiss (already reviewed)"
+                          >
+                            <X className="size-3.5" />
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => void dismissFinding({ id: f._id })}
-                          className="shrink-0 rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-700"
-                          title="Dismiss (already reviewed)"
-                        >
-                          <X className="size-3.5" />
-                        </button>
                       </div>
-                    </div>
-                  ))
+                    ))
                 )}
               </div>
             </div>

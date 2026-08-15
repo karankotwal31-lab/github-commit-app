@@ -8,6 +8,7 @@ import { anySecretRisk } from "../lib/secrets";
 import { cleanMultiline, cleanPath } from "../lib/sanitize";
 import { fetchWithRetry } from "./net";
 import { captureEvent } from "./analytics";
+import { chatCompletion, hasAnyAiProvider } from "./aiProvider";
 import {
   AI_REQUESTS_PER_MINUTE,
   FEATURE_FLAGS,
@@ -15,14 +16,6 @@ import {
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "aria";
-const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
-
-// Pay-per-token by default; swap via OPENROUTER_MODEL (e.g. a paid model once
-// subscribers fund it). The ":free" suffix is OpenRouter's free tier.
-// Note: free-model availability changes — if this model stops working, set
-// OPENROUTER_MODEL in project keys to a current :free model from
-// https://openrouter.ai/models (filter by ":free").
-const DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
 
 const MAX_CONTEXT_FILES = 5;
 const MAX_FILE_BYTES = 200_000;
@@ -252,21 +245,19 @@ export const aiSuggest = action({
       content: h.content.slice(0, 2000),
     }));
     const userId = await getAuthUserId(ctx);
-    if (userId !== null) {
-      await assertAiRateLimit(ctx, userId);
-      // Quota gate — enforced at the action layer, never by UI hiding alone.
-      // When billing isn't configured the quota is null (app stays unlocked).
-      const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
-      if (usage.quota !== null && usage.used >= usage.quota) {
-        throw new Error(
-          "You've used all your Ask Aria requests for this month — upgrade your plan or wait for the next billing cycle.",
-        );
-      }
-    }
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
+    if (userId === null) throw new Error("You are not signed in.");
+    await assertAiRateLimit(ctx, userId);
+    // Quota gate — enforced at the action layer, never by UI hiding alone.
+    // When billing isn't configured the quota is null (app stays unlocked).
+    const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
+    if (usage.quota !== null && usage.used >= usage.quota) {
       throw new Error(
-        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+        "You've used all your Ask Aria requests for this month — upgrade your plan or wait for the next billing cycle.",
+      );
+    }
+    if (!hasAnyAiProvider()) {
+      throw new Error(
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys, then try again.",
       );
     }
     const token = await getToken(ctx);
@@ -352,46 +343,29 @@ ${instruction}`;
 
     // 4. Call the model with the conversation history so follow-ups build on
     //    earlier turns instead of starting from scratch.
-    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
-    let data: {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-    try {
-      const res = await fetch(OPENROUTER_API, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-Title": "Aria",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...history.map((h) => ({ role: h.role, content: h.content })),
-            { role: "user", content: userPrompt },
-          ],
-        }),
-      });
-      data = (await res.json()) as typeof data;
-      if (!res.ok) {
-        const detail = data?.error?.message ?? `HTTP ${res.status}`;
-        throw new Error(
-          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
-        );
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
-        throw e;
-      }
+    const acquired = await ctx.runMutation(internal.aiUsage.acquireAiInflight, {
+      userId,
+    });
+    if (!acquired) {
       throw new Error(
-        "Couldn't reach the AI provider — check your network and try again.",
+        "An AI request is already running for your account — wait for it to finish, then try again.",
       );
     }
-
-    const reply = data?.choices?.[0]?.message?.content ?? "";
+    const completion = await chatCompletion({
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...history.map((h) => ({ role: h.role, content: h.content })),
+        { role: "user", content: userPrompt },
+      ],
+    });
+    await ctx.runMutation(internal.aiUsage.releaseAiInflight, { userId });
+    if (!completion.ok) {
+      throw new Error(
+        `The AI model replied with an error (${completion.error}). If no provider is configured, add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys.`,
+      );
+    }
+    const reply = completion.content;
     if (!reply.trim()) {
       throw new Error("The AI replied with nothing — try again or rephrase.");
     }
@@ -545,10 +519,9 @@ export const aiReviewBranch = action({
         "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
       );
     }
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
+    if (!hasAnyAiProvider()) {
       throw new Error(
-        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys, then try again.",
       );
     }
     const token = await getToken(ctx);
@@ -595,45 +568,28 @@ Rules:
 
     const userPrompt = `Repository: ${args.owner}/${args.repo}\nBase: ${args.base} → Branch: ${args.branch} (${compare.ahead_by} commits ahead, +${addedLines}/-${deletedLines} across ${changedFiles.length} files)\n\nChanged files:\n${changedFiles.join("\n") || "(none)"}\n\nDiff:\n${diffText}`;
 
-    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
-    let data: {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-    try {
-      const res = await fetch(OPENROUTER_API, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-Title": "Aria",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-        }),
-      });
-      data = (await res.json()) as typeof data;
-      if (!res.ok) {
-        const detail = data?.error?.message ?? `HTTP ${res.status}`;
-        throw new Error(
-          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
-        );
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
-        throw e;
-      }
+    const acquired = await ctx.runMutation(internal.aiUsage.acquireAiInflight, {
+      userId,
+    });
+    if (!acquired) {
       throw new Error(
-        "Couldn't reach the AI provider — check your network and try again.",
+        "An AI request is already running for your account — wait for it to finish, then try again.",
       );
     }
-
-    const reply = data?.choices?.[0]?.message?.content ?? "";
+    const completion = await chatCompletion({
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    await ctx.runMutation(internal.aiUsage.releaseAiInflight, { userId });
+    if (!completion.ok) {
+      throw new Error(
+        `The AI model replied with an error (${completion.error}). If no provider is configured, add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys.`,
+      );
+    }
+    const reply = completion.content;
     if (!reply.trim()) {
       throw new Error("The AI replied with nothing — try again or rephrase.");
     }
@@ -716,10 +672,9 @@ export const aiCommitMessage = action({
         "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
       );
     }
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
+    if (!hasAnyAiProvider()) {
       throw new Error(
-        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys, then try again.",
       );
     }
 
@@ -758,45 +713,28 @@ Rules:
 
     const userPrompt = `Repository: ${args.repo ?? "this repository"}\n\nStaged changes:\n${summary}`;
 
-    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
-    let data: {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-    try {
-      const res = await fetch(OPENROUTER_API, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-Title": "Aria",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-        }),
-      });
-      data = (await res.json()) as typeof data;
-      if (!res.ok) {
-        const detail = data?.error?.message ?? `HTTP ${res.status}`;
-        throw new Error(
-          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
-        );
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
-        throw e;
-      }
+    const acquired = await ctx.runMutation(internal.aiUsage.acquireAiInflight, {
+      userId,
+    });
+    if (!acquired) {
       throw new Error(
-        "Couldn't reach the AI provider — check your network and try again.",
+        "An AI request is already running for your account — wait for it to finish, then try again.",
       );
     }
-
-    const reply = data?.choices?.[0]?.message?.content ?? "";
+    const completion = await chatCompletion({
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    await ctx.runMutation(internal.aiUsage.releaseAiInflight, { userId });
+    if (!completion.ok) {
+      throw new Error(
+        `The AI model replied with an error (${completion.error}). If no provider is configured, add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys.`,
+      );
+    }
+    const reply = completion.content;
     if (!reply.trim()) {
       throw new Error("The AI replied with nothing — try again or rephrase.");
     }
@@ -851,10 +789,9 @@ export const aiResolveConflict = action({
         "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
       );
     }
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
+    if (!hasAnyAiProvider()) {
       throw new Error(
-        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys, then try again.",
       );
     }
 
@@ -887,45 +824,28 @@ ${ours || "(empty)"}
 --- THEIRS (the incoming branch) ---
 ${theirs || "(empty)"}`;
 
-    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
-    let data: {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-    try {
-      const res = await fetch(OPENROUTER_API, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-Title": "Aria",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-        }),
-      });
-      data = (await res.json()) as typeof data;
-      if (!res.ok) {
-        const detail = data?.error?.message ?? `HTTP ${res.status}`;
-        throw new Error(
-          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
-        );
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
-        throw e;
-      }
+    const acquired = await ctx.runMutation(internal.aiUsage.acquireAiInflight, {
+      userId,
+    });
+    if (!acquired) {
       throw new Error(
-        "Couldn't reach the AI provider — check your network and try again.",
+        "An AI request is already running for your account — wait for it to finish, then try again.",
       );
     }
-
-    const reply = data?.choices?.[0]?.message?.content ?? "";
+    const completion = await chatCompletion({
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    await ctx.runMutation(internal.aiUsage.releaseAiInflight, { userId });
+    if (!completion.ok) {
+      throw new Error(
+        `The AI model replied with an error (${completion.error}). If no provider is configured, add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys.`,
+      );
+    }
+    const reply = completion.content;
     if (!reply.trim()) {
       throw new Error("The AI replied with nothing — try again or rephrase.");
     }
@@ -998,10 +918,9 @@ export const aiWhyChanged = action({
         "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
       );
     }
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
+    if (!hasAnyAiProvider()) {
       throw new Error(
-        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys, then try again.",
       );
     }
     const token = await getToken(ctx);
@@ -1070,45 +989,28 @@ Rules:
 
     const userPrompt = `Repository: ${repo}\nFile: ${args.path}${args.line ? ` (line ${args.line})` : ""}\nBranch: ${args.branch}\n\n--- COMMIT HISTORY FOR THIS FILE ---\n${commitBlock}\n\n--- PULL REQUESTS TOUCHING THIS FILE ---\n${prBlock}`;
 
-    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
-    let data: {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message?: string };
-    };
-    try {
-      const res = await fetch(OPENROUTER_API, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-Title": "Aria",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.1,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-        }),
-      });
-      data = (await res.json()) as typeof data;
-      if (!res.ok) {
-        const detail = data?.error?.message ?? `HTTP ${res.status}`;
-        throw new Error(
-          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
-        );
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
-        throw e;
-      }
+    const acquired = await ctx.runMutation(internal.aiUsage.acquireAiInflight, {
+      userId,
+    });
+    if (!acquired) {
       throw new Error(
-        "Couldn't reach the AI provider — check your network and try again.",
+        "An AI request is already running for your account — wait for it to finish, then try again.",
       );
     }
-
-    const reply = data?.choices?.[0]?.message?.content ?? "";
+    const completion = await chatCompletion({
+      temperature: 0.1,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    await ctx.runMutation(internal.aiUsage.releaseAiInflight, { userId });
+    if (!completion.ok) {
+      throw new Error(
+        `The AI model replied with an error (${completion.error}). If no provider is configured, add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys.`,
+      );
+    }
+    const reply = completion.content;
     if (!reply.trim()) {
       throw new Error("The AI replied with nothing — try again or rephrase.");
     }
@@ -1208,10 +1110,9 @@ export const aiPlanCrossRepo = action({
         "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
       );
     }
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
+    if (!hasAnyAiProvider()) {
       throw new Error(
-        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys, then try again.",
       );
     }
     const token = await getToken(ctx);
@@ -1310,46 +1211,24 @@ Rules:
 
         const userPrompt = `Requested change: ${instruction}\n\nRepository: ${repoFull} (branch ${target.branch})\n\nRelevant files:\n${filesBlock || "(no readable text files)"}`;
 
-        let data: {
-          choices?: Array<{ message?: { content?: string } }>;
-          error?: { message?: string };
-        };
-        try {
-          const res = await fetch(OPENROUTER_API, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Content-Type": "application/json",
-              "X-Title": "Aria",
-            },
-            body: JSON.stringify({
-              model: process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL,
-              temperature: 0.2,
-              messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: userPrompt },
-              ],
-            }),
-          });
-          data = (await res.json()) as typeof data;
-          if (!res.ok) {
-            const detail = data?.error?.message ?? `HTTP ${res.status}`;
-            throw new Error(detail);
-          }
-        } catch (e) {
+        const completion = await chatCompletion({
+          temperature: 0.2,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        });
+        if (!completion.ok) {
           results.push({
             ...target,
             summary: "",
             changes: [],
-            error:
-              e instanceof Error && e.message
-                ? e.message.slice(0, 200)
-                : "The AI provider failed for this repository.",
+            error: completion.error.slice(0, 200),
           });
           continue;
         }
 
-        const reply = data?.choices?.[0]?.message?.content ?? "";
+        const reply = completion.content;
         const parsed = extractJson(reply) as {
           summary?: unknown;
           changes?: unknown;

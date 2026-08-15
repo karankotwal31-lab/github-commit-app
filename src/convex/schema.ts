@@ -168,7 +168,9 @@ const schema = defineSchema(
     // result, whether an approval was involved, and the mission it belongs to.
     auditLogs: defineTable({
       userId: v.id("users"),
+      actorLogin: v.optional(v.string()), // GitHub login of the actor
       action: v.string(),
+      resource: v.optional(v.string()), // e.g. "commit" | "pr" | "mission" | "org:name"
       repo: v.optional(v.string()),
       branch: v.optional(v.string()),
       result: v.optional(v.string()), // e.g. "ok" | "blocked" | "overridden" | "approved" | "denied"
@@ -292,7 +294,8 @@ const schema = defineSchema(
     // explanations — nothing is ever auto-fixed, only surfaced as cards for
     // review. Rows are upserted by (userId, key) so a fixed finding
     // disappears on the next scan, and pruned to a cap so the inbox stays
-    // tidy.
+    // tidy. Phase 4 adds priority, read/dismissed state so the inbox can
+    // rank actionable items and track what the user has seen.
     aiFindings: defineTable({
       userId: v.id("users"),
       key: v.string(), // dedup: e.g. "deps:owner/repo:lodash"
@@ -306,6 +309,9 @@ const schema = defineSchema(
         v.literal("docs"),
         v.literal("mission"),
       ),
+      priority: v.union(v.literal("high"), v.literal("medium"), v.literal("low")),
+      readAt: v.optional(v.number()),
+      dismissedAt: v.optional(v.number()),
       repo: v.string(), // full name, e.g. "owner/name"
       title: v.string(),
       detail: v.string(), // short plain-language explanation
@@ -351,6 +357,9 @@ const schema = defineSchema(
     // proposals the user applies and approves.
     missions: defineTable({
       userId: v.id("users"),
+      // Phase 4: optional org scope so teams can share missions. When set,
+      // membership is enforced server-side before any mission is read/written.
+      orgId: v.optional(v.id("organizations")),
       repo: v.string(),
       branch: v.string(),
       title: v.string(),
@@ -487,6 +496,130 @@ const schema = defineSchema(
     })
       .index("by_userId", ["userId"])
       .index("by_userRepo", ["userId", "repo"]),
+
+    // Organizations (Phase 4): a tenant that groups users with roles so
+    // teams can share rules, approvals, and missions. Authorization is
+    // enforced server-side — membership is checked before any org-scoped
+    // data is read or written.
+    organizations: defineTable({
+      name: v.string(),
+      slug: v.string(), // unique, used in shareable links
+      ownerId: v.id("users"),
+      createdAt: v.number(),
+    }).index("by_slug", ["slug"]).index("by_owner", ["ownerId"]),
+
+    // Org membership with a role ladder (owner > admin > developer >
+    // reviewer > viewer). One row per (org, user).
+    orgMembers: defineTable({
+      orgId: v.id("organizations"),
+      userId: v.id("users"),
+      role: v.union(
+        v.literal("owner"),
+        v.literal("admin"),
+        v.literal("developer"),
+        v.literal("reviewer"),
+        v.literal("viewer"),
+      ),
+      invitedBy: v.optional(v.id("users")),
+      createdAt: v.number(),
+    })
+      .index("by_org", ["orgId"])
+      .index("by_user", ["userId"])
+      .index("by_orgUser", ["orgId", "userId"]),
+
+    // Approval policies (Phase 4): configurable, server-authoritative
+    // requirements for sensitive actions (deploy, protected branches,
+    // dependency upgrades, DB migrations, high-risk AI). A matched policy
+    // is enforced at the action layer — never by hiding buttons.
+    approvalPolicies: defineTable({
+      orgId: v.id("organizations"),
+      action: v.union(
+        v.literal("deploy"),
+        v.literal("protected_branch"),
+        v.literal("dependency_upgrade"),
+        v.literal("database_migration"),
+        v.literal("high_risk_ai"),
+      ),
+      branchGlob: v.string(), // "" = all branches
+      minRole: v.union(
+        v.literal("owner"),
+        v.literal("admin"),
+        v.literal("developer"),
+        v.literal("reviewer"),
+        v.literal("viewer"),
+      ),
+      minApprovers: v.number(),
+      pathGlobs: v.array(v.string()),
+      createdBy: v.id("users"),
+      updatedAt: v.number(),
+    }).index("by_org", ["orgId"]),
+
+    // Webhook idempotency (Phase 4): which provider events have already been
+    // processed, so Stripe retries/replays can never double-apply a plan
+    // change. Keyed by (provider, eventId).
+    processedEvents: defineTable({
+      provider: v.string(), // "stripe"
+      eventId: v.string(),
+      processedAt: v.number(),
+    })
+      .index("by_event", ["provider", "eventId"])
+      .index("by_processedAt", ["processedAt"]),
+
+    // Plugin registry (Phase 4): declarative plugin manifests with declared
+    // capabilities, per-user grants, a privacy statement, and a lifecycle
+    // status. The runtime gates every capability server-side; plugins never
+    // receive GitHub tokens, secrets, or private-repo data implicitly.
+    plugins: defineTable({
+      userId: v.id("users"),
+      slug: v.string(), // unique per user
+      name: v.string(),
+      version: v.string(),
+      description: v.string(),
+      author: v.string(),
+      declaredCapabilities: v.array(v.string()),
+      grantedCapabilities: v.array(v.string()),
+      privacyStatement: v.string(),
+      status: v.union(
+        v.literal("installed"),
+        v.literal("disabled"),
+        v.literal("uninstalled"),
+      ),
+      updatedAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_userSlug", ["userId", "slug"]),
+
+    // Notification preferences (Phase 4): which channels (email / web push)
+    // and categories each user wants. Honored by the notification layer;
+    // absent row = all channels on (backwards compatible).
+    notificationPrefs: defineTable({
+      userId: v.id("users"),
+      email: v.boolean(),
+      push: v.boolean(),
+      categories: v.array(v.string()), // e.g. ["review", "security", "ci"]
+      updatedAt: v.number(),
+    }).index("by_userId", ["userId"]),
+
+    // AI in-flight guard (Phase 4 M): one row per user while an AI request
+    // is running, so concurrent duplicate submissions can't double-fire a
+    // paid AI call. Rows are acquired server-side with a short TTL and
+    // released on completion — a stale row can never block a user forever.
+    aiInflight: defineTable({
+      userId: v.id("users"),
+      updatedAt: v.number(),
+    }).index("by_userId", ["userId"]),
+
+    // Action approvals (Phase 4 C): one row per (org, action, branch, user)
+    // recording that a member with sufficient role approved the action.
+    // The count of distinct approvers is what gates sensitive actions —
+    // server-authoritative, independent of any UI.
+    actionApprovals: defineTable({
+      orgId: v.id("organizations"),
+      action: v.string(), // e.g. "deploy" | "protected_branch" | "dependency_upgrade"
+      branch: v.string(),
+      approvedBy: v.id("users"),
+      approvedAt: v.number(),
+    }).index("by_orgAction", ["orgId", "action", "branch"]),
   },
   {
     schemaValidation: false,

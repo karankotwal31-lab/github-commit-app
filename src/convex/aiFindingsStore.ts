@@ -1,16 +1,21 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { findingPriority, sortFindings } from "../lib/phase4";
 
 /**
  * Read/write side of the background AI checker (the scan itself runs in the
  * "use node" aiFindings.ts because it calls out to GitHub + the npm registry).
  * Queries and mutations can't live in Node modules, so the store lives here.
+ *
+ * Phase 4 F: findings carry priority, read state, and a dismiss (reviewed)
+ * state so the unified inbox can rank actionable items and track what the
+ * user has actually seen.
  */
 
 const MAX_FINDINGS_PER_USER = 25;
 
-/** Reactive list of the signed-in user's findings (newest first). */
+/** Reactive list of the signed-in user's findings — priority first, then newest. */
 export const listFindings = query({
   args: {},
   handler: async (ctx) => {
@@ -20,13 +25,41 @@ export const listFindings = query({
       .query("aiFindings")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .collect();
-    return rows
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, MAX_FINDINGS_PER_USER);
+    return sortFindings(rows).slice(0, MAX_FINDINGS_PER_USER);
   },
 });
 
-/** Dismiss a finding (the user has reviewed it). */
+/** Count unread findings (badge on the inbox button). */
+export const unreadCount = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return 0;
+    const rows = await ctx.db
+      .query("aiFindings")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    return rows.filter(
+      (r) => r.readAt === undefined && r.dismissedAt === undefined,
+    ).length;
+  },
+});
+
+/** Mark a finding read (opened). Dismissed findings stay hidden. */
+export const markFindingRead = mutation({
+  args: { id: v.id("aiFindings") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const row = await ctx.db.get(args.id);
+    if (row === null || row.userId !== userId) return;
+    if (row.readAt === undefined) {
+      await ctx.db.patch(args.id, { readAt: Date.now() });
+    }
+  },
+});
+
+/** Dismiss a finding (the user has reviewed it — hidden from the inbox). */
 export const dismissFinding = mutation({
   args: { id: v.id("aiFindings") },
   handler: async (ctx, args) => {
@@ -36,7 +69,7 @@ export const dismissFinding = mutation({
     if (row === null || row.userId !== userId) {
       throw new Error("Finding not found.");
     }
-    await ctx.db.delete(args.id);
+    await ctx.db.patch(args.id, { dismissedAt: Date.now() });
   },
 });
 
@@ -79,6 +112,7 @@ export const upsertFinding = internalMutation({
         userId: args.userId,
         key: args.key,
         kind: args.kind,
+        priority: findingPriority(args.kind),
         repo: args.repo,
         title: args.title.slice(0, 140),
         detail: args.detail.slice(0, 400),

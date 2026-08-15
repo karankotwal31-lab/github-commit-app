@@ -104,10 +104,22 @@ export const checkForUser = internalAction({
     const hasPush = pushConfigured();
     const hasEmail = emailConfigured();
     if (!hasPush && !hasEmail) return { sent: 0 };
-    const subs = hasPush
-      ? await ctx.runQuery(internal.pushSubscriptions.subsForUser, { userId })
-      : [];
-    if (subs.length === 0 && !hasEmail) return { sent: 0 };
+    // Phase 4 G: honor per-user notification preferences. Absent prefs =
+    // everything on (backwards compatible).
+    const prefs = await ctx
+      .runQuery(internal.pushSubscriptions.internalNotificationPrefs, { userId })
+      .catch(() => null);
+    const emailOn = prefs?.email ?? true;
+    const pushOn = prefs?.push ?? true;
+    const cats = prefs?.categories ?? []; // empty = all categories
+    const categoryOn = (kind: string) =>
+      cats.length === 0 || cats.includes(kind);
+    if (!pushOn && !emailOn) return { sent: 0 };
+    const subs =
+      hasPush && pushOn
+        ? await ctx.runQuery(internal.pushSubscriptions.subsForUser, { userId })
+        : [];
+    if (subs.length === 0 && !(hasEmail && emailOn)) return { sent: 0 };
 
     // The inbox is Pro-gated; free users simply get nothing notified.
     let inbox: {
@@ -163,13 +175,15 @@ export const checkForUser = internalAction({
     let sent = 0;
     const emailItems: Array<{ title: string; body: string; url: string }> = [];
     for (const item of items) {
+      // Phase 4 G: skip categories the user turned off.
+      if (!categoryOn(item.kind)) continue;
       // Dedup: only notify each item once (forever) per user.
       const seen = await ctx.runQuery(internal.pushSubscriptions.wasSent, {
         userId,
         key: item.key,
       });
       if (seen) continue;
-      if (subs.length > 0) {
+      if (subs.length > 0 && pushOn) {
         await ctx.runAction(internal.notifications.sendPushToUser, {
           userId,
           title: item.title.slice(0, 80),
@@ -193,7 +207,7 @@ export const checkForUser = internalAction({
 
     // One digest email per check for every new item (fail-open — a mail
     // failure must never affect push or the check itself).
-    if (emailItems.length > 0) {
+    if (emailItems.length > 0 && emailOn) {
       await ctx
         .runAction(internal.email.sendInboxDigest, {
           userId,

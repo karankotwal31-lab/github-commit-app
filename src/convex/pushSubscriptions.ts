@@ -138,6 +138,76 @@ export const markSent = internalMutation({
   },
 });
 
+/** The user's notification preferences (absent row = all channels/categories on). */
+export const internalNotificationPrefs = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("notificationPrefs")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .unique();
+    return row
+      ? { email: row.email, push: row.push, categories: row.categories }
+      : null;
+  },
+});
+
+/** Save notification preferences (Phase 4 G). */
+export const saveNotificationPrefs = mutation({
+  args: {
+    email: v.boolean(),
+    push: v.boolean(),
+    categories: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const categories = args.categories
+      .filter((c) => c.length > 0 && c.length <= 40)
+      .slice(0, 20);
+    const existing = await ctx.db
+      .query("notificationPrefs")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        email: args.email,
+        push: args.push,
+        categories,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("notificationPrefs", {
+        userId,
+        email: args.email,
+        push: args.push,
+        categories,
+        updatedAt: Date.now(),
+      });
+    }
+  },
+});
+
+/** The signed-in user's notification preferences (for the settings UI). */
+export const myNotificationPrefs = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) return null;
+    const row = await ctx.db
+      .query("notificationPrefs")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    return row
+      ? {
+          email: row.email,
+          push: row.push,
+          categories: row.categories,
+        }
+      : { email: true, push: true, categories: [] };
+  },
+});
+
 /** Has this inbox item already been pushed to this user? */
 export const wasSent = internalQuery({
   args: { userId: v.id("users"), key: v.string() },

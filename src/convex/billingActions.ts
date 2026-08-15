@@ -165,6 +165,20 @@ export const handleStripeWebhook = internalAction({
       return { ok: false, error: "Invalid signature" };
     }
 
+    // Idempotency (Phase 4 L): Stripe retries deliveries of the same event
+    // (and replays from the dashboard). Each event is processed at most once
+    // — a replay returns success without touching the plan again, so a
+    // duplicate webhook can never double-apply a plan change.
+    const alreadyProcessed = await ctx
+      .runQuery(internal.stripeEvents.wasProcessed, {
+        provider: "stripe",
+        eventId: event.id,
+      })
+      .catch(() => false);
+    if (alreadyProcessed) {
+      return { ok: true };
+    }
+
     const setPlan = (planArgs: {
       userId: string;
       plan: PlanId;
@@ -182,7 +196,10 @@ export const handleStripeWebhook = internalAction({
         seats: planArgs.seats,
       });
 
-    switch (event.type) {
+    // Failures inside the switch are logged (errorLogs → Airbrake mirror)
+    // and returned to Stripe as an error so it retries the delivery.
+    try {
+      switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
         if (!session.client_reference_id) break;
@@ -250,6 +267,41 @@ export const handleStripeWebhook = internalAction({
       }
       default:
         break;
+      }
+    } catch (e) {
+      await ctx
+        .runMutation(internal.security.logError, {
+          source: "stripe",
+          message:
+            e instanceof Error
+              ? `webhook processing failed: ${e.message.slice(0, 300)}`
+              : "webhook processing failed",
+        })
+        .catch(() => {});
+      return {
+        ok: false,
+        error:
+          e instanceof Error ? e.message.slice(0, 200) : "webhook processing failed",
+      };
+    }
+
+    try {
+      await ctx.runMutation(internal.stripeEvents.markProcessed, {
+        provider: "stripe",
+        eventId: event.id,
+      });
+    } catch (e) {
+      // The dedup row is best-effort; a failure here must not break the plan
+      // update that already happened — log it for review instead.
+      await ctx
+        .runMutation(internal.security.logError, {
+          source: "stripe",
+          message:
+            e instanceof Error
+              ? `dedup write failed: ${e.message.slice(0, 200)}`
+              : "dedup write failed",
+        })
+        .catch(() => {});
     }
     return { ok: true };
   },
