@@ -1,10 +1,14 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
 import "@/lib/monaco";
 import { languageForPath } from "@/lib/monaco";
 import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
-import { notifyFocus, setActiveEditor } from "@/lib/editorRegistry";
+import {
+  notifyCursorMove,
+  notifyFocus,
+  setActiveEditor,
+} from "@/lib/editorRegistry";
 
 // The active-editor registry lives in @/lib/editorRegistry (type-only monaco
 // import) so the workspace chrome can insert symbols / detect focus without
@@ -15,6 +19,25 @@ export interface EditorCursor {
   column: number;
 }
 
+/** A peer editing the same file right now (live collaboration). */
+export interface EditorPeer {
+  deviceId: string;
+  label: string;
+  line: number;
+  column: number;
+}
+
+const PEER_COLORS = [
+  "#0ea5e9",
+  "#f59e0b",
+  "#10b981",
+  "#8b5cf6",
+  "#ef4444",
+  "#ec4899",
+  "#14b8a6",
+  "#6366f1",
+];
+
 /**
  * The Aria code editor: Monaco with the app's turquoise "aria" theme and
  * per-file language detection. Mirrors the current file content via `value`
@@ -24,17 +47,82 @@ export interface EditorCursor {
  * Cross-device continuity: on mount the caret is restored from the shared
  * cursor store (set by the Dashboard when a workspace is restored), and every
  * caret move is written back to that store so the Dashboard can persist it.
+ *
+ * Live collaboration: `peers` renders each collaborator's cursor (same repo,
+ * branch, and file) as a colored caret with a name tag, updated reactively.
+ * This is presence-only — full concurrent editing of the same buffer is not
+ * attempted; edits still flow through the draft/commit pipeline.
  */
 export function CodeEditor({
   path,
   value,
   onChange,
+  peers = [],
 }: {
   path: string;
   value: string;
   onChange: (value: string) => void;
+  peers?: EditorPeer[];
 }) {
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const widgetsRef = useRef<MonacoEditor.IContentWidget[]>([]);
+
+  // Re-render collaborator cursors whenever the peer set changes.
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    // Remove the previous round of widgets.
+    for (const widget of widgetsRef.current) {
+      editor.removeContentWidget(widget);
+    }
+    widgetsRef.current = [];
+
+    // Decorations: a colored caret block (left border) on the peer's line.
+    const decor = editor.createDecorationsCollection(
+      peers.map((peer, i) => ({
+        range: {
+          startLineNumber: Math.max(1, peer.line),
+          startColumn: Math.max(1, peer.column),
+          endLineNumber: Math.max(1, peer.line),
+          endColumn: Math.max(1, peer.column + 1),
+        },
+        options: {
+          isWholeLine: false,
+          className: `aria-peer-cursor-${i % PEER_COLORS.length}`,
+        },
+      })),
+    );
+
+    // Content widgets: the name tag above each cursor.
+    for (let i = 0; i < peers.length; i++) {
+      const peer = peers[i];
+      const domNode = document.createElement("div");
+      domNode.className = "aria-peer-tag";
+      domNode.style.backgroundColor = PEER_COLORS[i % PEER_COLORS.length];
+      domNode.textContent = peer.label.slice(0, 12);
+      const widget: MonacoEditor.IContentWidget = {
+        getId: () => `aria-peer-${peer.deviceId}`,
+        getDomNode: () => domNode,
+        getPosition: () => ({
+          position: {
+            lineNumber: Math.max(1, peer.line),
+            column: Math.max(1, peer.column),
+          },
+          preference: [1],
+        }),
+      };
+      editor.addContentWidget(widget);
+      widgetsRef.current.push(widget);
+    }
+
+    return () => {
+      decor.clear();
+      for (const widget of widgetsRef.current) {
+        editor.removeContentWidget(widget);
+      }
+      widgetsRef.current = [];
+    };
+  }, [peers]);
 
   return (
     <Editor
@@ -52,10 +140,12 @@ export function CodeEditor({
           notifyFocus(false);
         });
         editor.onDidChangeCursorPosition((e) => {
-          setCursorSync({
+          const cursor = {
             line: e.position.lineNumber,
             column: e.position.column,
-          });
+          };
+          setCursorSync(cursor);
+          notifyCursorMove(cursor);
         });
         const restored = getCursorSync();
         if (restored) {

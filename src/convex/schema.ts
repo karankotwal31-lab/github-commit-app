@@ -203,6 +203,30 @@ const schema = defineSchema(
       createdBy: v.id("users"),
       createdAt: v.number(),
     }).index("by_code", ["code"]).index("by_createdBy", ["createdBy"]),
+
+    // Background AI checker findings: one row per issue the scheduled scan
+    // surfaced (outdated/risky dependencies, stale PRs, suspicious config
+    // changes, failing CI). Deterministic scans produce template explanations
+    // — nothing is ever auto-fixed, only surfaced as cards for review. Rows
+    // are upserted by (userId, key) so a fixed finding disappears on the next
+    // scan, and pruned to a cap so the inbox stays tidy.
+    aiFindings: defineTable({
+      userId: v.id("users"),
+      key: v.string(), // dedup: e.g. "deps:owner/repo:lodash"
+      kind: v.union(
+        v.literal("dependency"),
+        v.literal("stale_pr"),
+        v.literal("config_change"),
+        v.literal("failing_ci"),
+      ),
+      repo: v.string(), // full name, e.g. "owner/name"
+      title: v.string(),
+      detail: v.string(), // short plain-language explanation
+      url: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_userKey", ["userId", "key"]),
   },
   {
     schemaValidation: false,

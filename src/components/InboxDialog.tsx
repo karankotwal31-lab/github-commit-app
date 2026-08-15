@@ -8,16 +8,32 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { api } from "@/convex/_generated/api";
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { errorMessage } from "@/lib/github";
 import {
+  AlertTriangle,
   CheckCircle2,
   CircleDashed,
   GitPullRequest,
   Inbox,
   Loader2,
+  Lock,
+  RefreshCw,
+  ShieldAlert,
+  X,
   XCircle,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+interface AiFinding {
+  _id: string;
+  kind: "dependency" | "stale_pr" | "config_change" | "failing_ci";
+  repo: string;
+  title: string;
+  detail: string;
+  url: string | null;
+  createdAt: number;
+}
 
 interface InboxPr {
   repo: string;
@@ -108,6 +124,11 @@ export function InboxDialog({
 }) {
   const plan = useQuery(api.billing.plan);
   const getInbox = useAction(api.githubActions.getInbox);
+  const scanRepos = useAction(api.aiFindings.scanRepos);
+  const dismissFinding = useMutation(api.aiFindingsStore.dismissFinding);
+  const findings = useQuery(api.aiFindingsStore.listFindings);
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState<string | null>(null);
   const [data, setData] = useState<{
     awaitingReview: InboxPr[];
     assigned: InboxAssigned[];
@@ -167,6 +188,112 @@ export function InboxDialog({
           </div>
         ) : data ? (
           <div className="flex flex-col gap-5">
+            {/* Aria's background findings — scheduled scans, never auto-fixed */}
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+                  <ShieldAlert className="size-3.5" />
+                  Aria's findings
+                </p>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setScanning(true);
+                    setScanNote(null);
+                    try {
+                      const r = await scanRepos();
+                      setScanNote(
+                        r.scanned === 0
+                          ? "Open a repo in Aria first — nothing to scan yet."
+                          : `Scanned ${r.scanned} repo${r.scanned > 1 ? "s" : ""} · ${r.findings} finding${r.findings === 1 ? "" : "s"}.`,
+                      );
+                    } catch (e) {
+                      setScanNote(errorMessage(e));
+                    } finally {
+                      setScanning(false);
+                    }
+                  }}
+                  className="flex shrink-0 items-center gap-1 text-xs text-neutral-400 hover:text-neutral-700"
+                >
+                  {scanning ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-3" />
+                  )}
+                  Scan now
+                </button>
+              </div>
+              {scanNote && (
+                <p
+                  className={cn(
+                    "mt-1 px-2 text-[11px]",
+                    /Scanned/.test(scanNote)
+                      ? "text-neutral-400"
+                      : "text-red-600",
+                  )}
+                >
+                  {scanNote}
+                </p>
+              )}
+              <div className="mt-2 flex flex-col gap-1.5">
+                {findings === undefined ? (
+                  <p className="px-2 py-1 text-sm text-neutral-400">
+                    Loading findings…
+                  </p>
+                ) : findings.length === 0 ? (
+                  <p className="px-2 py-1 text-sm text-neutral-400">
+                    No findings right now — Aria scans your repos automatically
+                    and surfaces issues here for review. Nothing is ever
+                    auto-fixed.
+                  </p>
+                ) : (
+                  findings.map((f) => (
+                    <div
+                      key={f._id}
+                      className="rounded-lg border border-neutral-200 p-2.5"
+                    >
+                      <div className="flex items-start gap-2">
+                        <FindingIcon kind={f.kind} />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-neutral-800">
+                            {f.title}
+                          </p>
+                          <p className="mt-0.5 text-xs leading-5 text-neutral-500">
+                            {f.detail}
+                          </p>
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <span className="font-mono text-[10px] text-neutral-400">
+                              {f.repo}
+                            </span>
+                            {f.url && (
+                              <a
+                                href={f.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[10px] text-neutral-500 underline underline-offset-2 hover:text-neutral-900"
+                              >
+                                Open
+                              </a>
+                            )}
+                            <span className="text-[10px] text-neutral-300">
+                              {new Date(f.createdAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void dismissFinding({ id: f._id })}
+                          className="shrink-0 rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-700"
+                          title="Dismiss (already reviewed)"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
             <div>
               <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
                 <GitPullRequest className="size-3.5" />
@@ -243,5 +370,22 @@ export function InboxDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function FindingIcon({ kind }: { kind: AiFinding["kind"] }) {
+  const styles = {
+    dependency: "text-amber-600",
+    stale_pr: "text-sky-600",
+    config_change: "text-red-600",
+    failing_ci: "text-rose-600",
+  };
+  return (
+    <span className={cn("mt-0.5 shrink-0", styles[kind])}>
+      {kind === "dependency" && <AlertTriangle className="size-3.5" />}
+      {kind === "stale_pr" && <GitPullRequest className="size-3.5" />}
+      {kind === "config_change" && <Lock className="size-3.5" />}
+      {kind === "failing_ci" && <XCircle className="size-3.5" />}
+    </span>
   );
 }

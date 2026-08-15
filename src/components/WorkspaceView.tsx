@@ -21,6 +21,8 @@ import { AiUsageMeter } from "@/components/AiUsageMeter";
 import { AiCommitMessageButton } from "@/components/AiCommitMessageButton";
 import { RepoUsageBadge } from "@/components/RepoUsageBadge";
 import { InboxDialog } from "@/components/InboxDialog";
+import { WhyChangedDialog } from "@/components/WhyChangedDialog";
+import { CrossRepoDialog } from "@/components/CrossRepoDialog";
 import { AiReviewDialog } from "@/components/AiReviewDialog";
 import { AdminDialog } from "@/components/AdminDialog";
 import { StressTestDialog } from "@/components/StressTestDialog";
@@ -90,8 +92,10 @@ import {
   FolderOpen,
   Focus,
   GitBranch,
+  GitMerge,
   GitPullRequest,
   Github,
+  HelpCircle,
   History,
   Loader2,
   Lock,
@@ -109,6 +113,7 @@ import {
   Trash2,
   Unplug,
   Users,
+  Wand2,
   WifiOff,
   XCircle,
 } from "lucide-react";
@@ -423,6 +428,160 @@ export interface WorkspaceViewProps {
   handleDelete: () => void;
 }
 
+/** Simple Mode — a plain-English, no-code view of the same Ask Aria flow.
+ *  Hides the file tree and code view, explains changes in plain language,
+ *  and still requires a human to review and stage before anything commits. */
+function SimpleModePanel({
+  instruction,
+  setInstruction,
+  loading,
+  error,
+  result,
+  onAsk,
+  onStage,
+  onStageAll,
+  onExit,
+}: {
+  instruction: string;
+  setInstruction: (v: string) => void;
+  loading: boolean;
+  error: string | null;
+  result: {
+    explanation: string;
+    changes: Array<{
+      path: string;
+      action: "update" | "create";
+      content: string;
+      originalContent: string;
+    }>;
+  } | null;
+  onAsk: () => void;
+  onStage: (change: {
+    path: string;
+    action: "update" | "create";
+    content: string;
+    originalContent: string;
+  }) => void;
+  onStageAll: () => void;
+  onExit: () => void;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto bg-background">
+      <div className="w-full max-w-2xl px-6 py-10">
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-neutral-900">
+              Simple mode
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-neutral-500">
+              No file tree, no code view. Describe what you want changed in
+              plain English and Aria proposes the edits — a developer still
+              reviews and approves each one before anything is committed.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onExit}
+            className="shrink-0 rounded-md border border-neutral-200 px-2.5 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100"
+          >
+            Exit simple
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <textarea
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+            placeholder="Describe the change in plain English — for example: “Make the checkout button say ‘Buy now’ and send a confirmation email after payment.”"
+            rows={4}
+            spellCheck={false}
+            className="w-full resize-none rounded-md border border-neutral-200 bg-background p-3 font-mono text-sm leading-6 text-neutral-900 outline-none focus:border-neutral-400"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                if (!loading && instruction.trim()) onAsk();
+              }
+            }}
+          />
+          <Button
+            type="button"
+            className="h-9 w-full gap-1.5"
+            onClick={onAsk}
+            disabled={loading || !instruction.trim()}
+          >
+            {loading ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Sparkles className="size-4" />
+            )}
+            {loading ? "Thinking…" : "What will change?"}
+          </Button>
+          {error && (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+              {error}
+            </p>
+          )}
+          {result && (
+            <div className="flex flex-col gap-3">
+              <div className="rounded-lg border border-neutral-200 p-4">
+                <p className="text-[15px] leading-7 text-neutral-800">
+                  {result.explanation}
+                </p>
+              </div>
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+                Files this will touch
+              </p>
+              <ul className="divide-y divide-neutral-100 rounded-lg border border-neutral-200">
+                {result.changes.map((change) => (
+                  <li key={change.path} className="flex items-center gap-2 p-3">
+                    <span
+                      className={`shrink-0 rounded px-1 font-mono text-[10px] font-semibold ${
+                        change.action === "create"
+                          ? "bg-emerald-50 text-emerald-900"
+                          : "bg-amber-50 text-amber-900"
+                      }`}
+                    >
+                      {change.action === "create" ? "A" : "M"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-sm text-neutral-800">
+                      {change.path}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 shrink-0 gap-1 text-xs"
+                      onClick={() => onStage(change)}
+                    >
+                      <Plus className="size-3" />
+                      Approve
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+              <Button
+                type="button"
+                className="h-9 w-full gap-1.5"
+                onClick={onStageAll}
+              >
+                <CheckCircle2 className="size-4" />
+                Approve all {result.changes.length} change
+                {result.changes.length > 1 ? "s" : ""}
+              </Button>
+              <p className="flex items-start gap-1.5 text-xs leading-5 text-neutral-400">
+                <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
+                Approving stages the edit in the working tree — nothing is
+                committed until the commit box is used, so a developer always
+                gets a final look.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function WorkspaceView(props: WorkspaceViewProps) {
   const {
     connection,
@@ -592,6 +751,9 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [adminOpen, setAdminOpen] = useState(false);
   const [stressOpen, setStressOpen] = useState(false);
   const [issueOpen, setIssueOpen] = useState(false);
+  const [simpleMode, setSimpleMode] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const [crossRepoOpen, setCrossRepoOpen] = useState(false);
 
   // Mobile editor: visual-viewport height (so the keyboard never clips the
   // canvas), focus mode (collapse everything but the code while typing) and
@@ -642,6 +804,32 @@ export function WorkspaceView(props: WorkspaceViewProps) {
     () => (openFile ? diffLines(openFile.content, editorContent) : []),
     [openFile, editorContent],
   );
+
+  // Live collaboration: which of the other live sessions is editing this
+  // exact file right now → rendered as remote cursors in Monaco.
+  const editorPeers = useMemo(() => {
+    if (!selectedRepo || !openFile || !currentBranch) return [];
+    return (liveSessions ?? [])
+      .filter(
+        (s) =>
+          s.repo === selectedRepo.fullName &&
+          s.branch === currentBranch &&
+          s.path === openFile.path &&
+          s.cursorLine != null &&
+          s.cursorColumn != null,
+      )
+      .map((s) => ({
+        deviceId: s.deviceId,
+        label: s.label,
+        line: s.cursorLine as number,
+        column: s.cursorColumn as number,
+      }));
+  }, [liveSessions, selectedRepo, openFile, currentBranch]);
+
+  const crossRepoAllowed =
+    !billing?.configured ||
+    billing.plan === "team" ||
+    billing.plan === "enterprise";
 
   return (
     <div
@@ -1482,6 +1670,24 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         owner={selectedRepo?.fullName.split("/")[0] ?? ""}
         repo={selectedRepo?.fullName.split("/")[1] ?? ""}
       />
+      <WhyChangedDialog
+        open={whyOpen}
+        onOpenChange={setWhyOpen}
+        owner={selectedRepo?.fullName.split("/")[0] ?? ""}
+        repo={selectedRepo?.fullName.split("/")[1] ?? ""}
+        branch={currentBranch ?? ""}
+        path={openFile?.path ?? ""}
+        line={null}
+      />
+      <CrossRepoDialog
+        open={crossRepoOpen}
+        onOpenChange={setCrossRepoOpen}
+        repos={filteredRepos.map((r) => ({
+          fullName: r.fullName,
+          defaultBranch: r.defaultBranch,
+        }))}
+        isTeam={crossRepoAllowed}
+      />
 
       {/* Push-notification actions (approve / comment / merge) */}
       <PushActionHandler />
@@ -1519,6 +1725,29 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       >
         <Wordmark />
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setSimpleMode((v) => !v)}
+            disabled={!selectedRepo}
+            aria-pressed={simpleMode}
+            className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 disabled:cursor-not-allowed disabled:opacity-40 ${
+              simpleMode
+                ? "border-neutral-900 bg-neutral-900 text-white"
+                : "border-neutral-200 hover:bg-neutral-100"
+            }`}
+            title="Simple mode — describe changes in plain English, no file tree or code view"
+          >
+            <Wand2
+              className={`size-3.5 ${simpleMode ? "text-white" : "text-neutral-500"}`}
+            />
+            <span
+              className={`hidden text-xs sm:inline ${
+                simpleMode ? "text-white" : "text-neutral-500"
+              }`}
+            >
+              {simpleMode ? "Exit simple" : "Simple"}
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => setLocalOpen(true)}
@@ -1588,11 +1817,25 @@ export function WorkspaceView(props: WorkspaceViewProps) {
               Share
             </span>
           </button>
+          {crossRepoAllowed && (
+            <button
+              type="button"
+              onClick={() => setCrossRepoOpen(true)}
+              disabled={!selectedRepo}
+              className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+              title="Cross-repo AI edits — describe one change across many repos"
+            >
+              <GitMerge className="size-3.5 text-neutral-500" />
+              <span className="hidden text-xs text-neutral-500 sm:inline">
+                Cross-repo
+              </span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setInboxOpen(true)}
             className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100"
-            title="Unified inbox — PRs and issues across all your repos"
+            title="Unified inbox — PRs, issues, and Aria's findings across all your repos"
           >
             <Bell className="size-3.5 text-neutral-500" />
             <span className="hidden text-xs text-neutral-500 sm:inline">
@@ -1779,6 +2022,20 @@ export function WorkspaceView(props: WorkspaceViewProps) {
 
       {/* Body */}
       <div className="flex min-h-0 flex-1">
+        {simpleMode ? (
+          <SimpleModePanel
+            instruction={aiInstruction}
+            setInstruction={setAiInstruction}
+            loading={aiLoading}
+            error={aiError}
+            result={aiResult}
+            onAsk={handleAiAsk}
+            onStage={stageAiChange}
+            onStageAll={stageAllAiChanges}
+            onExit={() => setSimpleMode(false)}
+          />
+        ) : (
+          <>
         {/* Repos */}
         <aside
           className={cn(
@@ -2202,6 +2459,16 @@ export function WorkspaceView(props: WorkspaceViewProps) {
                     </button>
                   </div>
                   {!isNewFile && (
+                    <button
+                      type="button"
+                      onClick={() => setWhyOpen(true)}
+                      title="Why was this changed? — Aria explains this file's history in plain language"
+                      className="rounded-md border border-neutral-200 px-2 py-0.5 text-xs text-neutral-500 hover:bg-neutral-100"
+                    >
+                      Why?
+                    </button>
+                  )}
+                  {!isNewFile && (
                     <>
                       <button
                         type="button"
@@ -2487,6 +2754,8 @@ export function WorkspaceView(props: WorkspaceViewProps) {
             </div>
           )}
         </main>
+          </>
+        )}
       </div>
 
       {/* ⌘K quick-jump to any file in the branch */}

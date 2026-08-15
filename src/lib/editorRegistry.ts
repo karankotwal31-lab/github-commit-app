@@ -45,3 +45,25 @@ export function setActiveEditor(
 ) {
   activeEditor = editor;
 }
+
+export interface EditorCursorMove {
+  line: number;
+  column: number;
+}
+
+const cursorListeners = new Set<(cursor: EditorCursorMove) => void>();
+
+/** Subscribe to caret moves in the active editor; returns unsubscribe. */
+export function onEditorCursorMove(
+  listener: (cursor: EditorCursorMove) => void,
+): () => void {
+  cursorListeners.add(listener);
+  return () => {
+    cursorListeners.delete(listener);
+  };
+}
+
+/** Called by CodeEditor on every caret move (throttled by subscribers). */
+export function notifyCursorMove(cursor: EditorCursorMove) {
+  for (const listener of cursorListeners) listener(cursor);
+}

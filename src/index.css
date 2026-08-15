@@ -272,3 +272,28 @@
 .aria-workspace[data-kb-inset] main > div:nth-of-type(2) {
   padding-bottom: var(--kb-inset, 0px);
 }
+
+/* Live collaboration — remote peer cursors in the editor. */
+.aria-peer-tag {
+  position: absolute;
+  top: -16px;
+  left: 0;
+  z-index: 10;
+  padding: 0 4px;
+  border-radius: 3px 3px 3px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  line-height: 14px;
+  color: #fff;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.aria-peer-cursor-0 { border-left: 2px solid #0ea5e9; }
+.aria-peer-cursor-1 { border-left: 2px solid #f59e0b; }
+.aria-peer-cursor-2 { border-left: 2px solid #10b981; }
+.aria-peer-cursor-3 { border-left: 2px solid #8b5cf6; }
+.aria-peer-cursor-4 { border-left: 2px solid #ef4444; }
+.aria-peer-cursor-5 { border-left: 2px solid #ec4899; }
+.aria-peer-cursor-6 { border-left: 2px solid #14b8a6; }
+.aria-peer-cursor-7 { border-left: 2px solid #6366f1; }

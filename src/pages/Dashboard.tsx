@@ -1,5 +1,6 @@
 import { api } from "@/convex/_generated/api";
 import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
+import { onEditorCursorMove } from "@/lib/editorRegistry";
 import { useAuth } from "@/hooks/use-auth";
 import {
   errorMessage,
@@ -680,6 +681,29 @@ function Workspace({
       void clearLiveSession({ deviceId: DEVICE_ID }).catch(() => {});
     };
   }, [updateLiveSession, clearLiveSession, deviceLabel]);
+
+  // Live collaboration: push caret moves to the presence row immediately
+  // (throttled) so other devices see the cursor move in near-real-time.
+  useEffect(() => {
+    let lastSent = 0;
+    return onEditorCursorMove((cursor) => {
+      const now = Date.now();
+      if (now - lastSent < 1_200) return;
+      lastSent = now;
+      const p = presenceRef.current;
+      void updateLiveSession({
+        deviceId: DEVICE_ID,
+        label: deviceLabel,
+        repo: p.repo ?? undefined,
+        branch: p.branch ?? undefined,
+        path: p.path ?? undefined,
+        cursorLine: cursor.line,
+        cursorColumn: cursor.column,
+      }).catch(() => {
+        // Presence is best-effort.
+      });
+    });
+  }, [updateLiveSession, deviceLabel]);
 
   // Offline safeguard: draft saves that failed while offline were queued to
   // localStorage; this hook replays the queue the moment connectivity

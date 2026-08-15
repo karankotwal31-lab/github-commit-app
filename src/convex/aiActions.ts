@@ -904,3 +904,422 @@ ${theirs || "(empty)"}`;
     return { resolution, rationale };
   },
 });
+
+/**
+ * "Why did this change?" — the grounded file-history explainer. Given a file
+ * (and optionally a line), this gathers the real commit history for that path
+ * plus the pull requests that touched it, and asks the model to explain the
+ * change in plain language using ONLY that material. If nothing in the record
+ * explains it, the model says so plainly instead of guessing. Metered against
+ * the plan's monthly quota like every other AI call.
+ */
+export const aiWhyChanged = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    path: v.string(),
+    branch: v.string(),
+    line: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    // Same monthly quota gate as Ask Aria (enforced at the action layer).
+    const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
+    if (usage.quota !== null && usage.used >= usage.quota) {
+      throw new Error(
+        "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
+      );
+    }
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+      );
+    }
+    const token = await getToken(ctx);
+    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+    const repo = `${args.owner}/${args.repo}`;
+
+    // Grounding material #1: the actual commit history of this path.
+    const commits = await githubFetch<
+      Array<{
+        sha: string;
+        html_url: string;
+        commit: { message: string; author: { date: string | null } };
+      }>
+    >(
+      `${repoUrl}/commits?sha=${encodeURIComponent(
+        args.branch,
+      )}&path=${encodeURIComponent(args.path)}&per_page=8`,
+      token,
+    );
+
+    // Grounding material #2: pull requests that touched this file.
+    let prs: Array<{
+      number: number;
+      title: string;
+      html_url: string;
+      body: string | null;
+    }> = [];
+    try {
+      const search = await githubFetch<{
+        items: Array<{
+          number: number;
+          title: string;
+          html_url: string;
+          body: string | null;
+        }>;
+      }>(
+        `${GITHUB_API}/search/issues?q=${encodeURIComponent(
+          `repo:${repo} type:pr path:${args.path}`,
+        )}&per_page=5`,
+        token,
+      );
+      prs = search.items ?? [];
+    } catch {
+      // Search is rate-limited separately — fall back to commit history only.
+    }
+
+    const commitBlock = commits
+      .map((c) => {
+        const date = c.commit.author.date ? new Date(c.commit.author.date).toISOString().slice(0, 10) : "?";
+        return `- ${c.sha.slice(0, 7)} (${date}) ${c.commit.message.split("\n")[0]}`;
+      })
+      .join("\n") || "(no commits found for this path)";
+    const prBlock = prs
+      .map((p) => `- PR #${p.number} "${p.title}"${p.body ? `\n  ${p.body.replace(/\s+/g, " ").trim().slice(0, 300)}` : ""}`)
+      .join("\n") || "(no pull requests found for this path)";
+
+    const systemPrompt = `You are Aria, explaining why a line of code or file changed, for a developer. You reply with ONLY a JSON object — no markdown, no code fences — in exactly this shape:
+{
+  "explanation": "2-6 plain sentences, in the developer's voice, explaining WHY this changed: what problem it solved or what the intent was. Base it ONLY on the commit messages and PR text provided. If the record doesn't explain the change (e.g. only an initial commit or unrelated bulk commit), say that plainly — never invent a reason, never guess."
+}
+
+Rules:
+- Ground every claim in the provided material. If a commit or PR explicitly mentions a bug, feature, or refactor, reference it.
+- Do not speculate about motives beyond the text.
+- Mention the specific commits/PRs that matter most (by short SHA or #number).`;
+
+    const userPrompt = `Repository: ${repo}\nFile: ${args.path}${args.line ? ` (line ${args.line})` : ""}\nBranch: ${args.branch}\n\n--- COMMIT HISTORY FOR THIS FILE ---\n${commitBlock}\n\n--- PULL REQUESTS TOUCHING THIS FILE ---\n${prBlock}`;
+
+    const model = process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
+    let data: {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    };
+    try {
+      const res = await fetch(OPENROUTER_API, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "X-Title": "Aria",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+        }),
+      });
+      data = (await res.json()) as typeof data;
+      if (!res.ok) {
+        const detail = data?.error?.message ?? `HTTP ${res.status}`;
+        throw new Error(
+          `The AI model replied with an error (${detail}). If the model isn't available, set OPENROUTER_MODEL in your project keys to a current free model.`,
+        );
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("The AI model replied")) {
+        throw e;
+      }
+      throw new Error(
+        "Couldn't reach the AI provider — check your network and try again.",
+      );
+    }
+
+    const reply = data?.choices?.[0]?.message?.content ?? "";
+    if (!reply.trim()) {
+      throw new Error("The AI replied with nothing — try again or rephrase.");
+    }
+    const parsed = extractJson(reply) as { explanation?: unknown } | null;
+    const explanation =
+      parsed && typeof parsed.explanation === "string"
+        ? parsed.explanation.trim().slice(0, 2000)
+        : "";
+    if (!explanation) {
+      throw new Error(
+        "The AI's response couldn't be understood — try again or rephrase.",
+      );
+    }
+
+    await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await ctx.runMutation(internal.aiUsage.logAudit, {
+      userId,
+      action: "ai.why_changed",
+      repo,
+      detail: args.path.slice(0, 300),
+    });
+
+    return {
+      explanation,
+      // Grounded source list straight from GitHub (not AI-generated).
+      commits: commits.map((c) => ({
+        sha: c.sha,
+        message: c.commit.message.split("\n")[0].slice(0, 200),
+        htmlUrl: c.html_url,
+      })),
+      prs: prs.map((p) => ({
+        number: p.number,
+        title: p.title.slice(0, 200),
+        htmlUrl: p.html_url,
+      })),
+    };
+  },
+});
+
+/**
+ * Cross-repo AI edits (Team/Enterprise): describe one change in plain
+ * English; Aria proposes concrete edits for each affected repo, all shown
+ * together on one review screen. Proposals are never auto-committed — the
+ * user reviews and approves each repo's changes before anything is pushed.
+ * Gated server-side to Team/Enterprise when billing is configured, and
+ * metered against the plan's AI quota like every other AI call.
+ */
+export const aiPlanCrossRepo = action({
+  args: {
+    instruction: v.string(),
+    repos: v.array(
+      v.object({
+        owner: v.string(),
+        repo: v.string(),
+        branch: v.string(),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+
+    // Team gate (server-side, never UI-hidden). Billing being unconfigured
+    // (no Stripe keys yet) keeps development fully unlocked, mirroring the
+    // rest of the app.
+    const configured = !!(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID);
+    if (configured) {
+      const billing = await ctx.runQuery(internal.billing.planForUser, { userId });
+      const plan = billing?.plan ?? "free";
+      if (plan !== "team" && plan !== "enterprise") {
+        throw new Error(
+          "Cross-repo AI edits are a Team feature — upgrade to plan changes across multiple repositories.",
+        );
+      }
+    }
+
+    // Same monthly quota gate as Ask Aria (enforced at the action layer).
+    const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
+    if (usage.quota !== null && usage.used >= usage.quota) {
+      throw new Error(
+        "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
+      );
+    }
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY to your project keys, then try again.",
+      );
+    }
+    const token = await getToken(ctx);
+
+    const instruction = args.instruction.trim().slice(0, MAX_INSTRUCTION_CHARS);
+    if (!instruction) throw new Error("Describe the change you want first.");
+    const targets = args.repos.slice(0, 4);
+    if (targets.length === 0) throw new Error("Pick at least one repository.");
+
+    const words = significantWords(instruction);
+    const results: Array<{
+      owner: string;
+      repo: string;
+      branch: string;
+      summary: string;
+      changes: Array<{
+        path: string;
+        action: "update" | "create" | "delete";
+        content: string;
+        reason: string;
+      }>;
+      error?: string;
+    }> = [];
+
+    for (const target of targets) {
+      const repoFull = `${target.owner}/${target.repo}`;
+      const repoUrl = `${GITHUB_API}/repos/${target.owner}/${target.repo}`;
+      try {
+        // File list via the git tree (recursive, blob entries only).
+        const ref = await githubFetch<{ object: { sha: string } }>(
+          `${repoUrl}/git/ref/heads/${encodeURIComponent(target.branch)}`,
+          token,
+        );
+        const tree = await githubFetch<{
+          tree: Array<{ path: string; type: string; size?: number }>;
+        }>(`${repoUrl}/git/trees/${ref.object.sha}?recursive=1`, token);
+        const files = (tree.tree ?? [])
+          .filter((e) => e.type === "blob")
+          .map((e) => ({ path: e.path, size: e.size ?? 0 }))
+          .filter((f) => f.size < MAX_FILE_BYTES)
+          .sort((a, b) => a.path.localeCompare(b.path));
+
+        // Pick the files most relevant to the instruction (keyword scoring,
+        // same heuristic as Ask Aria) and read them.
+        const scored = files
+          .map((f) => ({ ...f, score: pathScore(f.path, words) }))
+          .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+        const picked = scored.slice(0, MAX_CONTEXT_FILES);
+        const context: Array<{ path: string; content: string }> = [];
+        let budget = MAX_TOTAL_CONTEXT_CHARS;
+        for (const f of picked) {
+          if (budget <= 0) break;
+          try {
+            const file = await githubFetch<GitHubFile>(
+              `${repoUrl}/contents/${encodePath(f.path)}?ref=${encodeURIComponent(
+                target.branch,
+              )}`,
+              token,
+            );
+            if (file.type !== "file" || file.encoding !== "base64") continue;
+            const content = Buffer.from(file.content, "base64")
+              .toString("utf8")
+              .slice(0, Math.min(MAX_FILE_CHARS, budget));
+            if (!content.trim()) continue;
+            budget -= content.length;
+            context.push({ path: f.path, content });
+          } catch {
+            // unreadable file — skip
+          }
+        }
+
+        const filesBlock = context
+          .map((f) => `--- ${f.path} ---\n${f.content.slice(0, 12000)}`)
+          .join("\n\n");
+
+        const systemPrompt = `You are Aria, planning an engineering change across a repository for a developer. You reply with ONLY a JSON object — no markdown, no code fences — in exactly this shape:
+{
+  "summary": "2-4 plain sentences: what will change in THIS repository and why, for a non-technical reviewer.",
+  "changes": [
+    {
+      "path": "full file path",
+      "action": "update" | "create" | "delete",
+      "content": "the COMPLETE new file content for update/create (omit for delete)",
+      "reason": "one sentence: what this edit does and why"
+    }
+  ]
+}
+
+Rules:
+- Base edits ONLY on the provided instruction and file contents. Never invent files that don't exist in the tree listing unless the change clearly requires a new file.
+- Prefer the smallest set of edits that accomplishes the change. Only include files the change actually touches.
+- Preserve existing code exactly except where the change requires editing it.
+- For "update", output the COMPLETE file, not a diff or fragment.
+- Never mention AI or that this was generated.
+- If the instruction does not apply to this repository, return {"summary": "This change doesn't apply to this repository.", "changes": []}.`;
+
+        const userPrompt = `Requested change: ${instruction}\n\nRepository: ${repoFull} (branch ${target.branch})\n\nRelevant files:\n${filesBlock || "(no readable text files)"}`;
+
+        let data: {
+          choices?: Array<{ message?: { content?: string } }>;
+          error?: { message?: string };
+        };
+        try {
+          const res = await fetch(OPENROUTER_API, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              "X-Title": "Aria",
+            },
+            body: JSON.stringify({
+              model: process.env.OPENROUTER_MODEL ?? DEFAULT_MODEL,
+              temperature: 0.2,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userPrompt },
+              ],
+            }),
+          });
+          data = (await res.json()) as typeof data;
+          if (!res.ok) {
+            const detail = data?.error?.message ?? `HTTP ${res.status}`;
+            throw new Error(detail);
+          }
+        } catch (e) {
+          results.push({
+            ...target,
+            summary: "",
+            changes: [],
+            error:
+              e instanceof Error && e.message
+                ? e.message.slice(0, 200)
+                : "The AI provider failed for this repository.",
+          });
+          continue;
+        }
+
+        const reply = data?.choices?.[0]?.message?.content ?? "";
+        const parsed = extractJson(reply) as {
+          summary?: unknown;
+          changes?: unknown;
+        } | null;
+        const summary =
+          parsed && typeof parsed.summary === "string"
+            ? parsed.summary.trim().slice(0, 1200)
+            : "";
+        const rawChanges = Array.isArray(parsed?.changes) ? parsed.changes : [];
+        const changes = rawChanges
+          .filter(
+            (c): c is Record<string, unknown> =>
+              typeof c === "object" && c !== null,
+          )
+          .map((c) => {
+            const action: "update" | "create" | "delete" =
+              c.action === "create" || c.action === "delete" ? c.action : "update";
+            return {
+              path: typeof c.path === "string" ? c.path.slice(0, 300) : "",
+              action,
+              content:
+                typeof c.content === "string" ? c.content.slice(0, 200_000) : "",
+              reason:
+                typeof c.reason === "string" ? c.reason.slice(0, 300) : "",
+            };
+          })
+          .filter((c) => c.path && !(c.action === "delete" && !c.reason));
+        results.push({
+          ...target,
+          summary,
+          changes: changes.slice(0, 12),
+        });
+      } catch (e) {
+        results.push({
+          ...target,
+          summary: "",
+          changes: [],
+          error:
+            e instanceof Error
+              ? e.message.slice(0, 200)
+              : "Couldn't read this repository.",
+        });
+      }
+    }
+
+    const withChanges = results.filter((r) => r.changes.length > 0).length;
+    await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await ctx.runMutation(internal.aiUsage.logAudit, {
+      userId,
+      action: "ai.cross_repo",
+      detail: `${targets.length} repo(s) · ${withChanges} with proposed edits`,
+    });
+
+    return { repos: results };
+  },
+});

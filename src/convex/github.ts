@@ -643,6 +643,30 @@ export const repoUsage = query({
   },
 });
 
+/** Internal: the repos the user has opened in Aria (for the background scan). */
+export const listConnectedRepos = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("connectedRepos")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .collect();
+    return rows
+      .map((r) => r.repo)
+      .sort()
+      .slice(0, 20);
+  },
+});
+
+/** Internal: every user who has connected GitHub (for the background cron). */
+export const listConnectionUserIds = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("githubConnections").collect();
+    return rows.map((r) => r.userId);
+  },
+});
+
 /** Internal: how many private repos the user has opened (for the gate). */
 export const countPrivateRepos = internalQuery({
   args: { userId: v.id("users") },

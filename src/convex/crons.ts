@@ -18,4 +18,15 @@ crons.interval(
   internal.notifications.checkAllPush,
 );
 
+// Background AI checker: every 6 hours, scan each connected user's repos for
+// outdated/risky dependencies, stale PRs, suspicious config changes, and
+// failing CI. Findings land in the inbox as review cards — nothing is ever
+// auto-fixed. The scan is deterministic (GitHub + npm registry facts), so it
+// costs no AI quota and is safe to run unattended.
+crons.interval(
+  "ai-findings-scan",
+  { hours: 6 },
+  internal.aiFindings.scanAllUsers,
+);
+
 export default crons;
