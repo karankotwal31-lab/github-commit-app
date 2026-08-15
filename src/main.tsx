@@ -7,6 +7,9 @@ import { ConvexReactClient } from "convex/react";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
+// Load Inter Variable through the bundler (guaranteed to resolve + ship with
+// the app), then the Tailwind theme that maps it to every font utility.
+import "@fontsource-variable/inter";
 import "./index.css";
 
 // Lazy load route components for better code splitting

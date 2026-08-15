@@ -100,12 +100,13 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground antialiased">
       <header className="flex h-16 items-center justify-between border-b border-neutral-200 px-6">
-        <Link
-          to="/"
-          className="flex items-center gap-1.5 text-[15px] font-semibold tracking-tight"
-        >
-          <Music2 className="size-4 text-primary" strokeWidth={2.25} />
-          Aria<span className="text-neutral-400">.</span>
+        <Link to="/" className="flex items-center gap-2">
+          <span className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
+            <Music2 className="size-3.5" strokeWidth={2.4} />
+          </span>
+          <span className="text-[15px] font-semibold tracking-tight">
+            Aria<span className="text-neutral-400">.</span>
+          </span>
         </Link>
         <p className="text-xs text-neutral-400">Personal GitHub desk</p>
       </header>
@@ -166,6 +167,11 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
               >
                 Continue as guest
               </Button>
+
+              <p className="mt-6 rounded-lg border border-neutral-100 bg-neutral-50/60 px-3 py-2.5 text-xs leading-5 text-neutral-500">
+                Next: you&apos;ll connect GitHub once, then pick a repo and a
+                branch. Your token stays server-side.
+              </p>
             </>
           ) : (
             <>
