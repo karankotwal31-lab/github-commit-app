@@ -16,6 +16,11 @@ import { RuntimeDialog } from "@/components/RuntimeDialog";
 const LocalGitDialog = lazy(() =>
   import("@/components/LocalGitDialog").then((m) => ({ default: m.LocalGitDialog })),
 );
+// EngineeringDock pulls in isomorphic-git + LightningFS via localGit — lazy,
+// same as LocalGitDialog, so the command center loads only when opened.
+const EngineeringDock = lazy(() =>
+  import("@/components/EngineeringDock").then((m) => ({ default: m.EngineeringDock })),
+);
 import { BillingDialog } from "@/components/BillingDialog";
 import { AiUsageMeter } from "@/components/AiUsageMeter";
 import { AiCommitMessageButton } from "@/components/AiCommitMessageButton";
@@ -110,6 +115,7 @@ import {
   Search,
   ShieldAlert,
   Sparkles,
+  TerminalSquare,
   Trash2,
   Unplug,
   Users,
@@ -751,6 +757,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [runtimeOpen, setRuntimeOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [localOpen, setLocalOpen] = useState(false);
+  const [dockOpen, setDockOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
@@ -1649,6 +1656,16 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         </AlertDialogContent>
       </AlertDialog>
 
+      <EngineeringDock
+        open={dockOpen}
+        onOpenChange={setDockOpen}
+        owner={selectedRepo?.fullName.split("/")[0] ?? ""}
+        repo={selectedRepo?.fullName.split("/")[1] ?? ""}
+        branch={currentBranch ?? ""}
+        connection={connection}
+        openPath={openFile?.path ?? ""}
+        onRefresh={onRefreshWorkspace}
+      />
       <LocalGitDialog
         open={localOpen}
         onOpenChange={setLocalOpen}
@@ -1763,6 +1780,18 @@ export function WorkspaceView(props: WorkspaceViewProps) {
             <GitBranch className="size-3.5 text-neutral-500" />
             <span className="hidden text-xs text-neutral-500 sm:inline">
               Local
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setDockOpen(true)}
+            disabled={!selectedRepo}
+            className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Engineering command center — terminal, test lab, time machine, impact, CI, git ops, PRs"
+          >
+            <TerminalSquare className="size-3.5 text-neutral-500" />
+            <span className="hidden text-xs text-neutral-500 sm:inline">
+              Engineer
             </span>
           </button>
           <button
