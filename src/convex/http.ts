@@ -5,6 +5,8 @@ import { httpAction } from "./_generated/server";
 import { internal, components } from "./_generated/api";
 import { registerStaticRoutes } from "@convex-dev/static-hosting";
 import { stripeWebhook } from "./stripeWebhook";
+import { fetchWithRetry } from "./net";
+import { GITHUB_CALLBACK_PER_MINUTE } from "./security";
 
 const http = httpRouter();
 
@@ -54,21 +56,40 @@ http.route({
       return fail(stateDoc.origin, "config");
     }
 
-    // Exchange the authorization code for an access token.
-    const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT,
-      },
-      body: JSON.stringify({
-        client_id: clientId,
-        client_secret: clientSecret,
-        code,
-        redirect_uri: `${siteUrl}/api/github/callback`,
-      }),
+    // Rate limit the callback per source IP (Part D): this is the only
+    // unauthenticated entry into GitHub OAuth, so it's the one endpoint that
+    // deserves an IP-keyed throttle against token-exchange abuse.
+    const clientIp =
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      request.headers.get("cf-connecting-ip")?.trim() ??
+      "unknown";
+    const ipAllowed = await ctx.runMutation(internal.security.bumpRateLimit, {
+      bucket: `ghcallback:${clientIp}`,
+      limit: GITHUB_CALLBACK_PER_MINUTE,
     });
+    if (!ipAllowed) {
+      return fail(stateDoc.origin, "error");
+    }
+
+    // Exchange the authorization code for an access token (retried
+    // automatically — Part D — since this is a network call to GitHub).
+    const tokenRes = await fetchWithRetry(
+      "https://github.com/login/oauth/access_token",
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "User-Agent": USER_AGENT,
+        },
+        body: JSON.stringify({
+          client_id: clientId,
+          client_secret: clientSecret,
+          code,
+          redirect_uri: `${siteUrl}/api/github/callback`,
+        }),
+      },
+    );
     const tokenData = (await tokenRes.json()) as {
       access_token?: string;
     };
@@ -78,7 +99,7 @@ http.route({
     }
 
     // Fetch the profile so the app can show who is connected.
-    const profileRes = await fetch(`${GITHUB_API}/user`, {
+    const profileRes = await fetchWithRetry(`${GITHUB_API}/user`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/vnd.github+json",

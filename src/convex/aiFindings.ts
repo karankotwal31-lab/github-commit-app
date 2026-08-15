@@ -4,6 +4,8 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { action, internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { fetchWithRetry } from "./net";
+import { FEATURE_FLAGS } from "./security";
 
 /**
  * Aria's background checker — runs on a schedule (see crons.ts) and on demand
@@ -91,7 +93,9 @@ function encodePath(path: string) {
 }
 
 async function githubFetch<T>(url: string, token: string): Promise<T> {
-  const res = await fetch(url, {
+  // Automatic retry (Part D): transient errors, 429s and 5xx retry with
+  // backoff so a flaky network doesn't fail the whole background scan.
+  const res = await fetchWithRetry(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
@@ -201,7 +205,11 @@ async function scanRepo(
         }
         // Outdated-major check against the npm registry (best-effort).
         try {
-          const res = await fetch(`${NPM_REGISTRY}/${encodeURIComponent(depName)}/latest`);
+          const res = await fetchWithRetry(
+            `${NPM_REGISTRY}/${encodeURIComponent(depName)}/latest`,
+            undefined,
+            { attempts: 2 },
+          );
           if (!res.ok) continue;
           const latestData = (await res.json()) as { version?: string };
           const latest = latestData.version;
@@ -351,20 +359,40 @@ async function scanForUser(
   return { scanned: targets.length, findings: total };
 }
 
+/**
+ * Kill switch (Part D): the background AI checker can be turned off instantly
+ * by an admin without a redeploy. Returns false when the scanner is disabled.
+ */
+async function backgroundCheckerEnabled(ctx: ScanCtx): Promise<boolean> {
+  try {
+    return (await ctx.runQuery(internal.security.featureFlag, {
+      key: FEATURE_FLAGS.AI_BACKGROUND_CHECKER,
+    })) as boolean;
+  } catch {
+    return true; // limiter/flag failure must never break the cron
+  }
+}
+
 /** On-demand scan from the inbox ("Scan now"). */
 export const scanRepos = action({
   args: {},
-  handler: async (ctx): Promise<{ scanned: number; findings: number }> => {
+  handler: async (ctx): Promise<{ scanned: number; findings: number; disabled: boolean }> => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
-    return scanForUser(ctx as unknown as ScanCtx, userId);
+    if (!(await backgroundCheckerEnabled(ctx as unknown as ScanCtx))) {
+      return { scanned: 0, findings: 0, disabled: true };
+    }
+    return { ...(await scanForUser(ctx as unknown as ScanCtx, userId)), disabled: false };
   },
 });
 
 /** Cron entry: scan every user who has connected repos (runs 24×7). */
 export const scanAllUsers = internalAction({
   args: {},
-  handler: async (ctx): Promise<{ checked: number }> => {
+  handler: async (ctx): Promise<{ checked: number; disabled: boolean }> => {
+    if (!(await backgroundCheckerEnabled(ctx as unknown as ScanCtx))) {
+      return { checked: 0, disabled: true };
+    }
     // Users who have connected GitHub at all (cheap table scan).
     const ids = (await ctx.runQuery(
       internal.github.listConnectionUserIds,
@@ -375,11 +403,20 @@ export const scanAllUsers = internalAction({
       try {
         await scanForUser(ctx as unknown as ScanCtx, userId);
         checked++;
-      } catch {
-        // One user's failure must not block the rest.
+      } catch (e) {
+        // One user's failure must not block the rest — but it should leave
+        // an error-log entry for a human to review (Part D).
+        await ctx
+          .runMutation(internal.security.logError, {
+            source: "aiFindings",
+            message:
+              e instanceof Error ? e.message.slice(0, 300) : "scan failed",
+            userId: userId as never,
+          })
+          .catch(() => {});
       }
     }
-    return { checked };
+    return { checked, disabled: false };
   },
 });
 

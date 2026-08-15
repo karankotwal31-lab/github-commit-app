@@ -204,8 +204,19 @@ export const checkAllPush = internalAction({
       try {
         await ctx.runAction(internal.notifications.checkForUser, { userId });
         checked += 1;
-      } catch {
-        // One user's failure must not block the rest.
+      } catch (e) {
+        // One user's failure must not block the rest — but it should leave
+        // an error-log entry for a human to review (Part D).
+        await ctx
+          .runMutation(internal.security.logError, {
+            source: "push",
+            message:
+              e instanceof Error
+                ? e.message.slice(0, 300)
+                : "push check failed",
+            userId,
+          })
+          .catch(() => {});
       }
     }
     return { checked };

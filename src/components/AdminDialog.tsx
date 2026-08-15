@@ -7,10 +7,54 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { api } from "@/convex/_generated/api";
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { errorMessage } from "@/lib/github";
-import { Loader2, Minus, Plus, ShieldCheck, Users } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  Bot,
+  GitPullRequest,
+  Loader2,
+  Minus,
+  Plus,
+  ShieldCheck,
+  Users,
+} from "lucide-react";
+
+interface FeatureFlags {
+  aiBackgroundChecker: boolean;
+  liveCollaboration: boolean;
+  crossRepoEdits: boolean;
+}
+
+const FEATURE_LABELS: Record<keyof FeatureFlags, { label: string; hint: string }> = {
+  aiBackgroundChecker: {
+    label: "Background AI checker",
+    hint: "Scheduled scans of dependencies, stale PRs, config changes, and failing CI.",
+  },
+  liveCollaboration: {
+    label: "Live collaboration",
+    hint: "See teammates' cursors and presence in the workspace in real time.",
+  },
+  crossRepoEdits: {
+    label: "Cross-repo AI edits",
+    hint: "Describe one change and have Aria propose edits across multiple repos.",
+  },
+};
+
+interface HealthChecks {
+  authorized: boolean;
+  latestRun?: number | null;
+  checks?: Record<string, { ok: boolean; detail: string | null; checkedAt: number }>;
+}
+
+interface ErrorLog {
+  authorized: boolean;
+  errors?: Array<{ source: string; message: string; detail: string | null; createdAt: number }>;
+}
 
 interface Overview {
   authorized: boolean;
@@ -45,10 +89,27 @@ export function AdminDialog({
 }) {
   const overview = useQuery(api.aiUsage.adminOverview);
   const updateSeats = useAction(api.billingActions.updateTeamSeats);
+  const flags = useQuery(api.security.getFeatureFlags);
+  const setFlag = useMutation(api.security.setFeatureFlag);
+  const health = useQuery(api.health.recentHealthChecks);
+  const errorLog = useQuery(api.security.recentErrors);
   const [seats, setSeats] = useState(5);
   const [saving, setSaving] = useState(false);
+  const [flagSaving, setFlagSaving] = useState<keyof FeatureFlags | null>(null);
 
   const isAdmin = overview?.authorized === true;
+
+  const toggleFlag = async (key: keyof FeatureFlags, enabled: boolean) => {
+    setFlagSaving(key);
+    try {
+      await setFlag({ key, enabled });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(errorMessage(e));
+    } finally {
+      setFlagSaving(null);
+    }
+  };
   const trend = overview?.usageTrend ?? [];
   const maxCount = Math.max(1, ...trend.map((t) => t.count));
 
@@ -163,6 +224,153 @@ export function AdminDialog({
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* Feature switches (Part D kill switches) */}
+            <div className="rounded-lg border border-neutral-200 p-4">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-neutral-800">
+                <ShieldCheck className="size-4 text-neutral-500" /> Feature switches
+              </p>
+              <p className="mt-1 text-xs leading-4 text-neutral-400">
+                Turn a risky feature off instantly if it misbehaves — takes
+                effect server-side on the next request, no redeploy needed.
+              </p>
+              <ul className="mt-3 divide-y divide-neutral-100">
+                {(Object.keys(FEATURE_LABELS) as Array<keyof FeatureFlags>).map(
+                  (key) => (
+                    <li key={key} className="flex items-start justify-between gap-4 py-2.5">
+                      <div className="min-w-0">
+                        <p className="text-sm text-neutral-800">
+                          {FEATURE_LABELS[key].label}
+                        </p>
+                        <p className="mt-0.5 text-xs leading-4 text-neutral-400">
+                          {FEATURE_LABELS[key].hint}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {flagSaving === key && (
+                          <Loader2 className="size-3.5 animate-spin text-neutral-400" />
+                        )}
+                        <Switch
+                          checked={flags?.[key] ?? true}
+                          onCheckedChange={(checked) => toggleFlag(key, checked)}
+                          disabled={flagSaving !== null}
+                          aria-label={`Toggle ${FEATURE_LABELS[key].label}`}
+                        />
+                      </div>
+                    </li>
+                  ),
+                )}
+              </ul>
+            </div>
+
+            {/* Health checks (Part D) */}
+            <div className="rounded-lg border border-neutral-200 p-4">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-neutral-800">
+                <Activity className="size-4 text-neutral-500" /> Health checks
+              </p>
+              <p className="mt-1 text-xs leading-4 text-neutral-400">
+                Probes run automatically every hour. Results still need a human
+                to read — this only records them.
+              </p>
+              <div className="mt-3 flex flex-col gap-2">
+                {health?.authorized !== true ? null : (
+                  <>
+                    {health.latestRun && (
+                      <p className="text-xs text-neutral-400">
+                        Last run:{" "}
+                        {new Date(health.latestRun).toLocaleString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                    )}
+                    {(Object.keys(health.checks ?? {}) as string[]).map((name) => {
+                      const check = health.checks?.[name];
+                      if (!check) return null;
+                      return (
+                        <div
+                          key={name}
+                          className="flex items-start justify-between gap-3 rounded-md bg-neutral-50 px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-neutral-700">
+                              {name === "auth"
+                                ? "Login / auth"
+                                : name === "github"
+                                  ? "GitHub connection"
+                                  : "AI connection"}
+                            </p>
+                            {check.detail && (
+                              <p className="mt-0.5 truncate text-[11px] text-neutral-400">
+                                {check.detail}
+                              </p>
+                            )}
+                          </div>
+                          <Badge
+                            variant={check.ok ? "secondary" : "destructive"}
+                            className="shrink-0"
+                          >
+                            {check.ok ? "OK" : "FAIL"}
+                          </Badge>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Error log (Part D) */}
+            <div className="rounded-lg border border-neutral-200 p-4">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-neutral-800">
+                <AlertTriangle className="size-4 text-neutral-500" /> Error log
+              </p>
+              <p className="mt-1 text-xs leading-4 text-neutral-400">
+                Server-side failures worth reviewing. Logged automatically —
+                someone still has to read and act on them.
+              </p>
+              <ul className="mt-3 divide-y divide-neutral-100">
+                {(errorLog?.authorized === true
+                  ? (errorLog.errors ?? [])
+                  : []
+                ).length === 0 ? (
+                  <li className="py-2 text-xs text-neutral-400">
+                    No logged errors — clean bill of health.
+                  </li>
+                ) : (
+                  (errorLog?.authorized === true
+                    ? (errorLog.errors ?? [])
+                    : []
+                  ).map((entry, i) => (
+                    <li
+                      key={`${entry.createdAt}-${i}`}
+                      className="flex items-baseline justify-between gap-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-xs text-neutral-700">
+                          <span className="font-medium">{entry.source}</span>
+                          {" · "}
+                          {entry.message}
+                        </p>
+                        {entry.detail && (
+                          <p className="mt-0.5 truncate text-[11px] text-neutral-400">
+                            {entry.detail}
+                          </p>
+                        )}
+                      </div>
+                      <span className="shrink-0 font-mono text-[11px] text-neutral-400">
+                        {new Date(entry.createdAt).toLocaleTimeString(undefined, {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </li>
+                  ))
+                )}
+              </ul>
             </div>
 
             {/* Audit trail */}

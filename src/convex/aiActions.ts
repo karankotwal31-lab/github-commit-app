@@ -5,6 +5,12 @@ import { action, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { anySecretRisk } from "../lib/secrets";
+import { cleanMultiline, cleanPath } from "../lib/sanitize";
+import { fetchWithRetry } from "./net";
+import {
+  AI_REQUESTS_PER_MINUTE,
+  FEATURE_FLAGS,
+} from "./security";
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "aria";
@@ -46,7 +52,9 @@ function encodePath(path: string) {
 }
 
 async function githubFetch<T>(url: string, token: string): Promise<T> {
-  const res = await fetch(url, {
+  // Automatic retry (Part D): transient errors, 429s and 5xx retry with
+  // backoff; 4xx passes through untouched.
+  const res = await fetchWithRetry(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
@@ -82,6 +90,23 @@ async function getToken(ctx: ActionCtx): Promise<string> {
     throw new Error("GitHub is not connected.");
   }
   return connection.token;
+}
+
+/**
+ * Per-user AI rate limit (Part D): bounds how many AI requests one user can
+ * fire per minute, enforced at the action layer. Soft — a limiter hiccup
+ * never blocks a call.
+ */
+async function assertAiRateLimit(ctx: ActionCtx, userId: string): Promise<void> {
+  const allowed = await ctx.runMutation(internal.security.bumpRateLimit, {
+    bucket: `ai:${userId}`,
+    limit: AI_REQUESTS_PER_MINUTE,
+  });
+  if (!allowed) {
+    throw new Error(
+      "You're sending AI requests too quickly — wait a minute and try again.",
+    );
+  }
 }
 
 const STOPWORDS = new Set([
@@ -216,7 +241,7 @@ export const aiSuggest = action({
     ),
   },
   handler: async (ctx, args) => {
-    const instruction = args.instruction.trim().slice(0, MAX_INSTRUCTION_CHARS);
+    const instruction = cleanMultiline(args.instruction, MAX_INSTRUCTION_CHARS);
     if (!instruction) {
       throw new Error("Describe what you'd like Aria to change.");
     }
@@ -226,9 +251,10 @@ export const aiSuggest = action({
       content: h.content.slice(0, 2000),
     }));
     const userId = await getAuthUserId(ctx);
-    // Quota gate — enforced at the action layer, never by UI hiding alone.
-    // When billing isn't configured the quota is null (app stays unlocked).
     if (userId !== null) {
+      await assertAiRateLimit(ctx, userId);
+      // Quota gate — enforced at the action layer, never by UI hiding alone.
+      // When billing isn't configured the quota is null (app stays unlocked).
       const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
       if (usage.quota !== null && usage.used >= usage.quota) {
         throw new Error(
@@ -390,25 +416,37 @@ ${instruction}`;
       content: string;
       originalContent: string;
     }> = [];
+    let secretDropped = 0;
     for (const raw of parsed.changes.slice(0, MAX_CHANGES)) {
       if (!raw || typeof raw !== "object") continue;
       const entry = raw as { path?: unknown; action?: unknown; content?: unknown };
-      let path = typeof entry.path === "string" ? entry.path.trim() : "";
-      if (path.startsWith("/")) path = path.slice(1);
-      if (!path || path.includes("..") || path.includes("\\")) continue;
+      let path = typeof entry.path === "string" ? cleanPath(entry.path) : "";
+      if (!path) continue;
       const action = entry.action === "create" ? "create" : "update";
       if (action === "update" && !existing.has(path)) continue;
       const content = typeof entry.content === "string" ? entry.content : "";
       if (!content.trim() || content.length > 1_000_000) continue;
-      // The trust layer: never let the AI smuggle secrets into a proposal.
+      // The trust layer (Part D): the same secret scan that guards commits
+      // runs here, BEFORE the proposal is shown to the user. Anything that
+      // trips it is dropped and counted so the user knows why.
       const risk = anySecretRisk([{ path, content }]);
-      if (risk.risky) continue;
+      if (risk.risky) {
+        secretDropped += 1;
+        continue;
+      }
       changes.push({
         path,
         action,
         content,
         originalContent: "",
       });
+    }
+    let explanation =
+      typeof parsed.explanation === "string"
+        ? parsed.explanation.slice(0, 2000)
+        : "";
+    if (secretDropped > 0) {
+      explanation = `${explanation.trim()}\n\n${secretDropped} proposed change${secretDropped > 1 ? "s" : ""} ${secretDropped > 1 ? "were" : "was"} withheld because ${secretDropped > 1 ? "they look" : "it looks"} like ${secretDropped > 1 ? "they contain" : "it contains"} secrets — review the file paths before committing.`.trim();
     }
 
     // 6. For updates, fetch the current contents so the client can render a
@@ -451,11 +489,9 @@ ${instruction}`;
     }
 
     return {
-      explanation:
-        typeof parsed.explanation === "string"
-          ? parsed.explanation.slice(0, 2000)
-          : "",
+      explanation,
       changes,
+      secretDropped,
     };
   },
 });
@@ -484,6 +520,7 @@ export const aiReviewBranch = action({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    await assertAiRateLimit(ctx, userId);
     // Pro+ gate — enforced at the action layer, never by UI hiding. Skipped in
     // dev mode (no Stripe keys) so the app stays fully unlocked until then.
     if (process.env.STRIPE_SECRET_KEY) {
@@ -661,6 +698,7 @@ export const aiCommitMessage = action({
     }
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    await assertAiRateLimit(ctx, userId);
     // Same monthly quota gate as Ask Aria (enforced at the action layer).
     const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
     if (usage.quota !== null && usage.used >= usage.quota) {
@@ -791,6 +829,7 @@ export const aiResolveConflict = action({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    await assertAiRateLimit(ctx, userId);
     // Same monthly quota gate as Ask Aria (enforced at the action layer).
     const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
     if (usage.quota !== null && usage.used >= usage.quota) {
@@ -893,6 +932,16 @@ ${theirs || "(empty)"}`;
         "The AI's response couldn't be understood — try again or rephrase.",
       );
     }
+    // The trust layer (Part D): the AI resolution is code the user will
+    // apply — the same secret scan that guards commits runs here, before it
+    // is shown.
+    const resolutionPath = cleanPath(args.path) || args.path;
+    const risk = anySecretRisk([{ path: resolutionPath, content: resolution }]);
+    if (risk.risky) {
+      throw new Error(
+        "Aria withheld the AI resolution — it looks like it contains secrets. Resolve this conflict manually.",
+      );
+    }
 
     await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
     await ctx.runMutation(internal.aiUsage.logAudit, {
@@ -924,6 +973,7 @@ export const aiWhyChanged = action({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    await assertAiRateLimit(ctx, userId);
     // Same monthly quota gate as Ask Aria (enforced at the action layer).
     const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
     if (usage.quota !== null && usage.used >= usage.quota) {
@@ -1103,6 +1153,18 @@ export const aiPlanCrossRepo = action({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    await assertAiRateLimit(ctx, userId);
+
+    // Kill switch (Part D): an admin can disable cross-repo edits instantly
+    // without a redeploy. Server-side enforcement, immediate effect.
+    const crossRepoEnabled = await ctx.runQuery(internal.security.featureFlag, {
+      key: FEATURE_FLAGS.CROSS_REPO_EDITS,
+    });
+    if (!crossRepoEnabled) {
+      throw new Error(
+        "Cross-repo AI edits are temporarily disabled — check back in a bit.",
+      );
+    }
 
     // Team gate (server-side, never UI-hidden). Billing being unconfigured
     // (no Stripe keys yet) keeps development fully unlocked, mirroring the
@@ -1133,7 +1195,7 @@ export const aiPlanCrossRepo = action({
     }
     const token = await getToken(ctx);
 
-    const instruction = args.instruction.trim().slice(0, MAX_INSTRUCTION_CHARS);
+    const instruction = cleanMultiline(args.instruction, MAX_INSTRUCTION_CHARS);
     if (!instruction) throw new Error("Describe the change you want first.");
     const targets = args.repos.slice(0, 4);
     if (targets.length === 0) throw new Error("Pick at least one repository.");
@@ -1294,10 +1356,32 @@ Rules:
             };
           })
           .filter((c) => c.path && !(c.action === "delete" && !c.reason));
+        // The trust layer (Part D): scan every proposed change with the same
+        // secret scanner that guards commits, before it reaches the review
+        // screen. Risky changes are dropped and counted.
+        let secretDropped = 0;
+        const safeChanges = changes
+          .map((c) => {
+            const path = cleanPath(c.path);
+            if (!path) return null;
+            const risk =
+              c.action === "delete"
+                ? null
+                : anySecretRisk([{ path, content: c.content }]);
+            if (risk?.risky) {
+              secretDropped += 1;
+              return null;
+            }
+            return { ...c, path };
+          })
+          .filter((c): c is NonNullable<typeof c> => c !== null);
         results.push({
           ...target,
-          summary,
-          changes: changes.slice(0, 12),
+          summary:
+            secretDropped > 0
+              ? `${summary}\n\n${secretDropped} proposed change${secretDropped > 1 ? "s" : ""} ${secretDropped > 1 ? "were" : "was"} withheld because ${secretDropped > 1 ? "they look" : "it looks"} like ${secretDropped > 1 ? "they contain" : "it contains"} secrets.`.trim()
+              : summary,
+          changes: safeChanges.slice(0, 12),
         });
       } catch (e) {
         results.push({

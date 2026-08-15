@@ -1,7 +1,31 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v, type GenericId } from "convex/values";
 import { type PlanId } from "../lib/plans";
+import { cleanCode, cleanLabel, cleanName, cleanPath } from "../lib/sanitize";
+import { FEATURE_FLAGS } from "./security";
+
+/** Clean a repo full-name arg, or throw when it's not a valid "owner/name". */
+function cleanRepoArg(raw: string): string {
+  const repo = cleanName(raw, 200);
+  if (!repo || !repo.includes("/")) throw new Error("That repository name isn't valid.");
+  return repo;
+}
+
+/** Clean a branch arg, or throw when empty. */
+function cleanBranchArg(raw: string): string {
+  const branch = cleanName(raw, 200);
+  if (!branch) throw new Error("That branch name isn't valid.");
+  return branch;
+}
+
+/** Clean a file-path arg (used as a key), or throw when invalid. */
+function cleanPathArg(raw: string): string {
+  const path = cleanPath(raw);
+  if (!path) throw new Error("That path isn't valid.");
+  return path;
+}
 
 const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -152,16 +176,18 @@ export const saveWorkspaceState = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    const repo = cleanRepoArg(args.repo);
+    const branch = cleanBranchArg(args.branch);
     const existing = await ctx.db
       .query("workspaceStates")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .unique();
     const doc = {
       userId,
-      repo: args.repo,
-      branch: args.branch,
-      path: args.path,
-      openPath: args.openPath,
+      repo,
+      branch,
+      path: args.path ? cleanPath(args.path) || undefined : undefined,
+      openPath: args.openPath ? cleanPath(args.openPath) || undefined : undefined,
       // Cap the draft so a huge file doesn't bloat the row.
       draft: args.draft && args.draft.length <= 500_000 ? args.draft : undefined,
       cursorLine: args.cursorLine,
@@ -196,17 +222,20 @@ export const saveDraft = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    const repo = cleanRepoArg(args.repo);
+    const branch = cleanBranchArg(args.branch);
+    const path = cleanPathArg(args.path);
     const existing = await ctx.db
       .query("drafts")
       .withIndex("by_userKey", (q) =>
-        q.eq("userId", userId).eq("repo", args.repo).eq("branch", args.branch).eq("path", args.path),
+        q.eq("userId", userId).eq("repo", repo).eq("branch", branch).eq("path", path),
       )
       .unique();
     const doc = {
       userId,
-      repo: args.repo,
-      branch: args.branch,
-      path: args.path,
+      repo,
+      branch,
+      path,
       content: args.content.length <= DRAFT_MAX_CHARS ? args.content : args.content.slice(0, DRAFT_MAX_CHARS),
       cursorLine: args.cursorLine,
       cursorColumn: args.cursorColumn,
@@ -240,14 +269,17 @@ export const saveDraftIfNewer = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    const repo = cleanRepoArg(args.repo);
+    const branch = cleanBranchArg(args.branch);
+    const path = cleanPathArg(args.path);
     const existing = await ctx.db
       .query("drafts")
       .withIndex("by_userKey", (q) =>
         q
           .eq("userId", userId)
-          .eq("repo", args.repo)
-          .eq("branch", args.branch)
-          .eq("path", args.path),
+          .eq("repo", repo)
+          .eq("branch", branch)
+          .eq("path", path),
       )
       .unique();
     if (existing !== null && existing.updatedAt >= args.updatedAt) {
@@ -255,9 +287,9 @@ export const saveDraftIfNewer = mutation({
     }
     const doc = {
       userId,
-      repo: args.repo,
-      branch: args.branch,
-      path: args.path,
+      repo,
+      branch,
+      path,
       content:
         args.content.length <= DRAFT_MAX_CHARS
           ? args.content
@@ -285,10 +317,13 @@ export const deleteDraft = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    const repo = cleanRepoArg(args.repo);
+    const branch = cleanBranchArg(args.branch);
+    const path = cleanPathArg(args.path);
     const existing = await ctx.db
       .query("drafts")
       .withIndex("by_userKey", (q) =>
-        q.eq("userId", userId).eq("repo", args.repo).eq("branch", args.branch).eq("path", args.path),
+        q.eq("userId", userId).eq("repo", repo).eq("branch", branch).eq("path", path),
       )
       .unique();
     if (existing !== null) await ctx.db.delete(existing._id);
@@ -305,10 +340,13 @@ export const getDraft = query({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) return null;
+    const repo = cleanRepoArg(args.repo);
+    const branch = cleanBranchArg(args.branch);
+    const path = cleanPathArg(args.path);
     const existing = await ctx.db
       .query("drafts")
       .withIndex("by_userKey", (q) =>
-        q.eq("userId", userId).eq("repo", args.repo).eq("branch", args.branch).eq("path", args.path),
+        q.eq("userId", userId).eq("repo", repo).eq("branch", branch).eq("path", path),
       )
       .unique();
     if (existing === null) return null;
@@ -338,10 +376,13 @@ export const getDraftContent = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    const repo = cleanRepoArg(args.repo);
+    const branch = cleanBranchArg(args.branch);
+    const path = cleanPathArg(args.path);
     const existing = await ctx.db
       .query("drafts")
       .withIndex("by_userKey", (q) =>
-        q.eq("userId", userId).eq("repo", args.repo).eq("branch", args.branch).eq("path", args.path),
+        q.eq("userId", userId).eq("repo", repo).eq("branch", branch).eq("path", path),
       )
       .unique();
     if (existing === null) return null;
@@ -406,18 +447,27 @@ export const updateLiveSession = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    // Kill switch (Part D): live collaboration can be disabled instantly
+    // without a redeploy. Heartbeats become no-ops; the reactive query below
+    // already returns empty lists.
+    const liveEnabled = await ctx.runQuery(internal.security.featureFlag, {
+      key: FEATURE_FLAGS.LIVE_COLLABORATION,
+    });
+    if (!liveEnabled) return;
+    const deviceId = cleanLabel(args.deviceId, 100);
+    const label = cleanLabel(args.label, 120);
     const existing = await ctx.db
       .query("liveSessions")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .filter((q) => q.eq(q.field("deviceId"), args.deviceId))
+      .filter((q) => q.eq(q.field("deviceId"), deviceId))
       .unique();
     const doc = {
       userId,
-      deviceId: args.deviceId,
-      label: args.label,
-      repo: args.repo,
-      branch: args.branch,
-      path: args.path,
+      deviceId,
+      label,
+      repo: args.repo ? cleanName(args.repo, 200) : undefined,
+      branch: args.branch ? cleanName(args.branch, 200) : undefined,
+      path: args.path ? cleanPath(args.path) || undefined : undefined,
       cursorLine: args.cursorLine,
       cursorColumn: args.cursorColumn,
       updatedAt: Date.now(),
@@ -462,6 +512,10 @@ export const listLiveSessions = query({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) return [];
+    const liveEnabled = await ctx.runQuery(internal.security.featureFlag, {
+      key: FEATURE_FLAGS.LIVE_COLLABORATION,
+    });
+    if (!liveEnabled) return [];
     const now = Date.now();
     const sessions = await ctx.db
       .query("liveSessions")
@@ -509,6 +563,9 @@ export const createSharedWorkspace = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
+    const repo = cleanRepoArg(args.repo);
+    const branch = cleanBranchArg(args.branch);
+    const label = args.label ? cleanLabel(args.label, 120) : undefined;
     // Collision-resistant: retry a few times if the code already exists.
     for (let attempt = 0; attempt < 5; attempt++) {
       const code = `ARIA-${randomCode(5)}`;
@@ -519,9 +576,9 @@ export const createSharedWorkspace = mutation({
       if (existing === null) {
         await ctx.db.insert("sharedWorkspaces", {
           code,
-          repo: args.repo,
-          branch: args.branch,
-          label: args.label,
+          repo,
+          branch,
+          label,
           createdBy: userId,
           createdAt: Date.now(),
         });
@@ -538,7 +595,7 @@ export const joinSharedWorkspace = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
-    const normalized = args.code.trim().toUpperCase();
+    const normalized = cleanCode(args.code);
     if (!normalized) return null;
     const doc = await ctx.db
       .query("sharedWorkspaces")

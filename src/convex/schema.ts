@@ -204,6 +204,50 @@ const schema = defineSchema(
       createdAt: v.number(),
     }).index("by_code", ["code"]).index("by_createdBy", ["createdBy"]),
 
+    // Rate limiting: fixed one-minute window counters, keyed by bucket
+    // (e.g. "ai:user:xxx", "github:user:xxx", "otp:email:xxx",
+    // "ghcallback:ip:xxx"). Soft enforcement — a limiter hiccup never blocks
+    // a request. Rows are pruned as they age out.
+    rateLimits: defineTable({
+      bucket: v.string(),
+      windowStart: v.number(), // start of the current 60s window
+      count: v.number(),
+    }).index("by_bucket", ["bucket"]),
+
+    // Global feature switches (kill switches): a row per flag. Absent row =
+    // feature enabled (so fresh deployments keep everything on). Enforcement
+    // is server-side in the actions/mutations/crons — never UI hiding alone.
+    featureFlags: defineTable({
+      key: v.string(), // e.g. "aiBackgroundChecker" | "liveCollaboration" | "crossRepoEdits"
+      enabled: v.boolean(),
+      updatedBy: v.optional(v.id("users")),
+      updatedAt: v.number(),
+    }).index("by_key", ["key"]),
+
+    // Health checks: the latest result of each background connectivity probe
+    // (login/auth OIDC, GitHub API reachability, AI provider reachability).
+    // Written by the hourly cron; shown in the admin console. An entry here
+    // still needs a human to read it — the check only records, never alerts.
+    healthChecks: defineTable({
+      check: v.string(), // "auth" | "github" | "ai" | "db"
+      ok: v.boolean(),
+      detail: v.optional(v.string()),
+      checkedAt: v.number(),
+    }).index("by_checkedAt", ["checkedAt"]),
+
+    // Error log: server-side failures worth reviewing (cron per-user failures,
+    // health probe failures, provider hiccups). Capped by the writer; surfaced
+    // in the admin console. A log entry still needs a human to read it.
+    errorLogs: defineTable({
+      source: v.string(), // e.g. "aiFindings" | "health" | "push"
+      userId: v.optional(v.id("users")),
+      message: v.string(),
+      detail: v.optional(v.string()),
+      createdAt: v.number(),
+    })
+      .index("by_createdAt", ["createdAt"])
+      .index("by_source", ["source"]),
+
     // Background AI checker findings: one row per issue the scheduled scan
     // surfaced (outdated/risky dependencies, stale PRs, suspicious config
     // changes, failing CI). Deterministic scans produce template explanations

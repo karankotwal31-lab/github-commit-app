@@ -7,6 +7,14 @@ import { v } from "convex/values";
 import { createHash } from "crypto";
 import type { Id } from "./_generated/dataModel";
 import { anySecretRisk } from "../lib/secrets";
+import {
+  cleanMultiline,
+  cleanName,
+  cleanPath,
+  cleanSearchQuery,
+} from "../lib/sanitize";
+import { fetchWithRetry } from "./net";
+import { GITHUB_ACTIONS_PER_MINUTE } from "./security";
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "aria";
@@ -160,12 +168,28 @@ function encodePath(path: string) {
     .join("/");
 }
 
+/** Clean a commit message from user input; throws when it's empty. */
+function cleanCommitMessage(raw: string): string {
+  const message = cleanMultiline(raw, 2000);
+  if (!message) throw new Error("A commit message is required.");
+  return message;
+}
+
+/** Clean + validate a repo-relative path from user input; throws when bad. */
+function cleanFilePath(raw: string): string {
+  const path = cleanPath(raw);
+  if (!path) throw new Error("That path isn't valid.");
+  return path;
+}
+
 async function githubFetch<T>(
   url: string,
   token: string,
   init?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(url, {
+  // Automatic retry (Part D): transient network errors, 429s and 5xx are
+  // retried with backoff before we give up; 4xx errors pass through.
+  const res = await fetchWithRetry(url, {
     ...init,
     headers: githubHeaders(
       token,
@@ -188,11 +212,25 @@ async function githubFetch<T>(
   return data as T;
 }
 
-/** Resolve the signed-in user's GitHub access token, or throw if absent. */
+/**
+ * Resolve the signed-in user's GitHub access token, or throw if absent.
+ * Also enforces the per-user GitHub action rate limit (Part D): called once
+ * per action, it bounds how many GitHub operations a user can fire per
+ * minute. Combined with GitHub's own hourly quota and the retry helper.
+ */
 async function getToken(ctx: ActionCtx): Promise<string> {
   const userId = await getAuthUserId(ctx);
   if (userId === null) {
     throw new Error("You are not signed in.");
+  }
+  const allowed = await ctx.runMutation(internal.security.bumpRateLimit, {
+    bucket: `github:${userId}`,
+    limit: GITHUB_ACTIONS_PER_MINUTE,
+  });
+  if (!allowed) {
+    throw new Error(
+      "You're making GitHub requests too quickly — wait a minute and try again.",
+    );
   }
   const connection = await ctx.runQuery(internal.github.connectionForUser, {
     userId,
@@ -349,7 +387,9 @@ export const commitFile = action({
     allowSecrets: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    const risk = anySecretRisk([{ path: args.path, content: args.content }]);
+    const path = cleanFilePath(args.path);
+    const message = cleanCommitMessage(args.message);
+    const risk = anySecretRisk([{ path, content: args.content }]);
     if (risk.risky && !args.allowSecrets) {
       throw new Error(
         `Aria refuses to commit ${risk.files.join(", ")} — it looks like it contains secrets. Confirm “commit anyway” to override.`,
@@ -357,13 +397,13 @@ export const commitFile = action({
     }
     const token = await getToken(ctx);
     const body: Record<string, unknown> = {
-      message: args.message,
+      message,
       content: Buffer.from(args.content, "utf8").toString("base64"),
       branch: args.branch,
     };
     if (args.sha) body.sha = args.sha;
     const data = await githubFetch<GitHubCommitResponse>(
-      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(args.path)}`,
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(path)}`,
       token,
       {
         method: "PUT",
@@ -391,7 +431,9 @@ export const createFile = action({
     allowSecrets: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    const risk = anySecretRisk([{ path: args.path, content: args.content }]);
+    const path = cleanFilePath(args.path);
+    const message = cleanCommitMessage(args.message);
+    const risk = anySecretRisk([{ path, content: args.content }]);
     if (risk.risky && !args.allowSecrets) {
       throw new Error(
         `Aria refuses to create ${risk.files.join(", ")} — it looks like it contains secrets. Confirm “commit anyway” to override.`,
@@ -399,12 +441,12 @@ export const createFile = action({
     }
     const token = await getToken(ctx);
     const data = await githubFetch<GitHubCommitResponse>(
-      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(args.path)}`,
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(path)}`,
       token,
       {
         method: "PUT",
         body: JSON.stringify({
-          message: args.message,
+          message,
           content: Buffer.from(args.content, "utf8").toString("base64"),
           branch: args.branch,
         }),
@@ -430,14 +472,16 @@ export const deleteFile = action({
     sha: v.string(),
   },
   handler: async (ctx, args) => {
+    const path = cleanFilePath(args.path);
+    const message = cleanCommitMessage(args.message);
     const token = await getToken(ctx);
     const data = await githubFetch<GitHubCommitResponse>(
-      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(args.path)}`,
+      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(path)}`,
       token,
       {
         method: "DELETE",
         body: JSON.stringify({
-          message: args.message,
+          message,
           sha: args.sha,
           branch: args.branch,
         }),
@@ -467,13 +511,16 @@ export const renameFile = action({
     message: v.string(),
   },
   handler: async (ctx, args) => {
-    if (args.oldPath === args.newPath) {
+    const oldPath = cleanFilePath(args.oldPath);
+    const newPath = cleanFilePath(args.newPath);
+    const message = cleanCommitMessage(args.message);
+    if (oldPath === newPath) {
       throw new Error("New path is the same as the current path.");
     }
     const token = await getToken(ctx);
     const oldData = await githubFetch<GitHubFile>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
-        args.oldPath,
+        oldPath,
       )}?ref=${encodeURIComponent(args.branch)}`,
       token,
     );
@@ -483,13 +530,13 @@ export const renameFile = action({
     const content = Buffer.from(oldData.content, "base64").toString("utf8");
     const created = await githubFetch<GitHubCommitResponse>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
-        args.newPath,
+        newPath,
       )}`,
       token,
       {
         method: "PUT",
         body: JSON.stringify({
-          message: args.message,
+          message,
           content: Buffer.from(content, "utf8").toString("base64"),
           branch: args.branch,
         }),
@@ -499,13 +546,13 @@ export const renameFile = action({
     try {
       await githubFetch<GitHubCommitResponse>(
         `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
-          args.oldPath,
+          oldPath,
         )}`,
         token,
         {
           method: "DELETE",
           body: JSON.stringify({
-            message: args.message,
+            message,
             sha: oldData.sha,
             branch: args.branch,
           }),
@@ -1059,8 +1106,8 @@ async function createGitHubCommit(
     committer?: GitCommitPerson;
   },
 ): Promise<{ sha: string; message: string; htmlUrl: string | null }> {
-  if (!args.message.trim()) throw new Error("A commit message is required.");
-  if (args.files.length === 0) throw new Error("Nothing to commit.");
+  if (!args.message.trim()) throw new Error("A commit message is required.");    if (args.files.length === 0) throw new Error("Nothing to commit.");
+  const message = cleanCommitMessage(args.message);
   const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
 
   const textFiles = args.files.filter((f) => f.action !== "delete");
@@ -1394,10 +1441,13 @@ export const createBranch = action({
     base: v.string(),
   },
   handler: async (ctx, args) => {
+    const name = cleanName(args.name, 200).replace(/\s+/g, "-");
+    const base = cleanName(args.base, 200);
+    if (!name || !base) throw new Error("That branch name isn't valid.");
     const token = await getToken(ctx);
     const ref = await githubFetch<GitHubRef>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/git/ref/heads/${encodeURIComponent(
-        args.base,
+        base,
       )}`,
       token,
     );
@@ -1407,13 +1457,13 @@ export const createBranch = action({
       {
         method: "POST",
         body: JSON.stringify({
-          ref: `refs/heads/${args.name}`,
+          ref: `refs/heads/${name}`,
           sha: ref.object.sha,
         }),
         headers: { "Content-Type": "application/json" },
       },
     );
-    return { name: args.name, sha: ref.object.sha } as BranchResult;
+    return { name, sha: ref.object.sha } as BranchResult;
   },
 });
 
@@ -1428,6 +1478,13 @@ export const createPullRequest = action({
     body: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const title = cleanMultiline(args.title, 300);
+    const head = cleanName(args.head, 200);
+    const base = cleanName(args.base, 200);
+    const body = args.body ? cleanMultiline(args.body, 5000) : "";
+    if (!title || !head || !base) {
+      throw new Error("Title, head, and base branch are required.");
+    }
     const token = await getToken(ctx);
     const data = await githubFetch<GitHubPullRequest>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls`,
@@ -1435,10 +1492,10 @@ export const createPullRequest = action({
       {
         method: "POST",
         body: JSON.stringify({
-          title: args.title,
-          head: args.head,
-          base: args.base,
-          body: args.body ?? "",
+          title,
+          head,
+          base,
+          body,
         }),
         headers: { "Content-Type": "application/json" },
       },
@@ -1678,7 +1735,7 @@ export const searchCode = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
-    const q = `${args.query.trim()} repo:${args.owner}/${args.repo}`;
+    const q = `${cleanSearchQuery(args.query)} repo:${args.owner}/${args.repo}`;
     const data = await githubFetch<{
       items: Array<{ path: string; name: string; html_url: string }>;
     }>(
