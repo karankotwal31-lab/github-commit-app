@@ -4,6 +4,7 @@ import type { editor as MonacoEditor } from "monaco-editor";
 import "@/lib/monaco";
 import { languageForPath } from "@/lib/monaco";
 import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
+import { getScrollSync, setScrollSync } from "@/lib/scrollSync";
 import {
   notifyCursorMove,
   notifyFocus,
@@ -147,6 +148,15 @@ export function CodeEditor({
           setCursorSync(cursor);
           notifyCursorMove(cursor);
         });
+        // Scroll position (Phase 1): mirror the caret — write on scroll for
+        // the debounced workspace save, restore on mount so the file opens
+        // exactly where it was left (cross-device via the saved state).
+        editor.onDidScrollChange(() => {
+          setScrollSync({
+            top: editor.getScrollTop(),
+            left: editor.getScrollLeft(),
+          });
+        });
         const restored = getCursorSync();
         if (restored) {
           editor.setPosition({
@@ -154,6 +164,11 @@ export function CodeEditor({
             column: Math.max(1, restored.column),
           });
           editor.revealLineInCenter(Math.max(1, restored.line));
+        }
+        const restoredScroll = getScrollSync();
+        if (restoredScroll) {
+          editor.setScrollTop(Math.max(0, restoredScroll.top));
+          editor.setScrollLeft(Math.max(0, restoredScroll.left));
         }
       }}
       options={{

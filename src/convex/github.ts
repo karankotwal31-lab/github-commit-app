@@ -138,7 +138,7 @@ export const disconnect = mutation({
   },
 });
 
-/** The user's last workspace (repo, branch, open file, draft, cursor). */
+/** The user's last workspace (repo, branch, open file, draft, caret, scroll, layout). */
 export const getWorkspaceState = query({
   args: {},
   handler: async (ctx) => {
@@ -157,6 +157,10 @@ export const getWorkspaceState = query({
       draft: state.draft ?? null,
       cursorLine: state.cursorLine ?? null,
       cursorColumn: state.cursorColumn ?? null,
+      scrollTop: state.scrollTop ?? null,
+      scrollLeft: state.scrollLeft ?? null,
+      viewMode: state.viewMode ?? null,
+      focusMode: state.focusMode ?? null,
       updatedAt: state.updatedAt,
     };
   },
@@ -172,6 +176,12 @@ export const saveWorkspaceState = mutation({
     draft: v.optional(v.string()),
     cursorLine: v.optional(v.number()),
     cursorColumn: v.optional(v.number()),
+    scrollTop: v.optional(v.number()),
+    scrollLeft: v.optional(v.number()),
+    viewMode: v.optional(
+      v.union(v.literal("edit"), v.literal("diff"), v.literal("preview")),
+    ),
+    focusMode: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -192,6 +202,17 @@ export const saveWorkspaceState = mutation({
       draft: args.draft && args.draft.length <= 500_000 ? args.draft : undefined,
       cursorLine: args.cursorLine,
       cursorColumn: args.cursorColumn,
+      // Negative scroll offsets are meaningless; clamp defensively.
+      scrollTop:
+        args.scrollTop !== undefined && args.scrollTop >= 0
+          ? Math.round(args.scrollTop)
+          : undefined,
+      scrollLeft:
+        args.scrollLeft !== undefined && args.scrollLeft >= 0
+          ? Math.round(args.scrollLeft)
+          : undefined,
+      viewMode: args.viewMode,
+      focusMode: args.focusMode,
       updatedAt: Date.now(),
     };
     if (existing !== null) {

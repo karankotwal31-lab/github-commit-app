@@ -202,6 +202,8 @@ export interface WorkspaceViewProps {
   setEditorContent: (v: string) => void;
   viewMode: "edit" | "diff" | "preview";
   setViewMode: (v: "edit" | "diff" | "preview") => void;
+  focusMode: boolean;
+  setFocusMode: (v: boolean | ((prev: boolean) => boolean)) => void;
   deployment: DeploymentInfo | null;
   deploymentLoading: boolean;
   deploymentError: string | null;
@@ -617,6 +619,8 @@ export function WorkspaceView(props: WorkspaceViewProps) {
     setEditorContent,
     viewMode,
     setViewMode,
+    focusMode,
+    setFocusMode,
     fileLoading,
     dirty,
     openFileIsStaged,
@@ -763,7 +767,6 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   // the whole layout).
   const isMobile = useIsMobile();
   const vv = useVisualViewport(); // publishes --vvh + measured keyboard inset
-  const [focusMode, setFocusMode] = useState(false);
   const [editorFocused, setEditorFocused] = useState(false);
   const [accessoryHidden, setAccessoryHidden] = useState(false);
 

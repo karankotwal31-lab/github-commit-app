@@ -52,7 +52,10 @@ const schema = defineSchema(
 
     // Cross-device continuity: the last workspace the user was in, so opening
     // Aria on another device picks up right where they left off (repo, branch,
-    // browsed folder, open file, unsaved draft, cursor). One row per user.
+    // browsed folder, open file, unsaved draft, caret, scroll position, active
+    // panel, and layout). One row per user; position fields are last-write-wins
+    // across devices by design (unsaved *content* is protected separately by
+    // the draft vault's saveDraftIfNewer).
     workspaceStates: defineTable({
       userId: v.id("users"),
       repo: v.string(), // full name, e.g. "owner/name"
@@ -62,6 +65,15 @@ const schema = defineSchema(
       draft: v.optional(v.string()), // unsaved editor content (capped)
       cursorLine: v.optional(v.number()),
       cursorColumn: v.optional(v.number()),
+      // Editor scroll offset of the open file (Monaco scrollTop/scrollLeft).
+      scrollTop: v.optional(v.number()),
+      scrollLeft: v.optional(v.number()),
+      // Active panel (edit/diff/preview) + layout (focus mode collapses the
+      // sidebars) so the restored workspace looks the same as it was left.
+      viewMode: v.optional(
+        v.union(v.literal("edit"), v.literal("diff"), v.literal("preview")),
+      ),
+      focusMode: v.optional(v.boolean()),
       updatedAt: v.number(),
     }).index("by_userId", ["userId"]),
 
@@ -203,6 +215,21 @@ const schema = defineSchema(
       createdBy: v.id("users"),
       createdAt: v.number(),
     }).index("by_code", ["code"]).index("by_createdBy", ["createdBy"]),
+
+    // AI conversation context: the current Ask Aria conversation (last N
+    // turns), one row per user, so a conversation survives a refresh, a
+    // closed dialog, or a move to another device. Capped server-side; empty
+    // turns array = no active conversation (row may be deleted).
+    aiConversations: defineTable({
+      userId: v.id("users"),
+      turns: v.array(
+        v.object({
+          role: v.union(v.literal("user"), v.literal("assistant")),
+          content: v.string(),
+        }),
+      ),
+      updatedAt: v.number(),
+    }).index("by_userId", ["userId"]),
 
     // Rate limiting: fixed one-minute window counters, keyed by bucket
     // (e.g. "ai:user:xxx", "github:user:xxx", "otp:email:xxx",

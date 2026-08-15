@@ -1,5 +1,6 @@
 import { api } from "@/convex/_generated/api";
 import { getCursorSync, setCursorSync } from "@/lib/cursorSync";
+import { getScrollSync, setScrollSync } from "@/lib/scrollSync";
 import { onEditorCursorMove } from "@/lib/editorRegistry";
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -157,6 +158,9 @@ function Workspace({
   const [isNewFile, setIsNewFile] = useState(false);
   const [editorContent, setEditorContent] = useState("");
   const [viewMode, setViewMode] = useState<"edit" | "diff" | "preview">("edit");
+  // Layout (Phase 1): focus mode collapses the sidebars while typing — lifted
+  // from WorkspaceView so it can be persisted/restored with the workspace.
+  const [focusMode, setFocusMode] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
   const [commitMessage, setCommitMessage] = useState("");
   const [committing, setCommitting] = useState(false);
@@ -290,6 +294,40 @@ function Workspace({
   const [aiHistory, setAiHistory] = useState<
     Array<{ role: "user" | "assistant"; content: string }>
   >([]);
+
+  // Phase 1: AI conversation context — persist the running Ask Aria
+  // conversation so it survives a refresh, a closed dialog, or a move to
+  // another device (the saved turns feed aiSuggest's `history` on the next
+  // follow-up, exactly like the live session's turns).
+  const savedConversation = useQuery(api.aiConversations.getConversation);
+  const saveConversation = useMutation(api.aiConversations.saveConversation);
+  const conversationLoadedRef = useRef(false);
+
+  // Load once, when the saved conversation arrives — never clobber an active
+  // conversation on reactive re-fires.
+  useEffect(() => {
+    if (conversationLoadedRef.current) return;
+    if (savedConversation === undefined) return; // still loading
+    conversationLoadedRef.current = true;
+    setAiHistory(savedConversation);
+  }, [savedConversation, setAiHistory]);
+
+  // Debounced save: every turn lands server-side shortly after it's added;
+  // an empty history ("New conversation") clears the saved row.
+  useEffect(() => {
+    if (!conversationLoadedRef.current) return;
+    const timer = setTimeout(() => {
+      void saveConversation({
+        turns: aiHistory
+          .slice(-24)
+          .map((t) => ({ role: t.role, content: t.content.slice(0, 2000) })),
+      }).catch(() => {
+        // Best-effort — a failed save only means the conversation doesn't
+        // carry over; the live session is unaffected.
+      });
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [aiHistory, saveConversation]);
 
   // PR review: the pull request under review plus its changed files.
   const [prReview, setPrReview] = useState<{
@@ -528,7 +566,16 @@ function Workspace({
       setPrs(null);
       setChecks(null);
       setPath(saved.path ?? "");
-      setViewMode("edit");
+      // Restore the active panel + layout exactly as left (defaults when
+      // missing — older saves predate these fields).
+      setViewMode(saved.viewMode ?? "edit");
+      setFocusMode(saved.focusMode ?? false);
+      // Restore the editor scroll offset so the open file lands where it was.
+      setScrollSync(
+        saved.scrollTop != null
+          ? { top: saved.scrollTop, left: saved.scrollLeft ?? 0 }
+          : null,
+      );
       loadEntries(repo, saved.branch, saved.path ?? "");
       loadBranches(repo);
       loadTreeFiles(repo, saved.branch);
@@ -602,6 +649,12 @@ function Workspace({
         draft: openFile && (isNewFile || dirty) ? editorContent : undefined,
         cursorLine: getCursorSync()?.line,
         cursorColumn: getCursorSync()?.column,
+        // Phase 1: scroll offset + active panel + layout so the restored
+        // workspace looks and feels exactly like it was left.
+        scrollTop: getScrollSync()?.top,
+        scrollLeft: getScrollSync()?.left,
+        viewMode,
+        focusMode,
       }).catch(() => {
         // Best-effort persistence — never interrupt the workspace for it.
       });
@@ -636,6 +689,8 @@ function Workspace({
     openFile,
     isNewFile,
     editorContent,
+    viewMode,
+    focusMode,
     saveWorkspaceState,
     saveDraft,
   ]);
@@ -1811,6 +1866,8 @@ function Workspace({
       setEditorContent={setEditorContent}
       viewMode={viewMode}
       setViewMode={setViewMode}
+      focusMode={focusMode}
+      setFocusMode={setFocusMode}
       deployment={deployment}
       deploymentLoading={deploymentLoading}
       deploymentError={deploymentError}
