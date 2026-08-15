@@ -113,6 +113,26 @@ function RouteSyncer() {
 }
 
 /**
+ * Registers the service worker. Always registered so web-push works; the
+ * `?cache=1` flag (production builds only) tells the worker to also cache the
+ * app shell so the app opens instantly on repeat visits.
+ */
+function ServiceWorkerRegistrar() {
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const flag = import.meta.env.PROD ? "?cache=1" : "";
+    const onLoad = () => {
+      navigator.serviceWorker
+        .register(`/sw.js${flag}`)
+        .catch((err) => console.warn("[PWA] Service worker registration failed:", err));
+    };
+    window.addEventListener("load", onLoad);
+    return () => window.removeEventListener("load", onLoad);
+  }, []);
+  return null;
+}
+
+/**
  * GitHub OAuth popup bridge. The authorization flow runs in a popup because
  * GitHub refuses to render inside the preview iframe. When the Convex
  * callback redirects that popup back to the app (?github=connected|config|error),
@@ -139,6 +159,7 @@ createRoot(document.getElementById("root")!).render(
       </ToolbarErrorBoundary>
       <ConvexAuthProvider client={convex}>
         <BrowserRouter>
+          <ServiceWorkerRegistrar />
           <RouteSyncer />
           <OAuthPopupBridge />
           <Suspense fallback={<RouteLoading />}>

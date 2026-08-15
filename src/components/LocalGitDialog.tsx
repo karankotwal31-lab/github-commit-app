@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DiffView } from "@/components/workspace-shared";
 import { ConflictResolverDialog } from "@/components/ConflictResolverDialog";
-import { diffLines } from "@/lib/diff";
+import { type DiffLine } from "@/lib/diff";
+import { computeDiffLines } from "@/lib/diffWorkerClient";
 import {
   abortSession,
   branchColor,
@@ -57,6 +58,8 @@ import {
   ArrowUp,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleDot,
   GitBranch,
   GitCommitHorizontal,
@@ -181,6 +184,10 @@ export function LocalGitDialog({
     Array<{ path: string; oldText: string; newText: string; binary: boolean }> | null
   >(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  const [diffCache, setDiffCache] = useState<Record<string, DiffLine[]>>({});
+  const [expandedDiffFiles, setExpandedDiffFiles] = useState<Set<string>>(new Set());
+  const [graphDepth, setGraphDepth] = useState(150);
+  const [graphLoadingMore, setGraphLoadingMore] = useState(false);
 
   // Branches (local) for merge/rebase targets
   const [localBranches, setLocalBranches] = useState<string[]>([]);
@@ -211,9 +218,10 @@ export function LocalGitDialog({
   const reloadAll = useCallback(async () => {
     const [status, g, stashes] = await Promise.all([
       getStatus(owner, repo),
-      getGraph(owner, repo).catch(() => null),
+      getGraph(owner, repo, 150).catch(() => null),
       stashList(owner, repo).catch(() => []),
     ]);
+    setGraphDepth(150);
     // Local branch names come from the graph's ref list.
     setStatusRows(status);
     setGraph(g);
@@ -547,14 +555,85 @@ export function LocalGitDialog({
   const handleSelectCommit = async (commit: GraphCommit) => {
     setSelected(commit);
     setSelectedDiff(null);
+    setDiffCache({});
+    setExpandedDiffFiles(new Set());
     setDiffLoading(true);
     try {
       const diffs = await commitDiff(backend, owner, repo, commit.oid);
       setSelectedDiff(diffs);
+      if (diffs.length > 0) {
+        // Diff lines for every changed file in one pass: small files compute
+        // synchronously, large files go through the diff worker so the UI
+        // stays responsive on big commits.
+        const entries = await Promise.all(
+          diffs.map(async (file) => {
+            const lines = await computeDiffLines(file.oldText, file.newText);
+            return { path: file.path, lines };
+          }),
+        );
+        const cache: Record<string, DiffLine[]> = {};
+        let changedLines = 0;
+        for (const entry of entries) {
+          cache[entry.path] = entry.lines;
+          for (const line of entry.lines) {
+            if (line.type !== "same") changedLines++;
+          }
+        }
+        setDiffCache(cache);
+        // Small diffs expand automatically; large ones start summarized so
+        // the user sees the scope before anything heavy renders.
+        if (diffs.length <= 3 && changedLines <= 400) {
+          setExpandedDiffFiles(new Set(diffs.map((f) => f.path)));
+        }
+      }
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {
       setDiffLoading(false);
+    }
+  };
+
+  const toggleDiffFile = (path: string) => {
+    setExpandedDiffFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const toggleAllDiffs = () => {
+    if (!selectedDiff) return;
+    if (expandedDiffFiles.size === selectedDiff.length) {
+      setExpandedDiffFiles(new Set());
+    } else {
+      setExpandedDiffFiles(new Set(selectedDiff.map((f) => f.path)));
+    }
+  };
+
+  const handleLoadMoreGraph = async () => {
+    const nextDepth = graphDepth + 150;
+    setGraphLoadingMore(true);
+    try {
+      const more = await getGraph(owner, repo, nextDepth);
+      setGraphDepth(nextDepth);
+      setGraph((prev) => {
+        if (!prev) return more;
+        const byOid = new Map<string, GraphCommit>();
+        for (const c of more.commits) byOid.set(c.oid, c);
+        for (const c of prev.commits) if (!byOid.has(c.oid)) byOid.set(c.oid, c);
+        return {
+          commits: [...byOid.values()].sort((a, b) => b.date - a.date),
+          branches: more.branches,
+          headOid: more.headOid,
+          headBranch: more.headBranch,
+          detached: more.detached,
+        };
+      });
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setGraphLoadingMore(false);
     }
   };
 
@@ -631,6 +710,31 @@ export function LocalGitDialog({
     if (lanes.size === 0) return 0;
     return Math.max(...lanes.values());
   }, [lanes]);
+
+  // Per-file +/- counts for the diff summary (computed once, cached).
+  const diffStats = useMemo(() => {
+    const out: Record<string, { adds: number; dels: number }> = {};
+    for (const [path, lines] of Object.entries(diffCache)) {
+      let adds = 0;
+      let dels = 0;
+      for (const line of lines) {
+        if (line.type === "add") adds++;
+        else if (line.type === "del") dels++;
+      }
+      out[path] = { adds, dels };
+    }
+    return out;
+  }, [diffCache]);
+
+  const totalChangedStats = useMemo(() => {
+    let adds = 0;
+    let dels = 0;
+    for (const stats of Object.values(diffStats)) {
+      adds += stats.adds;
+      dels += stats.dels;
+    }
+    return { adds, dels };
+  }, [diffStats]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -907,7 +1011,7 @@ export function LocalGitDialog({
                   ) : (
                     <>
                       <div className="overflow-hidden rounded-lg border border-neutral-200">
-                        {graph.commits.slice(0, 60).map((commit) => {
+                        {graph.commits.map((commit) => {
                           const lane = lanes.get(commit.oid) ?? 0;
                           const color = branchColor(lane);
                           const branchHere = graph.branches
@@ -996,10 +1100,22 @@ export function LocalGitDialog({
                             </button>
                           );
                         })}
-                        {graph.commits.length > 60 && (
-                          <p className="px-3 py-2 text-[10px] text-neutral-400">
-                            Showing first 60 commits.
-                          </p>
+                        {graph.commits.length >= graphDepth && (
+                          <div className="flex items-center justify-center border-t border-neutral-100 p-2">
+                            <button
+                              type="button"
+                              onClick={() => void handleLoadMoreGraph()}
+                              disabled={graphLoadingMore}
+                              className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-medium text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 disabled:opacity-50"
+                            >
+                              {graphLoadingMore ? (
+                                <Loader2 className="size-3 animate-spin" />
+                              ) : (
+                                <ChevronDown className="size-3" />
+                              )}
+                              Load more history
+                            </button>
+                          </div>
                         )}
                       </div>
 
@@ -1041,19 +1157,74 @@ export function LocalGitDialog({
                             </div>
                           ) : (
                             <div className="max-h-72 overflow-auto">
-                              {selectedDiff?.map((file) => (
-                                <div
-                                  key={file.path}
-                                  className="border-b border-neutral-100 last:border-b-0"
-                                >
-                                  <p className="px-3 py-1.5 font-mono text-[11px] text-neutral-600">
-                                    {file.path}
+                              {selectedDiff && selectedDiff.length > 0 && (
+                                <div className="flex items-center justify-between border-b border-neutral-100 px-3 py-2">
+                                  <p className="text-[11px] text-neutral-500">
+                                    {selectedDiff.length} file
+                                    {selectedDiff.length === 1 ? "" : "s"}
+                                    {totalChangedStats.adds + totalChangedStats.dels > 0
+                                      ? ` · +${totalChangedStats.adds} −${totalChangedStats.dels}`
+                                      : ""}
                                   </p>
-                                  <DiffView
-                                    lines={diffLines(file.oldText, file.newText)}
-                                  />
+                                  <button
+                                    type="button"
+                                    onClick={toggleAllDiffs}
+                                    className="text-[11px] text-neutral-400 hover:text-neutral-800"
+                                  >
+                                    {expandedDiffFiles.size === selectedDiff.length
+                                      ? "Collapse all"
+                                      : "Expand all"}
+                                  </button>
                                 </div>
-                              ))}
+                              )}
+                              {selectedDiff?.map((file) => {
+                                const stats = diffStats[file.path];
+                                const expanded = expandedDiffFiles.has(file.path);
+                                return (
+                                  <div
+                                    key={file.path}
+                                    className="border-b border-neutral-100 last:border-b-0"
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleDiffFile(file.path)}
+                                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-neutral-50"
+                                    >
+                                      <ChevronRight
+                                        className={cn(
+                                          "size-3 shrink-0 text-neutral-400 transition-transform",
+                                          expanded && "rotate-90",
+                                        )}
+                                      />
+                                      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-600">
+                                        {file.path}
+                                      </span>
+                                      {file.binary && (
+                                        <span className="shrink-0 text-[10px] uppercase tracking-wide text-neutral-400">
+                                          binary
+                                        </span>
+                                      )}
+                                      {stats && (
+                                        <span className="shrink-0 text-[10px] font-medium tabular-nums">
+                                          <span className="text-emerald-600">
+                                            +{stats.adds}
+                                          </span>{" "}
+                                          <span className="text-red-600">
+                                            −{stats.dels}
+                                          </span>
+                                        </span>
+                                      )}
+                                    </button>
+                                    {expanded && stats && (
+                                      <div className="border-t border-neutral-100">
+                                        <ChunkedDiff
+                                          lines={diffCache[file.path] ?? []}
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                               {selectedDiff?.length === 0 && (
                                 <p className="px-3 py-4 text-center text-[11px] text-neutral-400">
                                   Root commit — no parent to diff against.
@@ -1340,6 +1511,31 @@ export function LocalGitDialog({
         />
       )}
     </Dialog>
+  );
+}
+
+/** Renders a diff in bounded chunks so a huge file never janks the UI. */
+function ChunkedDiff({ lines }: { lines: DiffLine[] }) {
+  const [visible, setVisible] = useState(600);
+  useEffect(() => {
+    if (visible >= lines.length) return;
+    const timer = setTimeout(
+      () => setVisible((v) => Math.min(v + 600, lines.length)),
+      60,
+    );
+    return () => clearTimeout(timer);
+  }, [visible, lines.length]);
+  const truncated = lines.length > visible;
+  return (
+    <div>
+      {truncated && (
+        <p className="px-3 py-1 text-[10px] text-neutral-400">
+          Rendering {visible.toLocaleString()} of{" "}
+          {lines.length.toLocaleString()} lines…
+        </p>
+      )}
+      <DiffView lines={lines.slice(0, visible)} />
+    </div>
   );
 }
 

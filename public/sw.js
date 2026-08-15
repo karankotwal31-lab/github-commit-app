@@ -1,25 +1,92 @@
 /* Aria — service worker.
  *
- * Two jobs:
+ * Three jobs:
  *  1. PWA installability (a registered SW with a fetch handler is required).
  *  2. Web push: receives push events from the browser push service and turns
  *     them into notifications; clicking one focuses the app (or opens it).
+ *  3. App-shell caching (production only): the static shell (index.html,
+ *     hashed JS/CSS assets, fonts, manifest) is cached so the app opens
+ *     instantly on repeat visits, even on slow connections. Git operations
+ *     still need the network — this only makes the app itself load fast.
  *
- * The fetch handler is intentionally network-only: nothing is cached, so the
- * app always runs fresh and the dev server can never be shadowed by a stale
- * cache.
+ * Caching is enabled by registering with `?cache=1` (main.tsx does this only
+ * in production builds). In development the SW stays network-only, so the
+ * dev server can never be shadowed by a stale cache.
  */
 
-self.addEventListener("install", () => {
-  self.skipWaiting();
+const CACHE_NAME = "aria-shell-v1";
+const CACHE_ENABLED = new URL(self.location.href).searchParams.get("cache") === "1";
+
+const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/logo.svg"];
+
+self.addEventListener("install", (event) => {
+  if (CACHE_ENABLED) {
+    event.waitUntil(
+      caches
+        .open(CACHE_NAME)
+        .then((cache) => cache.addAll(APP_SHELL))
+        .then(() => self.skipWaiting()),
+    );
+  } else {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    (async () => {
+      if (CACHE_ENABLED) {
+        // Drop caches from older versions of the app shell.
+        const keys = await caches.keys();
+        await Promise.all(
+          keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
+        );
+      }
+      await self.clients.claim();
+    })(),
+  );
 });
 
-self.addEventListener("fetch", () => {
-  // Network-only pass-through.
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+
+  if (CACHE_ENABLED && new URL(request.url).origin === self.location.origin) {
+    const url = new URL(request.url);
+    if (request.mode === "navigate") {
+      // App shell: network first (fresh deploy wins), fall back to the
+      // cached shell when offline so the app still opens.
+      event.respondWith(
+        fetch(request)
+          .then((response) => {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put("/index.html", copy));
+            return response;
+          })
+          .catch(() => caches.match("/index.html")),
+      );
+      return;
+    }
+    if (url.pathname.startsWith("/assets/")) {
+      // Hashed static assets: cache-first with background refresh. The hash
+      // in the file name means a stale entry can never serve wrong code.
+      event.respondWith(
+        caches.match(request).then((cached) => {
+          const network = fetch(request)
+            .then((response) => {
+              const copy = response.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+              return response;
+            })
+            .catch(() => cached);
+          return cached || network;
+        }),
+      );
+      return;
+    }
+  }
+
+  // Everything else (Convex, GitHub, dev assets): network-only pass-through.
 });
 
 self.addEventListener("push", (event) => {
@@ -58,43 +125,16 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const data = event.notification.data ?? {};
-  const url = data.url ?? "/";
-  const action = event.action ?? null;
+  const target = event.notification.data?.url || "/";
   event.waitUntil(
-    (async () => {
-      const clients = await self.clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      });
-
-      // An action button was tapped: hand it to an open Aria tab, or open the
-      // app with the action in the URL for the boot handler to pick up.
-      if (action) {
-        for (const client of clients) {
-          client.focus();
-          client.postMessage({ type: "aria-push-action", action, url });
-          return;
-        }
-        // No open tab: open Aria with the action encoded in the query string.
-        // registration.scope is the app's origin, so this stays on the app
-        // (never navigates to github.com) and the boot handler performs it.
-        const scope = new URL("./", self.registration.scope).href;
-        const actionUrl =
-          `${scope}?ariaAction=${encodeURIComponent(action)}` +
-          `&ariaUrl=${encodeURIComponent(url)}`;
-        return self.clients.openWindow(actionUrl);
-      }
-
-      // Plain tap: focus an open tab and navigate it (or open the item).
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
-        client.focus();
-        if ("navigate" in client && url !== "/") {
-          client.navigate(url);
+        if ("focus" in client) {
+          client.navigate(target);
+          return client.focus();
         }
-        return;
       }
-      return self.clients.openWindow(url);
-    })(),
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+    }),
   );
 });

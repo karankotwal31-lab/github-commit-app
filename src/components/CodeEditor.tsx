@@ -1,4 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { FileWarning } from "lucide-react";
+import { formatSize } from "@/lib/github";
 import Editor from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
 import "@/lib/monaco";
@@ -27,6 +29,54 @@ export interface EditorPeer {
   label: string;
   line: number;
   column: number;
+}
+
+/** Files at or above this size open through the lightweight-preview gate
+ *  instead of loading straight into Monaco. Monaco never mounts for these
+ *  until the user explicitly asks for the full editor. */
+const LARGE_FILE_BYTES = 1024 * 1024;
+/** Lightweight preview shows the first N lines. */
+const LARGE_FILE_PREVIEW_LINES = 8000;
+
+function LargeFilePreview({
+  path,
+  content,
+  onLoadFull,
+}: {
+  path: string;
+  content: string;
+  onLoadFull: () => void;
+}) {
+  const lines = content.split("\n");
+  const showAll = lines.length <= LARGE_FILE_PREVIEW_LINES;
+  const preview = showAll
+    ? content
+    : lines.slice(0, LARGE_FILE_PREVIEW_LINES).join("\n");
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-200 px-4 py-2">
+        <p className="flex items-center gap-1.5 text-[11px] text-neutral-500">
+          <FileWarning className="size-3.5 text-amber-500" />
+          Lightweight preview —{" "}
+          {showAll
+            ? "whole file"
+            : `first ${LARGE_FILE_PREVIEW_LINES.toLocaleString()} lines of ${formatSize(content.length)}`}
+        </p>
+        {!showAll && (
+          <button
+            type="button"
+            onClick={onLoadFull}
+            className="text-[11px] font-medium text-neutral-700 hover:text-neutral-900"
+          >
+            Load full file
+          </button>
+        )}
+      </div>
+      <pre className="min-h-0 flex-1 overflow-auto whitespace-pre px-4 py-3 font-mono text-xs leading-5 text-neutral-800">
+        {preview}
+      </pre>
+    </div>
+  );
 }
 
 const PEER_COLORS = [
@@ -68,6 +118,18 @@ export function CodeEditor({
 }) {
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const widgetsRef = useRef<MonacoEditor.IContentWidget[]>([]);
+  const [largeFileView, setLargeFileView] = useState<
+    "pending" | "preview" | "full"
+  >("pending");
+
+  // The choice resets whenever the open file changes.
+  useEffect(() => {
+    setLargeFileView("pending");
+  }, [path]);
+
+  // GitHub truncates >1MB file contents, so this also catches `truncated`
+  // files (their content length lands right at the cap).
+  const isLargeFile = value.length >= LARGE_FILE_BYTES;
 
   // Re-render collaborator cursors whenever the peer set changes.
   useEffect(() => {
@@ -134,6 +196,41 @@ export function CodeEditor({
           the code, inside the editor column. */}
       <FileTabs />
       <div className="min-h-0 flex-1">
+        {isLargeFile && largeFileView === "pending" ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+            <FileWarning className="size-8 text-amber-500" />
+            <p className="text-sm font-medium text-neutral-800">
+              This file is large
+            </p>
+            <p className="max-w-sm text-xs leading-5 text-neutral-500">
+              {path} is {formatSize(value.length)}. Loading it into the full
+              editor can slow things down. Preview the first 8,000 lines
+              instead.
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setLargeFileView("preview")}
+                className="h-8 rounded-md border border-neutral-200 bg-white px-3 text-xs font-medium text-neutral-700 shadow-sm transition-colors hover:bg-neutral-50"
+              >
+                Lightweight preview
+              </button>
+              <button
+                type="button"
+                onClick={() => setLargeFileView("full")}
+                className="h-8 rounded-md bg-neutral-900 px-3 text-xs font-medium text-white shadow-sm transition-colors hover:bg-neutral-700"
+              >
+                Open full file
+              </button>
+            </div>
+          </div>
+        ) : isLargeFile && largeFileView === "preview" ? (
+          <LargeFilePreview
+            path={path}
+            content={value}
+            onLoadFull={() => setLargeFileView("full")}
+          />
+        ) : (
         <Editor
           language={languageForPath(path)}
           value={value}
@@ -198,6 +295,7 @@ export function CodeEditor({
             hideCursorInOverviewRuler: true,
           }}
           />
+        )}
       </div>
     </div>
   );
