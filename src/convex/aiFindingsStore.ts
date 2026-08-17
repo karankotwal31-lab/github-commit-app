@@ -59,6 +59,25 @@ export const markFindingRead = mutation({
   },
 });
 
+/** Mark every unread finding read in one action (inbox "Mark all read"). */
+export const markAllRead = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    const rows = await ctx.db
+      .query("aiFindings")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const now = Date.now();
+    for (const row of rows) {
+      if (row.readAt === undefined && row.dismissedAt === undefined) {
+        await ctx.db.patch(row._id, { readAt: now });
+      }
+    }
+  },
+});
+
 /** Dismiss a finding (the user has reviewed it — hidden from the inbox). */
 export const dismissFinding = mutation({
   args: { id: v.id("aiFindings") },

@@ -23,7 +23,14 @@ import { clearPrDraft, readPrDraft } from "@/lib/prDraft";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { ConnectScreen } from "@/components/workspace-shared";
 import { WorkspaceView } from "@/components/WorkspaceView";
@@ -371,7 +378,7 @@ function Workspace({
   // user explicitly confirms. `allowSecrets` is that explicit confirmation.
   const [allowSecrets, setAllowSecrets] = useState(false);
 
-  // ⌘K quick-jump: every file in the current branch, loaded once per branch.
+  // ⌘P quick-jump: every file in the current branch, loaded once per branch.
   const [treeFiles, setTreeFiles] = useState<Array<{ path: string; size: number }> | null>(
     null,
   );
@@ -1325,10 +1332,12 @@ function Workspace({
     );
   };
 
-  // ⌘K / Ctrl+K opens the file quick-jump.
+  // ⌘P / Ctrl+P opens the file quick-jump. (⌘K belongs to the command
+  // palette alone — previously both surfaces fired on the same key, so the
+  // palette and the file picker opened on top of each other.)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
         e.preventDefault();
         if (selectedRepo) setSearchOpen((open) => !open);
       }
@@ -1475,12 +1484,16 @@ function Workspace({
     return true;
   };
 
+  // Deferred query value: the filter stays responsive even with hundreds of
+  // repos — keystrokes update the input immediately while the (cheap but
+  // not-free) filtering runs on a deferred copy.
+  const deferredRepoQuery = useDeferredValue(repoQuery);
   const filteredRepos = useMemo(() => {
     if (!repos) return [];
-    const q = repoQuery.trim().toLowerCase();
+    const q = deferredRepoQuery.trim().toLowerCase();
     if (!q) return repos;
     return repos.filter((r) => r.fullName.toLowerCase().includes(q));
-  }, [repos, repoQuery]);
+  }, [repos, deferredRepoQuery]);
 
   const sortedEntries = useMemo(() => {
     if (!entries) return [];

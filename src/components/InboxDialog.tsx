@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -7,12 +7,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/convex/_generated/api";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { errorMessage } from "@/lib/github";
 import {
   AlertTriangle,
   CheckCircle2,
+  CheckCheck,
   CircleDashed,
   FileText,
   GitPullRequest,
@@ -78,7 +80,7 @@ function CiDot({ ci }: { ci: InboxPr["ci"] }) {
   return <CircleDashed className="size-3.5 shrink-0 text-neutral-300" />;
 }
 
-function Row({
+const Row = memo(function Row({
   repo,
   number,
   title,
@@ -120,12 +122,36 @@ function Row({
       </span>
     </a>
   );
+});
+
+/** Small pill showing a tab's item count (or a dot when there's something new). */
+function CountPill({
+  count,
+  highlight,
+}: {
+  count: number;
+  highlight: boolean;
+}) {
+  if (count === 0) return null;
+  return (
+    <span
+      className={cn(
+        "ml-1.5 inline-flex min-w-4 items-center justify-center rounded-full px-1.5 py-px text-[10px] font-medium tabular-nums",
+        highlight
+          ? "bg-neutral-900 text-white"
+          : "bg-neutral-100 text-neutral-500",
+      )}
+    >
+      {count}
+    </span>
+  );
 }
 
 /**
- * Unified cross-repo inbox (Pro): PRs awaiting review and issues assigned to
- * the user, aggregated across every repo/org — one feed instead of digging
- * per repo. Items open on GitHub.
+ * Unified cross-repo inbox (Pro): PRs awaiting review, issues assigned to the
+ * user, and Aria's background findings — aggregated across every repo/org,
+ * one feed instead of digging per repo. Items open on GitHub; findings are
+ * surfaced for review and never auto-fixed.
  */
 export function InboxDialog({
   open,
@@ -139,8 +165,10 @@ export function InboxDialog({
   const scanRepos = useAction(api.aiFindings.scanRepos);
   const dismissFinding = useMutation(api.aiFindingsStore.dismissFinding);
   const markRead = useMutation(api.aiFindingsStore.markFindingRead);
+  const markAllRead = useMutation(api.aiFindingsStore.markAllRead);
   const findings = useQuery(api.aiFindingsStore.listFindings);
   const unread = useQuery(api.aiFindingsStore.unreadCount);
+  const [tab, setTab] = useState("findings");
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
   const [data, setData] = useState<{
@@ -173,6 +201,22 @@ export function InboxDialog({
     };
   }, [open, getInbox]);
 
+  const activeFindings = (findings ?? []).filter((f) => !f.dismissedAt);
+  const unreadFindings = activeFindings.filter((f) => !f.readAt).length;
+
+  const SectionLabel = ({
+    icon,
+    children,
+  }: {
+    icon: React.ReactNode;
+    children: React.ReactNode;
+  }) => (
+    <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+      {icon}
+      {children}
+    </p>
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto">
@@ -187,8 +231,8 @@ export function InboxDialog({
             )}
           </DialogTitle>
           <DialogDescription>
-            Across every repo you can access — PRs waiting on your review and
-            issues assigned to you.
+            Across every repo you can access — PRs waiting on your review,
+            issues assigned to you, and Aria's background findings.
           </DialogDescription>
         </DialogHeader>
 
@@ -197,50 +241,83 @@ export function InboxDialog({
             The unified inbox is a Pro feature — upgrade to see activity across
             all your repositories.
           </div>
-        ) : loading ? (
+        ) : loading && !data ? (
           <div className="flex items-center justify-center gap-2 py-10 text-sm text-neutral-400">
             <Loader2 className="size-4 animate-spin" /> Gathering across repos…
           </div>
-        ) : error ? (
+        ) : error && !data ? (
           <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
             {error}
           </div>
-        ) : data ? (
-          <div className="flex flex-col gap-5">
+        ) : (
+          <Tabs value={tab} onValueChange={setTab} className="flex flex-col">
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="findings" className="gap-0">
+                Findings
+                <CountPill count={activeFindings.length} highlight={unreadFindings > 0} />
+              </TabsTrigger>
+              <TabsTrigger value="reviews" className="gap-0">
+                Reviews
+                <CountPill
+                  count={data?.awaitingReview.length ?? 0}
+                  highlight={false}
+                />
+              </TabsTrigger>
+              <TabsTrigger value="assigned" className="gap-0">
+                Assigned
+                <CountPill
+                  count={data?.assigned.length ?? 0}
+                  highlight={false}
+                />
+              </TabsTrigger>
+            </TabsList>
+
             {/* Aria's background findings — scheduled scans, never auto-fixed */}
-            <div>
+            <TabsContent value="findings" className="mt-4 flex flex-col gap-3">
               <div className="flex items-center justify-between gap-2">
-                <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
-                  <ShieldAlert className="size-3.5" />
+                <SectionLabel icon={<ShieldAlert className="size-3.5" />}>
                   Aria's findings
-                </p>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setScanning(true);
-                    setScanNote(null);
-                    try {
-                      const r = await scanRepos();
-                      setScanNote(
-                        r.scanned === 0
-                          ? "Open a repo in Aria first — nothing to scan yet."
-                          : `Scanned ${r.scanned} repo${r.scanned > 1 ? "s" : ""} · ${r.findings} finding${r.findings === 1 ? "" : "s"}.`,
-                      );
-                    } catch (e) {
-                      setScanNote(errorMessage(e));
-                    } finally {
-                      setScanning(false);
-                    }
-                  }}
-                  className="flex shrink-0 items-center gap-1 text-xs text-neutral-400 hover:text-neutral-700"
-                >
-                  {scanning ? (
-                    <Loader2 className="size-3 animate-spin" />
-                  ) : (
-                    <RefreshCw className="size-3" />
+                </SectionLabel>
+                <div className="flex shrink-0 items-center gap-3">
+                  {unreadFindings > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void markAllRead()}
+                      className="flex shrink-0 items-center gap-1 text-xs text-neutral-400 hover:text-neutral-700"
+                      title="Mark every finding as read"
+                    >
+                      <CheckCheck className="size-3" />
+                      Mark all read
+                    </button>
                   )}
-                  Scan now
-                </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setScanning(true);
+                      setScanNote(null);
+                      try {
+                        const r = await scanRepos();
+                        setScanNote(
+                          r.scanned === 0
+                            ? "Open a repo in Aria first — nothing to scan yet."
+                            : `Scanned ${r.scanned} repo${r.scanned > 1 ? "s" : ""} · ${r.findings} finding${r.findings === 1 ? "" : "s"}.`,
+                        );
+                      } catch (e) {
+                        setScanNote(errorMessage(e));
+                      } finally {
+                        setScanning(false);
+                      }
+                    }}
+                    className="flex shrink-0 items-center gap-1 text-xs text-neutral-400 hover:text-neutral-700"
+                  >
+                    {scanning ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="size-3" />
+                    )}
+                    Scan now
+                  </button>
+                </div>
               </div>
               {scanNote && (
                 <p
@@ -254,112 +331,123 @@ export function InboxDialog({
                   {scanNote}
                 </p>
               )}
-              <div className="mt-2 flex flex-col gap-1.5">
+              <div className="flex flex-col gap-1.5">
                 {findings === undefined ? (
                   <p className="px-2 py-1 text-sm text-neutral-400">
                     Loading findings…
                   </p>
-                ) : findings.filter((f) => !f.dismissedAt).length === 0 ? (
-                  <p className="px-2 py-1 text-sm text-neutral-400">
-                    No findings right now — Aria scans your repos automatically
-                    and surfaces issues here for review. Nothing is ever
-                    auto-fixed.
-                  </p>
+                ) : activeFindings.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-neutral-200 px-4 py-6 text-center">
+                    <ShieldAlert className="mx-auto size-5 text-neutral-300" />
+                    <p className="mt-2 text-sm text-neutral-500">
+                      No findings right now.
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-neutral-400">
+                      Aria scans your repos automatically and surfaces issues
+                      here for review — nothing is ever auto-fixed.
+                    </p>
+                  </div>
                 ) : (
-                  findings
-                    .filter((f) => !f.dismissedAt)
-                    .map((f) => (
-                      <div
-                        key={f._id}
-                        className={cn(
-                          "rounded-lg border p-2.5",
-                          !f.readAt
-                            ? "border-neutral-800 bg-neutral-50"
-                            : "border-neutral-200",
-                        )}
-                        onMouseDown={() => {
-                          if (!f.readAt) void markRead({ id: f._id });
-                        }}
-                      >
-                        <div className="flex items-start gap-2">
-                          <FindingIcon kind={f.kind} />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <p
-                                className={cn(
-                                  "text-sm",
-                                  f.readAt
-                                    ? "font-normal text-neutral-700"
-                                    : "font-medium text-neutral-900",
-                                )}
-                              >
-                                {f.title}
-                              </p>
-                              {!f.readAt && (
-                                <span className="size-1.5 shrink-0 rounded-full bg-neutral-800" />
+                  activeFindings.map((f) => (
+                    <div
+                      key={f._id}
+                      className={cn(
+                        "rounded-lg border p-2.5",
+                        !f.readAt
+                          ? "border-neutral-800 bg-neutral-50"
+                          : "border-neutral-200",
+                      )}
+                      onMouseDown={() => {
+                        if (!f.readAt) void markRead({ id: f._id });
+                      }}
+                    >
+                      <div className="flex items-start gap-2">
+                        <FindingIcon kind={f.kind} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p
+                              className={cn(
+                                "text-sm",
+                                f.readAt
+                                  ? "font-normal text-neutral-700"
+                                  : "font-medium text-neutral-900",
                               )}
-                            </div>
-                            <p className="mt-0.5 text-xs leading-5 text-neutral-500">
-                              {f.detail}
+                            >
+                              {f.title}
                             </p>
-                            <div className="mt-1.5 flex items-center gap-2">
-                              <span
-                                className={cn(
-                                  "rounded-full px-1.5 py-px text-[10px] font-medium uppercase tracking-wide",
-                                  f.priority === "high"
-                                    ? "bg-rose-100 text-rose-700"
-                                    : f.priority === "medium"
-                                      ? "bg-amber-100 text-amber-700"
-                                      : "bg-neutral-100 text-neutral-500",
-                                )}
-                              >
-                                {f.priority}
-                              </span>
-                              <span className="font-mono text-[10px] text-neutral-400">
-                                {f.repo}
-                              </span>
-                              {f.url && (
-                                <a
-                                  href={f.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  onClick={() => {
-                                    if (!f.readAt) void markRead({ id: f._id });
-                                  }}
-                                  className="text-[10px] text-neutral-500 underline underline-offset-2 hover:text-neutral-900"
-                                >
-                                  Open
-                                </a>
-                              )}
-                              <span className="text-[10px] text-neutral-300">
-                                {new Date(f.createdAt).toLocaleDateString()}
-                              </span>
-                            </div>
+                            {!f.readAt && (
+                              <span className="size-1.5 shrink-0 rounded-full bg-neutral-800" />
+                            )}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => void dismissFinding({ id: f._id })}
-                            className="shrink-0 rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-700"
-                            title="Dismiss (already reviewed)"
-                          >
-                            <X className="size-3.5" />
-                          </button>
+                          <p className="mt-0.5 text-xs leading-5 text-neutral-500">
+                            {f.detail}
+                          </p>
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <span
+                              className={cn(
+                                "rounded-full px-1.5 py-px text-[10px] font-medium uppercase tracking-wide",
+                                f.priority === "high"
+                                  ? "bg-rose-100 text-rose-700"
+                                  : f.priority === "medium"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-neutral-100 text-neutral-500",
+                              )}
+                            >
+                              {f.priority}
+                            </span>
+                            <span className="font-mono text-[10px] text-neutral-400">
+                              {f.repo}
+                            </span>
+                            {f.url && (
+                              <a
+                                href={f.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={() => {
+                                  if (!f.readAt) void markRead({ id: f._id });
+                                }}
+                                className="text-[10px] text-neutral-500 underline underline-offset-2 hover:text-neutral-900"
+                              >
+                                Open
+                              </a>
+                            )}
+                            <span className="text-[10px] text-neutral-300">
+                              {new Date(f.createdAt).toLocaleDateString()}
+                            </span>
+                          </div>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => void dismissFinding({ id: f._id })}
+                          className="shrink-0 rounded p-1 text-neutral-300 hover:bg-neutral-100 hover:text-neutral-700"
+                          title="Dismiss (already reviewed)"
+                        >
+                          <X className="size-3.5" />
+                        </button>
                       </div>
-                    ))
+                    </div>
+                  ))
                 )}
               </div>
-            </div>
-            <div>
-              <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
-                <GitPullRequest className="size-3.5" />
+            </TabsContent>
+
+            {/* PRs waiting on the user's review */}
+            <TabsContent value="reviews" className="mt-4">
+              <SectionLabel icon={<GitPullRequest className="size-3.5" />}>
                 Awaiting your review
-              </p>
+              </SectionLabel>
               <div className="mt-2 flex flex-col">
-                {data.awaitingReview.length === 0 ? (
+                {!data ? (
                   <p className="px-2 py-1 text-sm text-neutral-400">
-                    Nothing waiting — you're all caught up.
+                    Loading…
                   </p>
+                ) : data.awaitingReview.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-neutral-200 px-4 py-6 text-center">
+                    <CheckCircle2 className="mx-auto size-5 text-neutral-300" />
+                    <p className="mt-2 text-sm text-neutral-500">
+                      Nothing waiting — you're all caught up.
+                    </p>
+                  </div>
                 ) : (
                   data.awaitingReview.map((pr) => (
                     <Row
@@ -374,17 +462,25 @@ export function InboxDialog({
                   ))
                 )}
               </div>
-            </div>
-            <div>
-              <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
-                <Inbox className="size-3.5" />
+            </TabsContent>
+
+            {/* Issues assigned to the user */}
+            <TabsContent value="assigned" className="mt-4">
+              <SectionLabel icon={<Inbox className="size-3.5" />}>
                 Assigned to you
-              </p>
+              </SectionLabel>
               <div className="mt-2 flex flex-col">
-                {data.assigned.length === 0 ? (
+                {!data ? (
                   <p className="px-2 py-1 text-sm text-neutral-400">
-                    No open items assigned to you.
+                    Loading…
                   </p>
+                ) : data.assigned.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-neutral-200 px-4 py-6 text-center">
+                    <Inbox className="mx-auto size-5 text-neutral-300" />
+                    <p className="mt-2 text-sm text-neutral-500">
+                      No open items assigned to you.
+                    </p>
+                  </div>
                 ) : (
                   data.assigned.map((item) => (
                     <Row
@@ -398,9 +494,9 @@ export function InboxDialog({
                   ))
                 )}
               </div>
-            </div>
-          </div>
-        ) : null}
+            </TabsContent>
+          </Tabs>
+        )}
 
         {!isFree && !loading && !error && (
           <Button
@@ -420,7 +516,7 @@ export function InboxDialog({
               }
             }}
           >
-            <Loader2 className="size-3.5" />
+            <RefreshCw className="size-3.5" />
             Refresh
           </Button>
         )}
