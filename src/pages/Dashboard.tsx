@@ -883,6 +883,72 @@ function Workspace({
     saveDraft,
   ]);
 
+  // Cross-device continuity: the moment the tab is hidden or closed (switching
+  // to the phone, backgrounding the app, closing the tab), flush the workspace
+  // state + draft immediately instead of waiting for the debounce above —
+  // otherwise the last second of work can be missing on the other device. The
+  // draft is written to the offline buffer first (synchronous, survives the
+  // tab being killed), then the server is updated best-effort. The replay is
+  // deduped by recency, so it can never clobber a newer draft another device
+  // saved while this one was away.
+  useEffect(() => {
+    const flush = () => {
+      if (restoringRef.current) return;
+      if (!selectedRepo || !currentBranch) return;
+      const dirty =
+        openFile !== null && !isNewFile && editorContent !== openFile.content;
+      void saveWorkspaceState({
+        repo: selectedRepo.fullName,
+        branch: currentBranch,
+        path,
+        openPath: openFile?.path,
+        draft: openFile && (isNewFile || dirty) ? editorContent : undefined,
+        cursorLine: getCursorSync()?.line,
+        cursorColumn: getCursorSync()?.column,
+        openTabs: tabs.map((t) => t.path),
+        scrollTop: getScrollSync()?.top,
+        scrollLeft: getScrollSync()?.left,
+        viewMode,
+        focusMode,
+      }).catch(() => {
+        // Best-effort — the offline draft buffer still has the content.
+      });
+      if (openFile && (isNewFile || dirty)) {
+        const draftArgs = {
+          repo: selectedRepo.fullName,
+          branch: currentBranch,
+          path: openFile.path,
+          content: editorContent,
+          cursorLine: getCursorSync()?.line,
+          cursorColumn: getCursorSync()?.column,
+        };
+        queueDraft({
+          ...draftArgs,
+          cursorLine: draftArgs.cursorLine ?? null,
+          cursorColumn: draftArgs.cursorColumn ?? null,
+          updatedAt: Date.now(),
+        });
+        void saveDraft(draftArgs).catch(() => {
+          // The queue above already holds it — replay happens on reconnect.
+        });
+      }
+    };
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, [
+    selectedRepo,
+    currentBranch,
+    path,
+    openFile,
+    isNewFile,
+    editorContent,
+    tabs,
+    viewMode,
+    focusMode,
+    saveWorkspaceState,
+    saveDraft,
+  ]);
+
   // Live presence: keep the freshest workspace context in a ref (updated on
   // every render), heartbeat it every 15s so other devices see this tab, and
   // remove the session when the workspace unmounts.
