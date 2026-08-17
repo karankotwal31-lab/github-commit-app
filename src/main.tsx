@@ -13,13 +13,37 @@ import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import "@fontsource-variable/inter";
 import "./index.css";
 
-// Lazy load route components for better code splitting
-const Landing = lazy(() => import("./pages/Landing.tsx"));
-const AuthPage = lazy(() => import("./pages/Auth.tsx"));
-const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
-const NotFound = lazy(() => import("./pages/NotFound.tsx"));
-const Privacy = lazy(() => import("./pages/Privacy.tsx"));
-const Terms = lazy(() => import("./pages/Terms.tsx"));
+/**
+ * Retry a dynamic import a few times before giving up.
+ *
+ * Dev servers re-optimize dependencies and occasionally restart, which can
+ * briefly leave a chunk URL stale — navigating then fails with "Failed to
+ * fetch dynamically imported module". Retrying with a short backoff turns
+ * that transient failure into a seamless recovery instead of a dead screen.
+ */
+async function importWithRetry<T>(loader: () => Promise<T>): Promise<T> {
+  const MAX_ATTEMPTS = 3;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await loader();
+    } catch (err) {
+      lastError = err;
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+      }
+    }
+  }
+  throw lastError;
+}
+
+// Lazy load route components for better code splitting.
+const Landing = lazy(() => importWithRetry(() => import("./pages/Landing.tsx")));
+const AuthPage = lazy(() => importWithRetry(() => import("./pages/Auth.tsx")));
+const Dashboard = lazy(() => importWithRetry(() => import("./pages/Dashboard.tsx")));
+const NotFound = lazy(() => importWithRetry(() => import("./pages/NotFound.tsx")));
+const Privacy = lazy(() => importWithRetry(() => import("./pages/Privacy.tsx")));
+const Terms = lazy(() => importWithRetry(() => import("./pages/Terms.tsx")));
 
 // Simple loading fallback for route transitions
 function RouteLoading() {
@@ -78,6 +102,13 @@ class RootErrorBoundary extends React.Component<
                 {this.state.stack}
               </pre>
             )}
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="mt-4 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
+            >
+              Reload preview
+            </button>
           </div>
         </div>
       );
