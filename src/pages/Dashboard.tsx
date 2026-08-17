@@ -41,7 +41,13 @@ import { useCodeSearch } from "@/pages/dashboard/hooks/useCodeSearch";
 import { useCommitHistory } from "@/pages/dashboard/hooks/useCommitHistory";
 import { usePullRequests } from "@/pages/dashboard/hooks/usePullRequests";
 import { useNetworkReconciliation } from "@/hooks/useNetworkReconciliation";
-import { queueDraft } from "@/lib/offlineBuffer";
+import {
+  clearPendingCommit,
+  pendingCommitCount,
+  pendingCommits,
+  queueCommit,
+  queueDraft,
+} from "@/lib/offlineBuffer";
 
 // Per-tab device id for live presence. Module-scope so it is generated once
 // per page load (not on every render — keeps the component pure) and stays
@@ -1005,6 +1011,54 @@ function Workspace({
   // returns — via saveDraftIfNewer so a fresher draft from another device
   // always wins.
   const offlineToastShownRef = useRef(false);
+  // Offline commits: handleCommit queues the full staged change set when the
+  // network is down; this effect replays the queue oldest-first through the
+  // normal commit action the moment connectivity returns.
+  const commitFlushRef = useRef(false);
+  const [pendingCommitsVersion, setPendingCommitsVersion] = useState(0);
+  useEffect(() => {
+    if (!online || !selectedRepo) return;
+    const flush = async () => {
+      if (commitFlushRef.current) return;
+      commitFlushRef.current = true;
+      try {
+        const queued = pendingCommits();
+        let replayed = 0;
+        for (const c of queued) {
+          try {
+            await commitChanges({
+              owner: ownerOf(c.repo),
+              repo: repoNameOf(c.repo),
+              branch: c.branch,
+              message: c.message,
+              allowSecrets: c.allowSecrets ?? false,
+              files: c.files.map((f) => ({
+                path: f.path,
+                action: f.action,
+                content: f.content ?? "",
+              })),
+            });
+            clearPendingCommit(c.id);
+            replayed++;
+          } catch {
+            // One failed replay keeps the rest queued — retry next reconnect.
+            break;
+          }
+        }
+        if (replayed > 0) {
+          setPendingCommitsVersion((v) => v + 1);
+          toast.success(
+            `${replayed} offline commit${replayed > 1 ? "s" : ""} pushed to GitHub.`,
+          );
+        }
+      } finally {
+        commitFlushRef.current = false;
+      }
+    };
+    void flush();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [online, selectedRepo, pendingCommitsVersion]);
+
   const { online, pendingCount: offlinePending, syncing: offlineSyncing } =
     useNetworkReconciliation({
       enabled: selectedRepo !== null,
@@ -1677,7 +1731,33 @@ function Workspace({
           }).catch(() => {});
         }
       } catch (e) {
-        setStatus({ kind: "err", text: errorMessage(e) });
+        const message = errorMessage(e);
+        const offline = !navigator.onLine || isNetworkError(message);
+        if (offline) {
+          queueCommit({
+            repo: selectedRepo.fullName,
+            branch: currentBranch,
+            message,
+            allowSecrets,
+            files: staged.map((f) => ({
+              path: f.path,
+              action: f.action,
+              content: f.content,
+            })),
+          });
+          setPendingCommitsVersion((v) => v + 1);
+          setStaged([]);
+          setStagedDiffOpen(null);
+          setStatus({
+            kind: "ok",
+            text: "Saved offline — will commit when you're back online.",
+          });
+          toast.warning(
+            "Offline — commit queued on this device and will push when you reconnect.",
+          );
+        } else {
+          setStatus({ kind: "err", text: message });
+        }
       } finally {
         setCommitting(false);
       }
@@ -1744,7 +1824,33 @@ function Workspace({
         path: openFile.path,
       }).catch(() => {});
     } catch (e) {
-      setStatus({ kind: "err", text: errorMessage(e) });
+      const message = errorMessage(e);
+      const offline = !navigator.onLine || isNetworkError(message);
+      if (offline) {
+        queueCommit({
+          repo: selectedRepo.fullName,
+          branch: currentBranch,
+          message,
+          allowSecrets,
+          files: [
+            {
+              path: openFile.path,
+              action: isNewFile ? "create" : "update",
+              content: editorContent,
+            },
+          ],
+        });
+        setPendingCommitsVersion((v) => v + 1);
+        setStatus({
+          kind: "ok",
+          text: "Saved offline — will commit when you're back online.",
+        });
+        toast.warning(
+          "Offline — commit queued on this device and will push when you reconnect.",
+        );
+      } else {
+        setStatus({ kind: "err", text: message });
+      }
     } finally {
       setCommitting(false);
     }

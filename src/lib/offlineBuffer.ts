@@ -94,3 +94,77 @@ export function clearPendingDraft(repo: string, branch: string, path: string): v
 export function clearAllPendingDrafts(): void {
   writeAll([]);
 }
+
+// ---------------------------------------------------------------------------
+// Offline commit queue
+//
+// Same idea as the draft buffer, for commits: when a commit can't reach the
+// backend because the network dropped, the full staged change set is queued
+// here (message + complete file contents, so it's self-contained) and
+// replayed through the normal commit action the moment connectivity returns.
+// Commits replay in order, oldest first — one failed replay keeps the rest
+// queued rather than dropping or reordering work.
+// ---------------------------------------------------------------------------
+
+export interface PendingCommit {
+  id: string;
+  repo: string;
+  branch: string;
+  message: string;
+  allowSecrets?: boolean;
+  files: Array<{
+    path: string;
+    action: "update" | "create" | "delete";
+    content?: string;
+  }>;
+  queuedAt: number;
+}
+
+const COMMIT_STORAGE_KEY = "aria.offline.commits.v1";
+const MAX_COMMITS = 50;
+
+function readCommits(): PendingCommit[] {
+  try {
+    const raw = storage()?.getItem(COMMIT_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PendingCommit[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCommits(commits: PendingCommit[]) {
+  try {
+    storage()?.setItem(COMMIT_STORAGE_KEY, JSON.stringify(commits));
+  } catch {
+    // Storage full or blocked — keep in memory for the tab lifetime only.
+  }
+}
+
+/** Queue a commit that couldn't reach the backend. Returns a stable id. */
+export function queueCommit(commit: Omit<PendingCommit, "id" | "queuedAt">): string {
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const all = readCommits();
+  all.push({ ...commit, id, queuedAt: Date.now() });
+  writeCommits(all.slice(-MAX_COMMITS));
+  return id;
+}
+
+/** All queued commits, oldest first (replay order). */
+export function pendingCommits(): PendingCommit[] {
+  return readCommits().sort((a, b) => a.queuedAt - b.queuedAt);
+}
+
+export function pendingCommitCount(): number {
+  return readCommits().length;
+}
+
+/** Drop a queued commit after it has been replayed successfully. */
+export function clearPendingCommit(id: string): void {
+  writeCommits(readCommits().filter((c) => c.id !== id));
+}
+
+export function clearAllPendingCommits(): void {
+  writeCommits([]);
+}
