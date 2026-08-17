@@ -244,3 +244,158 @@ export const prsByUser = internalAction({
     );
   },
 });
+
+// ---------------------------------------------------------------------------
+// PR detail — the payload behind the extension's inline diff review. Same
+// ownership rules as the other CLI endpoints: the PR must belong to a repo
+// this user has connected, and everything is fetched with their own GitHub
+// token. Returns the PR metadata plus, for each changed file, the full old
+// and new contents (read at the base/head shas) so the client can render a
+// real two-pane diff without a local checkout.
+// ---------------------------------------------------------------------------
+
+const MAX_DIFF_FILES = 30;
+const MAX_FILE_CHARS = 2_000_000; // skip contents bigger than ~2MB
+
+/** One GitHub REST call with retry + a parsed JSON body (throws on !ok). */
+async function ghJson<T>(
+  url: string,
+  token: string,
+  init?: { method?: string; body?: string; headers?: Record<string, string> },
+): Promise<T> {
+  const res = await fetchWithRetry(url, {
+    method: init?.method ?? "GET",
+    body: init?.body,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": USER_AGENT,
+      ...init?.headers,
+    },
+  });
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    const message =
+      (data as { message?: string } | null)?.message ??
+      `GitHub request failed (${res.status} ${res.statusText})`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
+/** Read a file's text at a ref via the contents API (null when binary,
+ *  too large, or unreadable — the client renders such files without a
+ *  content diff). */
+async function readFileAt(
+  repoUrl: string,
+  token: string,
+  path: string,
+  ref: string,
+): Promise<string | null> {
+  const enc = path.split("/").map(encodeURIComponent).join("/");
+  try {
+    const res = await ghJson<{
+      content?: string;
+      encoding?: string;
+      truncated?: boolean;
+    }>(`${repoUrl}/contents/${enc}?ref=${encodeURIComponent(ref)}`, token);
+    if (!res.content || res.encoding !== "base64" || res.truncated) return null;
+    const text = Buffer.from(res.content, "base64").toString("utf8");
+    return text.length > MAX_FILE_CHARS ? null : text;
+  } catch {
+    return null; // 404 on rename corner cases, rate limits, etc. — never fail the review
+  }
+}
+
+/** One PR, fully loaded: metadata + per-file old/new contents. */
+export const prDetailByUser = internalAction({
+  args: { userId: v.id("users"), repo: v.string(), number: v.number() },
+  handler: async (ctx, args) => {
+    const connected = (await ctx.runQuery(internal.github.listConnectedRepos, {
+      userId: args.userId,
+    })) as string[];
+    if (!connected.includes(args.repo)) {
+      throw new Error("That repo isn't connected to your Aria workspace.");
+    }
+    const connection = (await ctx.runQuery(internal.github.connectionForUser, {
+      userId: args.userId,
+    })) as { token: string } | null;
+    if (connection === null) {
+      throw new Error("GitHub is not connected.");
+    }
+    const token = connection.token;
+    const [owner, name] = args.repo.split("/");
+    const repoUrl = `${GITHUB_API}/repos/${owner}/${name}`;
+
+    const pr = await ghJson<{
+      number: number;
+      title: string;
+      state: string;
+      draft: boolean;
+      html_url: string;
+      body: string | null;
+      base: { ref: string; sha: string };
+      head: { ref: string; sha: string };
+    }>(`${repoUrl}/pulls/${args.number}`, token);
+
+    const files = await ghJson<
+      Array<{
+        filename: string;
+        previous_filename?: string;
+        status: string;
+        additions: number;
+        deletions: number;
+        patch?: string;
+      }>
+    >(`${repoUrl}/pulls/${args.number}/files?per_page=100`, token);
+
+    const rows: Array<{
+      filename: string;
+      status: string;
+      additions: number;
+      deletions: number;
+      patch: string | null;
+      oldContent: string | null;
+      newContent: string | null;
+    }> = [];
+    for (const f of files.slice(0, MAX_DIFF_FILES)) {
+      const oldPath =
+        f.status === "renamed" && f.previous_filename
+          ? f.previous_filename
+          : f.filename;
+      const oldContent =
+        f.status === "added" ? null : await readFileAt(repoUrl, token, oldPath, pr.base.sha);
+      const newContent =
+        f.status === "removed" ? null : await readFileAt(repoUrl, token, f.filename, pr.head.sha);
+      rows.push({
+        filename: f.filename,
+        status: f.status,
+        additions: f.additions,
+        deletions: f.deletions,
+        patch: f.patch ?? null,
+        oldContent,
+        newContent,
+      });
+    }
+
+    return {
+      repo: args.repo,
+      number: pr.number,
+      title: pr.title,
+      state: pr.state,
+      draft: pr.draft,
+      htmlUrl: pr.html_url,
+      body: pr.body ?? null,
+      base: pr.base,
+      head: pr.head,
+      files: rows,
+    };
+  },
+});

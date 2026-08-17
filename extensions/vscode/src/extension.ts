@@ -3,10 +3,12 @@ import {
   AriaApi,
   AriaApiError,
   DEFAULT_SITE,
+  PrDetail,
   WhoamiData,
 } from "./api";
 import {
   InboxProvider,
+  PrFilesProvider,
   PrsProvider,
   ReposProvider,
   TokenProvider,
@@ -41,6 +43,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const reposProvider = new ReposProvider(api, tokenProvider);
   const prsProvider = new PrsProvider(api, tokenProvider);
+  const prFilesProvider = new PrFilesProvider(api, tokenProvider);
   const inboxProvider = new InboxProvider(api, tokenProvider);
 
   context.subscriptions.push(
@@ -50,10 +53,94 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.createTreeView("ariaPrs", {
       treeDataProvider: prsProvider,
     }),
+    vscode.window.createTreeView("ariaPrFiles", {
+      treeDataProvider: prFilesProvider,
+    }),
     vscode.window.createTreeView("ariaInbox", {
       treeDataProvider: inboxProvider,
     }),
   );
+
+  // --- Inline diff review ------------------------------------------------
+  // Virtual documents under the `aria-diff:` scheme. The cache is populated
+  // when a PR is loaded; VS Code's `vscode.diff` renders a real two-pane
+  // editor diff from these without a local checkout.
+  const diffCache = new Map<string, string>();
+  const diffDocProvider: vscode.TextDocumentContentProvider = {
+    provideTextDocumentContent(uri: vscode.Uri): string {
+      return diffCache.get(uri.toString()) ?? "";
+    },
+  };
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider("aria-diff", diffDocProvider),
+  );
+
+  function diffUri(
+    side: "old" | "new",
+    detail: PrDetail,
+    filename: string,
+  ): vscode.Uri {
+    const path = `/${side}/${detail.repo
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/")}/${detail.number}/${filename
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/")}`;
+    return vscode.Uri.from({ scheme: "aria-diff", path });
+  }
+
+  async function reviewPr(repo: string, number: number): Promise<void> {
+    const token = await tokenProvider.getToken();
+    if (!token) {
+      void vscode.window.showInformationMessage(
+        "Aria is not connected. Run “Aria: Sign in” first.",
+      );
+      return;
+    }
+    try {
+      const detail = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Aria: loading PR #${number}…`,
+        },
+        () => api.prDetail(repo, number, token),
+      );
+      diffCache.clear();
+      for (const f of detail.files) {
+        if (f.oldContent !== null) {
+          diffCache.set(diffUri("old", detail, f.filename).toString(), f.oldContent);
+        }
+        if (f.newContent !== null) {
+          diffCache.set(diffUri("new", detail, f.filename).toString(), f.newContent);
+        }
+      }
+      prFilesProvider.setDetail(detail);
+      const totals = detail.files.reduce(
+        (acc, f) => ({
+          additions: acc.additions + f.additions,
+          deletions: acc.deletions + f.deletions,
+        }),
+        { additions: 0, deletions: 0 },
+      );
+      void vscode.window.showInformationMessage(
+        `PR #${detail.number} — ${detail.title} (+${totals.additions} −${totals.deletions}, ${detail.files.length} file${detail.files.length === 1 ? "" : "s"})`,
+      );
+    } catch (err) {
+      void vscode.window.showErrorMessage(messageOf(err));
+    }
+  }
+
+  async function reviewFile(filename: string): Promise<void> {
+    const detail = prFilesProvider.getDetail();
+    if (!detail) return;
+    const file = detail.files.find((f) => f.filename === filename);
+    if (!file) return;
+    const oldUri = diffUri("old", detail, filename);
+    const newUri = diffUri("new", detail, filename);
+    const title = `${filename} — PR #${detail.number}`;
+    await vscode.commands.executeCommand("vscode.diff", oldUri, newUri, title);
+  }
 
   const refreshAll = async (): Promise<void> => {
     reposProvider.refresh();
@@ -144,6 +231,24 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("aria.openApp", () =>
       vscode.env.openExternal(vscode.Uri.parse(api.site)),
     ),
+
+    vscode.commands.registerCommand("aria.reviewPr", (repo?: string, number?: number) => {
+      if (typeof repo === "string" && typeof number === "number") {
+        void reviewPr(repo, number);
+      }
+    }),
+
+    vscode.commands.registerCommand("aria.reviewFile", (filename?: string) => {
+      if (typeof filename === "string") {
+        void reviewFile(filename);
+      }
+    }),
+
+    vscode.commands.registerCommand("aria.openPrOnGithub", (row?: { url?: string }) => {
+      if (row?.url) {
+        void vscode.env.openExternal(vscode.Uri.parse(row.url));
+      }
+    }),
 
     vscode.commands.registerCommand("aria.openUrl", (url?: string) => {
       if (url) {

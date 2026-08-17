@@ -39,6 +39,31 @@ export interface PrRow {
   updatedAt: string | null;
 }
 
+export interface PrFileRow {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch: string | null;
+  /** Full file text at the base sha (null for added/binary files). */
+  oldContent: string | null;
+  /** Full file text at the head sha (null for removed/binary files). */
+  newContent: string | null;
+}
+
+export interface PrDetail {
+  repo: string;
+  number: number;
+  title: string;
+  state: string;
+  draft: boolean;
+  htmlUrl: string;
+  body: string | null;
+  base: { ref: string; sha: string };
+  head: { ref: string; sha: string };
+  files: PrFileRow[];
+}
+
 export class AriaApiError extends Error {
   readonly status: number | undefined;
   constructor(message: string, status?: number) {
@@ -106,6 +131,15 @@ export class AriaApi {
 
   prs(token: string): Promise<PrRow[]> {
     return this.get<PrRow[]>("/api/cli/prs", token);
+  }
+
+  /** One PR, fully loaded with per-file old/new contents for diff review. */
+  prDetail(repo: string, number: number, token: string): Promise<PrDetail> {
+    const encoded = repo
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/");
+    return this.get<PrDetail>(`/api/cli/prs/${encoded}/${number}`, token);
   }
 }
 

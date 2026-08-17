@@ -42,9 +42,10 @@ screen; revoked tokens are rejected immediately, including here.
 | Sign in | Command Palette → **Aria: Sign in** (or click the "Sign in to Aria" row in any Aria view) |
 | See your identity | **Aria: Who am I** — also shown in the status bar as `Aria: <login>` |
 | Repositories | **Aria** activity-bar icon → *Repositories* view |
-| Pull requests | *Pull Requests* view — click any PR to open it on GitHub |
+| Pull requests | *Pull Requests* view — click a PR to load it into the *Review* view |
+| Inline diff review | *Review* view lists the PR's changed files — click a file for a real two-pane editor diff (`+a −d` counts, status icons) |
 | Inbox | *Inbox* view — unread items are marked with `●`; click to open the source |
-| Refresh | **Aria: Refresh** (re-fetches all three views) |
+| Refresh | **Aria: Refresh** (re-fetches all four views) |
 | Sign out | **Aria: Sign out** (removes the token from this machine only) |
 | Web app | **Aria: Open web app** |
 

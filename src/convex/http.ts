@@ -209,6 +209,39 @@ http.route({
   }),
 });
 
+/** One PR, fully loaded for inline diff review (see internal.cli.prDetailByUser). */
+http.route({
+  path: "/api/cli/prs/{owner}/{repo}/{number}",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearerOf(request);
+    const userId = token
+      ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
+      : null;
+    if (!userId) return unauthorized();
+    const params = (request as unknown as { params: Record<string, string> })
+      .params;
+    const owner = params.owner ?? "";
+    const repo = params.repo ?? "";
+    const number = Number(params.number);
+    if (!owner || !repo || !Number.isInteger(number) || number < 1) {
+      return Response.json({ error: "Invalid PR reference." }, { status: 400 });
+    }
+    try {
+      const data = await ctx.runAction(internal.cli.prDetailByUser, {
+        userId,
+        repo: `${owner}/${repo}`,
+        number,
+      });
+      return Response.json(data);
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : "Couldn't load this pull request.";
+      return Response.json({ error: message }, { status: 404 });
+    }
+  }),
+});
+
 // Serve the built frontend (dist/) from the deployment root with SPA
 // fallback to index.html. Exact routes registered above always win over
 // this static catch-all.

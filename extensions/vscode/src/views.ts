@@ -1,5 +1,13 @@
 import * as vscode from "vscode";
-import { AriaApi, FindingRow, kindLabel, PrRow, RepoRow } from "./api";
+import {
+  AriaApi,
+  FindingRow,
+  kindLabel,
+  PrDetail,
+  PrFileRow,
+  PrRow,
+  RepoRow,
+} from "./api";
 
 /** Lets providers read the stored token without knowing where it lives. */
 export interface TokenProvider {
@@ -13,6 +21,7 @@ export interface TreeRow {
   url?: string;
   icon?: string;
   command?: string;
+  commandArgs?: unknown[];
 }
 
 function signInRow(): TreeRow {
@@ -37,14 +46,18 @@ function toTreeItem(row: TreeRow): vscode.TreeItem {
   item.description = row.description;
   item.tooltip = row.tooltip ?? row.description;
   if (row.icon) item.iconPath = new vscode.ThemeIcon(row.icon);
-  if (row.url) {
+  if (row.command) {
+    item.command = {
+      command: row.command,
+      title: "Run",
+      arguments: row.commandArgs ?? [],
+    };
+  } else if (row.url) {
     item.command = {
       command: "aria.openUrl",
       title: "Open",
       arguments: [row.url],
     };
-  } else if (row.command) {
-    item.command = { command: row.command, title: "Run" };
   }
   return item;
 }
@@ -111,11 +124,85 @@ export class PrsProvider implements vscode.TreeDataProvider<TreeRow> {
         description: pr.updatedAt ? pr.updatedAt.slice(0, 10) : "",
         tooltip: `${pr.repo} — updated ${pr.updatedAt ?? "unknown"}`,
         url: pr.htmlUrl,
+        command: "aria.reviewPr",
+        commandArgs: [pr.repo, pr.number],
         icon: pr.draft ? "git-pull-request-draft" : "git-pull-request",
       }));
     } catch (err) {
       return [errorRow(err)];
     }
+  }
+
+  getTreeItem(row: TreeRow): vscode.TreeItem {
+    return toTreeItem(row);
+  }
+}
+
+/** Icon for a file's change status in the review list. */
+function statusIcon(status: string): string {
+  switch (status) {
+    case "added":
+      return "diff-added";
+    case "removed":
+      return "diff-removed";
+    case "renamed":
+      return "file-symlink-file";
+    default:
+      return "diff-modified";
+  }
+}
+
+/**
+ * The changed files of the PR currently being reviewed. Clicking a file
+ * opens a real two-pane inline diff in the editor (aria.reviewFile).
+ */
+export class PrFilesProvider implements vscode.TreeDataProvider<TreeRow> {
+  private readonly _onDidChange = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this._onDidChange.event;
+
+  private detail: PrDetail | null = null;
+
+  constructor(
+    private readonly api: AriaApi,
+    private readonly tokenProvider: TokenProvider,
+  ) {}
+
+  refresh(): void {
+    this._onDidChange.fire();
+  }
+
+  /** The PR currently loaded for review (or null). */
+  setDetail(detail: PrDetail | null): void {
+    this.detail = detail;
+    this._onDidChange.fire();
+  }
+
+  getDetail(): PrDetail | null {
+    return this.detail;
+  }
+
+  async getChildren(): Promise<TreeRow[]> {
+    if (!this.detail) {
+      return [
+        {
+          label: "Open a pull request to review it here",
+          description: "Click a PR in the Pull Requests view",
+          icon: "git-pull-request",
+        },
+      ];
+    }
+    if (this.detail.files.length === 0) {
+      return [{ label: "No file changes in this PR", icon: "check" }];
+    }
+    return this.detail.files.map((f: PrFileRow) => ({
+      label: f.filename,
+      description: `${f.status}  +${f.additions} −${f.deletions}`,
+      tooltip: `${f.status} — ${f.additions} additions, ${f.deletions} deletions`,
+      url: `${this.detail?.htmlUrl}/files`,
+      command: "aria.reviewFile",
+      commandArgs: [f.filename],
+      icon: statusIcon(f.status),
+    }));
   }
 
   getTreeItem(row: TreeRow): vscode.TreeItem {

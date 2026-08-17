@@ -52,7 +52,9 @@ Package manager is **Bun**.
   See `cli/README.md`.
 - **VS Code extension** — `extensions/vscode/` shows your repos, open PRs, and
   inbox in the sidebar, authenticated with the same personal access token
-  (stored in VS Code's OS keychain). See `extensions/vscode/README.md`.
+  (stored in VS Code's OS keychain). Click any PR to review its files with
+  inline two-pane diffs right in the editor — no local checkout needed.
+  See `extensions/vscode/README.md`.
 
 ## Setup
 

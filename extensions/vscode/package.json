@@ -21,6 +21,7 @@
   "activationEvents": [
     "onView:ariaRepos",
     "onView:ariaPrs",
+    "onView:ariaPrFiles",
     "onView:ariaInbox",
     "onCommand:aria.login",
     "onCommand:aria.whoami",
@@ -54,8 +55,33 @@
         "command": "aria.openApp",
         "title": "Aria: Open web app",
         "category": "Aria"
+      },
+      {
+        "command": "aria.reviewPr",
+        "title": "Aria: Review pull request in editor",
+        "category": "Aria"
+      },
+      {
+        "command": "aria.reviewFile",
+        "title": "Aria: Open file diff",
+        "category": "Aria"
+      },
+      {
+        "command": "aria.openPrOnGithub",
+        "title": "Aria: Open on GitHub",
+        "category": "Aria",
+        "icon": "$(link-external)"
       }
     ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "aria.openPrOnGithub",
+          "when": "view == ariaPrs || view == ariaPrFiles",
+          "group": "inline@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "Aria",
       "properties": {
@@ -84,6 +110,10 @@
         {
           "id": "ariaPrs",
           "name": "Pull Requests"
+        },
+        {
+          "id": "ariaPrFiles",
+          "name": "Review"
         },
         {
           "id": "ariaInbox",
