@@ -771,6 +771,51 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [whyOpen, setWhyOpen] = useState(false);
   const [crossRepoOpen, setCrossRepoOpen] = useState(false);
 
+  // Center-panel occupancy. Every panel below is a Radix modal (portaled to
+  // document.body), so when one is open the center placeholder would sit
+  // behind its dimmed overlay and read as a broken overlap. Rule: a file in
+  // the editor, or any open panel/modal, owns the center — the empty-state
+  // message renders only when neither is true.
+  const centerPanelOpen =
+    runtimeOpen ||
+    shareOpen ||
+    localOpen ||
+    dockOpen ||
+    inboxOpen ||
+    reviewOpen ||
+    adminOpen ||
+    securityOpen ||
+    platformOpen ||
+    stressOpen ||
+    issueOpen ||
+    whyOpen ||
+    crossRepoOpen ||
+    billingOpen ||
+    aiOpen ||
+    vaultOpen ||
+    prsOpen ||
+    historyOpen ||
+    codeSearchOpen ||
+    searchOpen ||
+    issuesOpen ||
+    checksOpen ||
+    deleteOpen ||
+    stagedDiffOpen ||
+    dialog !== null ||
+    revertTarget !== null ||
+    mergeTarget !== null ||
+    prReview !== null;
+
+  // Publish center-panel occupancy to the workspace root as a data attribute
+  // so CSS can suppress the empty-state placeholder while any modal is open.
+  // (The placeholder JSX lives in the editor pane below; the attribute keeps
+  // the rule in one place and avoids touching that region of the tree.)
+  useEffect(() => {
+    document
+      .querySelector<HTMLElement>(".aria-workspace")
+      ?.setAttribute("data-center-panel", centerPanelOpen ? "true" : "false");
+  }, [centerPanelOpen]);
+
   // Mobile editor: visual-viewport height (so the keyboard never clips the
   // canvas), focus mode (collapse everything but the code while typing) and
   // the coding accessory bar above the keyboard. The bar is fixed-positioned

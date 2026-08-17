@@ -329,6 +329,17 @@
   padding-bottom: var(--kb-inset, 0px);
 }
 
+/* Center-panel guard: while any panel/modal is open (WorkspaceView publishes
+   data-center-panel on the workspace root), the empty-state placeholder in
+   the editor pane must not render behind the dialog overlay — previously
+   both showed at once and read as a broken overlap. Only one thing owns the
+   center: a file, or the open panel. */
+.aria-workspace[data-center-panel="true"]
+  main
+  > .relative.flex.h-full.flex-col.items-center.justify-center.overflow-hidden.px-6.text-center {
+  visibility: hidden;
+}
+
 /* Live collaboration — remote peer cursors in the editor. */
 .aria-peer-tag {
   position: absolute;
