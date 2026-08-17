@@ -43,7 +43,7 @@ interface WorkspaceHeaderProps {
   selectedRepo: WorkspaceViewProps["selectedRepo"];
   currentBranch: WorkspaceViewProps["currentBranch"];
   crossRepoAllowed: boolean;
-  setSimpleMode: (v: boolean) => void;
+  setSimpleMode: (v: boolean | ((prev: boolean) => boolean)) => void;
   setFocusMode: (v: boolean | ((prev: boolean) => boolean)) => void;
   onOpenLocal: () => void;
   onOpenDock: () => void;
