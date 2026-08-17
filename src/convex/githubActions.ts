@@ -294,17 +294,51 @@ async function ensureRepoAccess(
   });
 }
 
+/** Parse GitHub's `Link` header for the next page URL, if any. */
+function nextPageUrl(linkHeader: string | null): string | null {
+  if (!linkHeader) return null;
+  const next = /<([^>]+)>;\s*rel="next"/.exec(linkHeader);
+  return next?.[1] ?? null;
+}
+
+/**
+ * Fetch the user's repositories across pages (up to a cap). A single
+ * per_page=100 page silently truncates accounts with more than 100 repos, so
+ * the list follows GitHub's Link header for up to 5 pages (500 repos). Later
+ * pages are best-effort: a transient failure mid-way returns the repos
+ * already fetched instead of losing the whole list — partial data beats a
+ * hard failure for large accounts.
+ */
 export const listRepositories = action({
   args: {},
   handler: async (ctx) => {
     const token = await getToken(ctx);
     // owner + collaborator + organization_member covers personal repos and
     // every repo the user can access through organizations they belong to.
-    const data = await githubFetch<GitHubRepo[]>(
-      `${GITHUB_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member`,
-      token,
-    );
-    return data.map((repo) => ({
+    const MAX_PAGES = 5;
+    const all = new Map<string, GitHubRepo>();
+    let url: string | null =
+      `${GITHUB_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member`;
+    for (let page = 0; page < MAX_PAGES && url !== null; page++) {
+      let res: Response;
+      try {
+        res = await fetchWithRetry(url, { headers: githubHeaders(token) });
+      } catch {
+        break; // network hiccup — keep what we already have
+      }
+      if (!res.ok) break; // 4xx/5xx after retries — stop paginating
+      let items: GitHubRepo[] = [];
+      try {
+        const text = await res.text();
+        const data: unknown = text ? JSON.parse(text) : [];
+        if (Array.isArray(data)) items = data as GitHubRepo[];
+      } catch {
+        break;
+      }
+      for (const repo of items) all.set(repo.full_name, repo);
+      url = nextPageUrl(res.headers.get("link"));
+    }
+    return [...all.values()].map((repo) => ({
       fullName: repo.full_name,
       name: repo.name,
       private: !!repo.private,

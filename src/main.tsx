@@ -1,4 +1,5 @@
 import '@vly-ai/integrations';
+import { InstrumentationProvider } from "./instrumentation";
 import { Toaster } from "@/components/ui/sonner";
 import { RequireAuth } from "@/components/RequireAuth";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
@@ -116,18 +117,59 @@ function RouteSyncer() {
  * Registers the service worker. Always registered so web-push works; the
  * `?cache=1` flag (production builds only) tells the worker to also cache the
  * app shell so the app opens instantly on repeat visits.
+ *
+ * Self-repair: a transient registration failure (sandboxed iframe, storage
+ * hiccup) is retried with backoff up to 3 times, and every time the tab
+ * becomes visible again we nudge a waiting/outdated worker to update — and
+ * re-register if the browser lost the registration entirely.
  */
 function ServiceWorkerRegistrar() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
     const flag = import.meta.env.PROD ? "?cache=1" : "";
-    const onLoad = () => {
+    let cancelled = false;
+    let attempts = 0;
+    let registered: ServiceWorkerRegistration | null = null;
+
+    const register = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        registered = await navigator.serviceWorker.register(`/sw.js${flag}`);
+      } catch (err) {
+        if (!cancelled && attempts < 3) {
+          setTimeout(register, 1000 * attempts * attempts);
+        } else {
+          console.warn("[PWA] Service worker registration failed:", err);
+        }
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
       navigator.serviceWorker
-        .register(`/sw.js${flag}`)
-        .catch((err) => console.warn("[PWA] Service worker registration failed:", err));
+        .getRegistration()
+        .then((reg) => {
+          if (reg) {
+            if (reg.waiting || reg.installing) void reg.update().catch(() => {});
+          } else if (!cancelled && registered === null) {
+            attempts = 0;
+            void register();
+          }
+        })
+        .catch(() => {});
+    };
+
+    const onLoad = () => {
+      void register();
     };
     window.addEventListener("load", onLoad);
-    return () => window.removeEventListener("load", onLoad);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("load", onLoad);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
   return null;
 }
@@ -154,37 +196,39 @@ function OAuthPopupBridge() {
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <RootErrorBoundary>
-      <ToolbarErrorBoundary>
-        <VlyToolbar />
-      </ToolbarErrorBoundary>
-      <ConvexAuthProvider client={convex}>
-        <BrowserRouter>
-          <ServiceWorkerRegistrar />
-          <RouteSyncer />
-          <OAuthPopupBridge />
-          <Suspense fallback={<RouteLoading />}>
-            <Routes>
-              <Route path="/" element={<Landing />} />
-              <Route
-                path="/auth"
-                element={<AuthPage redirectAfterAuth="/dashboard" />}
-              />
-              <Route
-                path="/dashboard"
-                element={
-                  <RequireAuth>
-                    <Dashboard />
-                  </RequireAuth>
-                }
-              />
-              <Route path="/privacy" element={<Privacy />} />
-              <Route path="/terms" element={<Terms />} />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Suspense>
-        </BrowserRouter>
-        <Toaster />
-      </ConvexAuthProvider>
+      <InstrumentationProvider>
+        <ToolbarErrorBoundary>
+          <VlyToolbar />
+        </ToolbarErrorBoundary>
+        <ConvexAuthProvider client={convex}>
+          <BrowserRouter>
+            <ServiceWorkerRegistrar />
+            <RouteSyncer />
+            <OAuthPopupBridge />
+            <Suspense fallback={<RouteLoading />}>
+              <Routes>
+                <Route path="/" element={<Landing />} />
+                <Route
+                  path="/auth"
+                  element={<AuthPage redirectAfterAuth="/dashboard" />}
+                />
+                <Route
+                  path="/dashboard"
+                  element={
+                    <RequireAuth>
+                      <Dashboard />
+                    </RequireAuth>
+                  }
+                />
+                <Route path="/privacy" element={<Privacy />} />
+                <Route path="/terms" element={<Terms />} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
+          </BrowserRouter>
+          <Toaster />
+        </ConvexAuthProvider>
+      </InstrumentationProvider>
     </RootErrorBoundary>
   </StrictMode>,
 );

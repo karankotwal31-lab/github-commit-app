@@ -1,5 +1,11 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+} from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v, type GenericId } from "convex/values";
 import { type PlanId } from "../lib/plans";
@@ -237,6 +243,26 @@ export const saveWorkspaceState = mutation({
 
 const DRAFT_MAX_CHARS = 500_000;
 const DRAFT_SNIPPET_CHARS = 240;
+/** Per-user draft cap — the vault lists the newest 200, so keeping a little
+ *  headroom above that bounds the table for heavy editors. Oldest drop first. */
+const MAX_DRAFTS_PER_USER = 250;
+
+/** Prune a user's drafts to the cap (oldest first). Cheap: runs only after a
+ *  brand-new draft is inserted, and deletes at most a handful of rows. */
+async function pruneDrafts(
+  ctx: MutationCtx,
+  userId: GenericId<"users">,
+): Promise<void> {
+  const rows = await ctx.db
+    .query("drafts")
+    .withIndex("by_userId", (q) => q.eq("userId", userId))
+    .collect();
+  if (rows.length <= MAX_DRAFTS_PER_USER) return;
+  const oldest = [...rows].sort((a, b) => a.updatedAt - b.updatedAt);
+  for (const row of oldest.slice(0, rows.length - MAX_DRAFTS_PER_USER)) {
+    await ctx.db.delete(row._id);
+  }
+}
 
 /** Save an unsaved draft for a (repo, branch, path). Upserts by key. */
 export const saveDraft = mutation({
@@ -274,6 +300,7 @@ export const saveDraft = mutation({
       await ctx.db.replace(existing._id, doc);
     } else {
       await ctx.db.insert("drafts", doc);
+      await pruneDrafts(ctx, userId);
     }
   },
 });
@@ -331,6 +358,7 @@ export const saveDraftIfNewer = mutation({
       await ctx.db.replace(existing._id, doc);
     } else {
       await ctx.db.insert("drafts", doc);
+      await pruneDrafts(ctx, userId);
     }
     return { applied: true };
   },

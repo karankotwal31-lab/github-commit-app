@@ -107,6 +107,35 @@ bun run verify   # convex codegen + push → typecheck → full test suite
 
 ---
 
+## Full-audit findings (commercial-readiness pass)
+
+From the deep diagnostic (all fixed + verified, `bun run verify` green):
+
+1. **`InstrumentationProvider` was never mounted** — the runtime error dialog,
+   window error capture, and Vly error reporting were dead code since the
+   template shipped. Fixed in `main.tsx` (wraps the app inside the root
+   boundary). Lesson: an exported provider is not an active one — grep the
+   render tree.
+2. **`listRepositories` fetched one page of 100** — accounts with >100 repos
+   were silently truncated. Now follows GitHub's `Link` header (up to 500,
+   best-effort per page; partial results beat total failure).
+3. **Drafts had no per-user cap** — heavy editors could accumulate thousands of
+   rows. Now pruned to 250/user on insert (oldest dropped).
+4. **No self-repair layer** — added: boot-time corrupt-`aria.*`-key sweep,
+   "Repair & reload" in the runtime-error dialog (clears corrupt local state +
+   unregisters stale service worker), and SW self-heal (retry with backoff ×3,
+   update/re-register on visibility return).
+5. **Permissions audit (all ~210 exports)**: every public query/mutation/action
+   verifies the caller; internal fns are internal-only; webhook/HTTP routes
+   verify signatures or bearer tokens; no unauthenticated data exposure found.
+6. **Rate limits**: OTP sends, AI calls, GitHub actions, login lockout — all
+   present and server-enforced. AI in-flight locks self-expire after 60s.
+7. **Hardcoded relay key** (`fb_email_…` in `auth/emailOtp.ts`): works, but it's
+   a committed secret. Move it to a `FREEBUFF_EMAIL_API_KEY` project key and
+   remove the literal before going to market.
+
+---
+
 ## What is automatic vs. what still needs a human
 
 - **Automatic:** codegen, typecheck, tests, the secret-scan gate, Stripe webhook

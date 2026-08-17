@@ -1,5 +1,5 @@
 import { Dialog } from "@radix-ui/react-dialog";
-import { AlertTriangle, ChevronDown, ExternalLink } from "lucide-react";
+import { AlertTriangle, ChevronDown, ExternalLink, RefreshCw } from "lucide-react";
 import React, { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,52 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+
+/**
+ * Boot-time + on-demand self-repair for local state.
+ *
+ * The app persists small JSON blobs in localStorage under `aria.*` keys
+ * (offline draft buffer, PR draft, plugin installs). If any of them is ever
+ * written partially (tab killed mid-write, storage driver glitch) the app
+ * would re-read corrupt JSON forever. The repair sweep parses every `aria.*`
+ * key and drops only the ones that fail to parse — the rest is untouched.
+ */
+function repairLocalState(): string[] {
+  const removed: string[] = [];
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (!key.startsWith("aria.")) continue;
+      const raw = localStorage.getItem(key);
+      if (raw === null) continue;
+      try {
+        JSON.parse(raw);
+      } catch {
+        localStorage.removeItem(key);
+        removed.push(key);
+      }
+    }
+  } catch {
+    // Storage blocked entirely — nothing to repair, nothing lost.
+  }
+  return removed;
+}
+
+/**
+ * User-facing self-repair: drop corrupt local state, unregister any stale
+ * service worker, and reload. Repos and data live on GitHub/Convex, so this
+ * is always safe — worst case the current unsaved editor buffer is lost,
+ * and even that is usually recoverable from the draft vault.
+ */
+async function repairAndReload(): Promise<void> {
+  repairLocalState();
+  try {
+    const regs = await navigator.serviceWorker?.getRegistrations();
+    await Promise.all((regs ?? []).map((r) => r.unregister()));
+  } catch {
+    // Ignore — unregister is best-effort.
+  }
+  window.location.reload();
+}
 
 type GenericError = {
   error: string;
@@ -161,6 +207,14 @@ function ErrorDialog({
           <span className="text-xs text-zinc-500">
             Your error details are also available in chat.
           </span>
+          <Button
+            variant="outline"
+            className="border-zinc-700 text-zinc-200 hover:bg-zinc-800"
+            onClick={() => void repairAndReload()}
+            title="Clears corrupted local data and reloads — your repositories are safe on GitHub."
+          >
+            <RefreshCw className="h-4 w-4" /> Repair & reload
+          </Button>
           <a
             href={`https://freebuff.com/project/${import.meta.env.VITE_VLY_APP_ID}`}
             target="_blank"
@@ -245,6 +299,10 @@ export function InstrumentationProvider({
   const [error, setError] = useState<GenericError | null>(null);
 
   useEffect(() => {
+    // Boot-time self-repair: sweep corrupt local state before the app reads
+    // any of it (draft buffers, plugin installs, PR draft).
+    repairLocalState();
+
     const handleError = async (event: ErrorEvent) => {
       try {
         event.preventDefault();
