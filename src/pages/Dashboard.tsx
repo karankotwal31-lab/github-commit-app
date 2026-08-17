@@ -34,7 +34,12 @@ import {
 import { useNavigate, useSearchParams } from "react-router";
 import { ConnectScreen } from "@/components/workspace-shared";
 import { WorkspaceView } from "@/components/WorkspaceView";
-import { type DeploymentInfo } from "@/components/PreviewPanel";
+import { useDeployment } from "@/pages/dashboard/hooks/useDeployment";
+import { useCiChecks } from "@/pages/dashboard/hooks/useCiChecks";
+import { useIssues } from "@/pages/dashboard/hooks/useIssues";
+import { useCodeSearch } from "@/pages/dashboard/hooks/useCodeSearch";
+import { useCommitHistory } from "@/pages/dashboard/hooks/useCommitHistory";
+import { usePullRequests } from "@/pages/dashboard/hooks/usePullRequests";
 import { useNetworkReconciliation } from "@/hooks/useNetworkReconciliation";
 import { queueDraft } from "@/lib/offlineBuffer";
 
@@ -75,11 +80,7 @@ function Workspace({
   const createPullRequest = useAction(api.githubActions.createPullRequest);
   const commitChanges = useAction(api.githubActions.commitChanges);
   const listTreeFiles = useAction(api.githubActions.listTreeFiles);
-  const getCommitHistory = useAction(api.githubActions.getCommitHistory);
-  const revertCommit = useAction(api.githubActions.revertCommit);
   const aiSuggest = useAction(api.aiActions.aiSuggest);
-  const listPullRequests = useAction(api.githubActions.listPullRequests);
-  const mergePullRequest = useAction(api.githubActions.mergePullRequest);
   const disconnect = useMutation(api.github.disconnect);
   const saveWorkspaceState = useMutation(api.github.saveWorkspaceState);
   const workspaceState = useQuery(api.github.getWorkspaceState);
@@ -97,15 +98,6 @@ function Workspace({
   const joinSharedWorkspace = useMutation(api.github.joinSharedWorkspace);
   const mySharedWorkspaces = useQuery(api.github.mySharedWorkspaces);
 
-  // CI status: check runs + legacy status contexts on the branch tip.
-  const getBranchChecks = useAction(api.githubActions.getBranchChecks);
-  // PR review: files changed by a pull request, with unified diffs.
-  const getPullRequestFiles = useAction(api.githubActions.getPullRequestFiles);
-  // Full-text code search inside the repo (GitHub code search API).
-  const searchCode = useAction(api.githubActions.searchCode);
-  // Open issues for the repo.
-  const listIssues = useAction(api.githubActions.listIssues);
-
   // Draft vault: autosave unsaved edits per (repo, branch, path), drop them
   // once committed, and list everything for the vault dialog.
   const saveDraft = useMutation(api.github.saveDraft);
@@ -115,15 +107,6 @@ function Workspace({
   const deleteDraft = useMutation(api.github.deleteDraft);
   const getDraftContent = useMutation(api.github.getDraftContent);
   const drafts = useQuery(api.github.listDrafts);
-
-  // Live deployment preview: the latest GitHub deployment for the branch
-  // (Vercel / Netlify / Actions publish these), powering the Preview tab and
-  // the deployment chip. `loadDeployment` lives below next to currentBranch;
-  // this polling effect refreshes the chip every 30s while a repo is open.
-  const getDeploymentStatus = useAction(api.deployments.getDeploymentStatus);
-  const [deployment, setDeployment] = useState<DeploymentInfo | null>(null);
-  const [deploymentLoading, setDeploymentLoading] = useState(false);
-  const [deploymentError, setDeploymentError] = useState<string | null>(null);
 
   // Live presence: one row per browser tab. This tab heartbeats so other
   // devices see where it is, and we subscribe to everyone else's sessions.
@@ -386,26 +369,6 @@ function Workspace({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Commit history + revert: the branch's recent commits, and the commit
-  // currently queued for reverting.
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [history, setHistory] = useState<
-    Array<{
-      sha: string;
-      message: string;
-      author: string;
-      date: string | null;
-      htmlUrl: string;
-    }> | null
-  >(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [revertTarget, setRevertTarget] = useState<
-    | { sha: string; message: string }
-    | null
-  >(null);
-  const [reverting, setReverting] = useState(false);
-
   // The AI assistant: a grounded, diff-gated proposal flow. The agent never
   // commits — it proposes changes that the user reviews and stages through
   // the normal staging pipeline.
@@ -422,52 +385,6 @@ function Workspace({
       originalContent: string;
     }>;
   } | null>(null);
-
-  // Pull requests: open PRs for the current repo + the PR queued for merging.
-  const [prsOpen, setPrsOpen] = useState(false);
-  const [prs, setPrs] = useState<
-    Array<{
-      number: number;
-      title: string;
-      htmlUrl: string;
-      author: string;
-      createdAt: string | null;
-      draft: boolean;
-      head: string;
-      base: string;
-      mergeable: boolean | null;
-      mergeableState: string;
-    }> | null
-  >(null);
-  const [prsLoading, setPrsLoading] = useState(false);
-  const [prsError, setPrsError] = useState<string | null>(null);
-  const [mergeTarget, setMergeTarget] = useState<{
-    number: number;
-    title: string;
-  } | null>(null);
-  const [merging, setMerging] = useState(false);
-
-  // CI status: the branch tip's check runs + status contexts, and the dialog
-  // that breaks them down.
-  const [checksOpen, setChecksOpen] = useState(false);
-  const [checks, setChecks] = useState<{
-    sha: string;
-    overall: "none" | "pending" | "failure" | "success";
-    checkRuns: Array<{
-      name: string;
-      status: string;
-      conclusion: string | null;
-      detailsUrl: string | null;
-    }>;
-    statusContexts: Array<{
-      context: string;
-      state: string;
-      description: string | null;
-      targetUrl: string | null;
-    }>;
-  } | null>(null);
-  const [checksLoading, setChecksLoading] = useState(false);
-  const [checksError, setChecksError] = useState<string | null>(null);
 
   // Draft vault dialog (listDrafts is a reactive query — see `drafts`).
   const [vaultOpen, setVaultOpen] = useState(false);
@@ -512,50 +429,6 @@ function Workspace({
     return () => clearTimeout(timer);
   }, [aiHistory, saveConversation]);
 
-  // PR review: the pull request under review plus its changed files.
-  const [prReview, setPrReview] = useState<{
-    number: number;
-    title: string;
-  } | null>(null);
-  const [prFiles, setPrFiles] = useState<
-    Array<{
-      filename: string;
-      status: string;
-      additions: number;
-      deletions: number;
-      patch: string | null;
-    }> | null
-  >(null);
-  const [prFilesLoading, setPrFilesLoading] = useState(false);
-  const [prFilesError, setPrFilesError] = useState<string | null>(null);
-  const [expandedPrFile, setExpandedPrFile] = useState<string | null>(null);
-
-  // Full-text code search within the repo.
-  const [codeSearchOpen, setCodeSearchOpen] = useState(false);
-  const [codeQuery, setCodeQuery] = useState("");
-  const [codeResults, setCodeResults] = useState<
-    Array<{ path: string; name: string; htmlUrl: string }> | null
-  >(null);
-  const [codeSearchLoading, setCodeSearchLoading] = useState(false);
-  const [codeSearchError, setCodeSearchError] = useState<string | null>(null);
-
-  // Open issues for the repo.
-  const [issuesOpen, setIssuesOpen] = useState(false);
-  const [issues, setIssues] = useState<
-    Array<{
-      number: number;
-      title: string;
-      htmlUrl: string;
-      author: string;
-      createdAt: string | null;
-      comments: number;
-      body: string | null;
-      labels: string[];
-    }> | null
-  >(null);
-  const [issuesLoading, setIssuesLoading] = useState(false);
-  const [issuesError, setIssuesError] = useState<string | null>(null);
-
   // Cross-device continuity: guards so the restore doesn't clobber state the
   // user is actively changing. The caret itself lives in the shared cursor
   // store (see @/lib/cursorSync) — the editor writes it, we read it to save.
@@ -581,37 +454,6 @@ function Workspace({
       };
     }
   }
-
-  // Live deployment preview — fetch + 30s polling for the branch's latest
-  // GitHub deployment (Vercel / Netlify / Actions register these on push).
-  const loadDeployment = useCallback(async () => {
-    if (!selectedRepo || !currentBranch) return;
-    const [owner, repo] = selectedRepo.fullName.split("/");
-    if (!owner || !repo) return;
-    setDeploymentLoading(true);
-    try {
-      const result = await getDeploymentStatus({
-        owner,
-        repo,
-        branch: currentBranch,
-      });
-      setDeployment(result.deployment);
-      setDeploymentError(result.error);
-    } catch (e) {
-      setDeploymentError(errorMessage(e));
-    } finally {
-      setDeploymentLoading(false);
-    }
-  }, [selectedRepo, currentBranch, getDeploymentStatus]);
-  useEffect(() => {
-    if (!selectedRepo || !currentBranch) {
-      setDeployment(null);
-      return;
-    }
-    void loadDeployment();
-    const id = setInterval(() => void loadDeployment(), 30_000);
-    return () => clearInterval(id);
-  }, [selectedRepo, currentBranch, loadDeployment]);
 
   // On mobile the workspace is a single drill-down screen; desktop shows all
   // three panes side by side.
@@ -711,23 +553,139 @@ function Workspace({
     [listTreeFiles],
   );
 
-  const loadHistory = useCallback(async () => {
-    if (!selectedRepo || !currentBranch) return;
-    setHistoryLoading(true);
-    setHistoryError(null);
-    try {
-      const data = await getCommitHistory({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-        branch: currentBranch,
-      });
-      setHistory(data);
-    } catch (e) {
-      setHistoryError(errorMessage(e));
-    } finally {
-      setHistoryLoading(false);
+  // ---------------------------------------------------------------------------
+  // Decoupled concern hooks (see src/pages/dashboard/hooks). Each owns its own
+  // state + loader, so Workspace only orchestrates them.
+  // ---------------------------------------------------------------------------
+
+  /** Refresh the workspace after a server-side branch-tip change (a revert). */
+  const refreshAfterTipChange = async (repo: Repository, repoBranch: string) => {
+    setLastCommit(null);
+    setPrResult(null);
+    loadEntries(repo, repoBranch, path);
+    if (openFile && !isNewFile) {
+      try {
+        const data = await getFile({
+          owner: ownerOf(repo.fullName),
+          repo: repoNameOf(repo.fullName),
+          path: openFile.path,
+          branch: repoBranch,
+        });
+        setOpenFile({ ...data, path: openFile.path });
+        setEditorContent(data.content);
+      } catch {
+        // The change may have removed this file — close it gracefully.
+        setOpenFile(null);
+        setEditorContent("");
+      }
     }
-  }, [selectedRepo, currentBranch, getCommitHistory]);
+  };
+
+  /** Refresh the workspace after merging a PR onto the branch being viewed. */
+  const refreshAfterMerge = async (repo: Repository, repoBranch: string) => {
+    loadEntries(repo, repoBranch, path);
+    if (openFile && !isNewFile) {
+      try {
+        const data = await getFile({
+          owner: ownerOf(repo.fullName),
+          repo: repoNameOf(repo.fullName),
+          path: openFile.path,
+          branch: repoBranch,
+        });
+        setOpenFile({ ...data, path: openFile.path });
+        setEditorContent(data.content);
+      } catch {
+        // The merge may have touched this file — close it gracefully.
+        setOpenFile(null);
+        setEditorContent("");
+      }
+    }
+  };
+
+  const {
+    deployment,
+    deploymentLoading,
+    deploymentError,
+    loadDeployment,
+  } = useDeployment({ selectedRepo, currentBranch });
+
+  const {
+    checksOpen,
+    setChecksOpen,
+    checks,
+    setChecks,
+    checksLoading,
+    checksError,
+    loadChecks,
+  } = useCiChecks({ selectedRepo, currentBranch });
+
+  const {
+    issuesOpen,
+    setIssuesOpen,
+    issues,
+    setIssues,
+    issuesLoading,
+    issuesError,
+    loadIssues,
+  } = useIssues({ selectedRepo });
+
+  const {
+    codeSearchOpen,
+    setCodeSearchOpen,
+    codeQuery,
+    setCodeQuery,
+    codeResults,
+    setCodeResults,
+    codeSearchLoading,
+    codeSearchError,
+    setCodeSearchError,
+    runCodeSearch,
+  } = useCodeSearch({ selectedRepo });
+
+  const {
+    historyOpen,
+    setHistoryOpen,
+    history,
+    setHistory,
+    historyLoading,
+    historyError,
+    revertTarget,
+    setRevertTarget,
+    reverting,
+    loadHistory,
+    handleRevert,
+  } = useCommitHistory({
+    selectedRepo,
+    currentBranch,
+    onWorkspaceChanged: refreshAfterTipChange,
+  });
+
+  const {
+    prsOpen,
+    setPrsOpen,
+    prs,
+    setPrs,
+    prsLoading,
+    prsError,
+    mergeTarget,
+    setMergeTarget,
+    merging,
+    loadPullRequests,
+    handleMergePr,
+    prReview,
+    setPrReview,
+    prFiles,
+    setPrFiles,
+    prFilesLoading,
+    prFilesError,
+    expandedPrFile,
+    setExpandedPrFile,
+    openPrReview,
+  } = usePullRequests({
+    selectedRepo,
+    currentBranch,
+    onMergedOntoCurrentBranch: refreshAfterMerge,
+  });
 
   // Cross-device continuity: once both the repo list and the saved workspace
   // are ready, restore repo + branch + open file + draft + caret exactly where
@@ -851,8 +809,7 @@ function Workspace({
   useEffect(() => {
     if (restoringRef.current) return;
     if (!selectedRepo || !currentBranch) return;
-    const dirty =
-      openFile !== null && !isNewFile && editorContent !== openFile.content;
+    const dirty = openFile !== null && !isNewFile && editorContent !== openFile.content;
     const timer = setTimeout(() => {
       void saveWorkspaceState({
         repo: selectedRepo.fullName,
@@ -1080,50 +1037,6 @@ function Workspace({
     if (online) offlineToastShownRef.current = false;
   }, [online]);
 
-  const handleRevert = async () => {
-    if (!revertTarget || !selectedRepo || !currentBranch) return;
-    setReverting(true);
-    try {
-      const result = await revertCommit({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-        branch: currentBranch,
-        commitSha: revertTarget.sha,
-      });
-      toast.success(
-        `Reverted ${revertTarget.sha.slice(0, 7)} → ${result.sha?.slice(0, 7) ?? ""} on ${currentBranch}`,
-      );
-      setRevertTarget(null);
-      setHistoryOpen(false);
-      setHistory(null);
-      setLastCommit(null);
-      setPrResult(null);
-      // Refresh the file tree and any open file so the workspace matches the
-      // new branch tip.
-      loadEntries(selectedRepo, currentBranch, path);
-      if (openFile && !isNewFile) {
-        try {
-          const data = await getFile({
-            owner: ownerOf(selectedRepo.fullName),
-            repo: repoNameOf(selectedRepo.fullName),
-            path: openFile.path,
-            branch: currentBranch,
-          });
-          setOpenFile({ ...data, path: openFile.path });
-          setEditorContent(data.content);
-        } catch {
-          // The revert may have removed this file — close it gracefully.
-          setOpenFile(null);
-          setEditorContent("");
-        }
-      }
-    } catch (e) {
-      toast.error(errorMessage(e));
-    } finally {
-      setReverting(false);
-    }
-  };
-
   const handleAiAsk = async () => {
     if (!selectedRepo || !currentBranch) return;
     const instruction = aiInstruction.trim();
@@ -1175,25 +1088,6 @@ function Workspace({
       setAiLoading(false);
     }
   };
-
-  /** Load the branch tip's CI checks (check runs + status contexts). */
-  const loadChecks = useCallback(async () => {
-    if (!selectedRepo || !currentBranch) return;
-    setChecksLoading(true);
-    setChecksError(null);
-    try {
-      const data = await getBranchChecks({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-        branch: currentBranch,
-      });
-      setChecks(data);
-    } catch (e) {
-      setChecksError(errorMessage(e));
-    } finally {
-      setChecksLoading(false);
-    }
-  }, [selectedRepo, currentBranch, getBranchChecks]);
 
   /**
    * Restore a draft from the vault: fetch its full content, switch to its
@@ -1301,48 +1195,6 @@ function Workspace({
     toast.success(`Restored draft — ${draft.path}`);
   };
 
-  /** Open the review dialog for a pull request and load its changed files. */
-  const openPrReview = async (pr: { number: number; title: string }) => {
-    if (!selectedRepo) return;
-    setPrsOpen(false);
-    setPrReview(pr);
-    setPrFiles(null);
-    setPrFilesError(null);
-    setExpandedPrFile(null);
-    setPrFilesLoading(true);
-    try {
-      const files = await getPullRequestFiles({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-        number: pr.number,
-      });
-      setPrFiles(files);
-    } catch (e) {
-      setPrFilesError(errorMessage(e));
-    } finally {
-      setPrFilesLoading(false);
-    }
-  };
-
-  /** Run a full-text code search against the current repo. */
-  const runCodeSearch = async () => {
-    if (!selectedRepo || !codeQuery.trim()) return;
-    setCodeSearchLoading(true);
-    setCodeSearchError(null);
-    try {
-      const results = await searchCode({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-        query: codeQuery.trim(),
-      });
-      setCodeResults(results);
-    } catch (e) {
-      setCodeSearchError(errorMessage(e));
-    } finally {
-      setCodeSearchLoading(false);
-    }
-  };
-
   /** Open a code-search result in the editor (on the current branch). */
   const handleCodeResultSelect = async (path: string) => {
     if (!selectedRepo || !currentBranch) return;
@@ -1373,24 +1225,6 @@ function Workspace({
       if (requestId === fileRequestRef.current) setFileLoading(false);
     }
   };
-
-  /** Load open issues for the current repo. */
-  const loadIssues = useCallback(async () => {
-    if (!selectedRepo) return;
-    setIssuesLoading(true);
-    setIssuesError(null);
-    try {
-      const data = await listIssues({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-      });
-      setIssues(data);
-    } catch (e) {
-      setIssuesError(errorMessage(e));
-    } finally {
-      setIssuesLoading(false);
-    }
-  }, [selectedRepo, listIssues]);
 
   const stageAiChange = (change: {
     path: string;
@@ -1970,63 +1804,6 @@ function Workspace({
       toast.error(errorMessage(e));
     } finally {
       setPrOpen(false);
-    }
-  };
-
-  const loadPullRequests = useCallback(async () => {
-    if (!selectedRepo) return;
-    setPrsLoading(true);
-    setPrsError(null);
-    try {
-      const data = await listPullRequests({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-      });
-      setPrs(data);
-    } catch (e) {
-      setPrsError(errorMessage(e));
-    } finally {
-      setPrsLoading(false);
-    }
-  }, [selectedRepo, listPullRequests]);
-
-  const handleMergePr = async () => {
-    if (!selectedRepo || !mergeTarget) return;
-    setMerging(true);
-    try {
-      const result = await mergePullRequest({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-        number: mergeTarget.number,
-      });
-      setMergeTarget(null);
-      toast.success(result.message || `Merged pull request #${mergeTarget.number}`);
-      // Refresh the PR list, and if the merge landed on the branch we're
-      // viewing, refresh the workspace too.
-      loadPullRequests();
-      if (currentBranch === selectedRepo.defaultBranch) {
-        loadEntries(selectedRepo, currentBranch, path);
-        if (openFile && !isNewFile) {
-          try {
-            const data = await getFile({
-              owner: ownerOf(selectedRepo.fullName),
-              repo: repoNameOf(selectedRepo.fullName),
-              path: openFile.path,
-              branch: currentBranch,
-            });
-            setOpenFile({ ...data, path: openFile.path });
-            setEditorContent(data.content);
-          } catch {
-            // The merge may have touched this file — close it gracefully.
-            setOpenFile(null);
-            setEditorContent("");
-          }
-        }
-      }
-    } catch (e) {
-      toast.error(errorMessage(e));
-    } finally {
-      setMerging(false);
     }
   };
 
