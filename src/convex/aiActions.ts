@@ -1311,3 +1311,162 @@ Rules:
     return { repos: results };
   },
 });
+
+/**
+ * Semantic repo Q&A — "Ask about this repo."
+ *
+ * Unlike aiSuggest (which proposes edits), this is a read-only question
+ * answer mode: it retrieves the repository's file list, scores and reads the
+ * files most relevant to the question, and grounds the model's answer in
+ * those files with clickable file references. The model may NOT propose
+ * changes — it explains how the repo works, where things live, and how they
+ * fit together. Metered against the plan's monthly quota like every other
+ * Ask Aria call.
+ */
+export const aiAskRepo = action({
+  args: {
+    owner: v.string(),
+    repo: v.string(),
+    branch: v.string(),
+    question: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const question = cleanMultiline(args.question, MAX_INSTRUCTION_CHARS);
+    if (!question) {
+      throw new Error("Ask a question about the repository first.");
+    }
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+    await assertAiRateLimit(ctx, userId);
+    // Same monthly quota gate as Ask Aria (enforced at the action layer).
+    const usage = await ctx.runQuery(internal.aiUsage.usageForUser, { userId });
+    if (usage.quota !== null && usage.used >= usage.quota) {
+      throw new Error(
+        "You've used all your AI requests for this month — upgrade your plan or wait for the next billing cycle.",
+      );
+    }
+    if (!hasAnyAiProvider()) {
+      throw new Error(
+        "The AI assistant isn't set up yet — add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys, then try again.",
+      );
+    }
+    const token = await getToken(ctx);
+    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+
+    // 1. The repository's file list.
+    const ref = await githubFetch<{ object: { sha: string } }>(
+      `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
+      token,
+    );
+    const tree = await githubFetch<{ tree: TreeEntry[] }>(
+      `${repoUrl}/git/trees/${ref.object.sha}?recursive=1`,
+      token,
+    );
+    const treeFiles = tree.tree
+      .filter(
+        (entry) =>
+          entry.type === "blob" &&
+          (entry.size ?? 0) > 0 &&
+          (entry.size ?? 0) <= MAX_FILE_BYTES,
+      )
+      .map((entry) => entry.path)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, MAX_LISTED_FILES);
+
+    // 2. Score + read the files most relevant to the question.
+    const contextFiles = await selectContextFiles(
+      repoUrl,
+      token,
+      args.branch,
+      treeFiles,
+      question,
+      undefined,
+    );
+    const contextBlock = contextFiles.length
+      ? contextFiles
+          .map(
+            (f) =>
+              `--- file: ${f.path} ---\n${f.content}\n--- end of ${f.path} ---`,
+          )
+          .join("\n\n")
+      : "(no readable file contents)";
+
+    const systemPrompt = `You are Aria, an expert engineer who knows this repository inside out. A developer asked a question about how the code works. You reply with ONLY a JSON object — no markdown, no code fences — in exactly this shape:
+{
+  "answer": "A direct plain-English answer (3-8 sentences). Reference the specific files that matter by their exact path, in backticks, e.g. \`src/lib/auth.ts\`. If the material provided doesn't answer the question, say so plainly and point at the files that would.",
+  "files": ["every file path you referenced in the answer, exactly as written in the file list"]
+}
+
+Rules:
+- Ground EVERY claim in the provided file contents. Never guess about files you weren't given.
+- Do not propose changes, diffs, or edits. This is a question-answer mode — explain, don't modify.
+- Keep the answer tight and specific: where the logic lives, how the pieces fit, what each referenced file does.
+- The "files" array must only contain paths from the provided file list.`;
+
+    const userPrompt = `Repository: ${args.owner}/${args.repo} (branch: ${args.branch})\n\nFiles in the repository:\n${treeFiles.join("\n") || "(empty repository)"}\n\nFile contents read so far:\n${contextBlock}\n\nQuestion:\n${question}`;
+
+    const acquired = await ctx.runMutation(internal.aiUsage.acquireAiInflight, {
+      userId,
+    });
+    if (!acquired) {
+      throw new Error(
+        "An AI request is already running for your account — wait for it to finish, then try again.",
+      );
+    }
+    const completion = await chatCompletion({
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    });
+    await ctx.runMutation(internal.aiUsage.releaseAiInflight, { userId });
+    if (!completion.ok) {
+      throw new Error(
+        `The AI model replied with an error (${completion.error}). If no provider is configured, add OPENROUTER_API_KEY (or OPENAI_API_KEY / ANTHROPIC_API_KEY) to your project keys.`,
+      );
+    }
+    const reply = completion.content;
+    if (!reply.trim()) {
+      throw new Error("The AI replied with nothing — try again or rephrase.");
+    }
+    const parsed = extractJson(reply) as {
+      answer?: unknown;
+      files?: unknown;
+    } | null;
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error(
+        "The AI's response couldn't be understood — try again or rephrase.",
+      );
+    }
+    const answer =
+      typeof parsed.answer === "string"
+        ? parsed.answer.trim().slice(0, 4000)
+        : "";
+    if (!answer) {
+      throw new Error(
+        "The AI's response couldn't be understood — try again or rephrase.",
+      );
+    }
+    const files = Array.isArray(parsed.files)
+      ? parsed.files.filter(
+          (f): f is string =>
+            typeof f === "string" && treeFiles.includes(f),
+        )
+      : [];
+
+    await ctx.runMutation(internal.aiUsage.recordAiUse, { userId });
+    await captureEvent(ctx, "ai.ask_repo", userId, {
+      repo: `${args.owner}/${args.repo}`,
+      branch: args.branch,
+    });
+    await ctx.runMutation(internal.aiUsage.logAudit, {
+      userId,
+      action: "ai.ask_repo",
+      repo: `${args.owner}/${args.repo}`,
+      detail: question.slice(0, 300),
+    });
+
+    return { answer, files };
+  },
+});

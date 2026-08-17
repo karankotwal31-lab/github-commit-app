@@ -163,6 +163,7 @@ export function InboxDialog({
   const plan = useQuery(api.billing.plan);
   const getInbox = useAction(api.githubActions.getInbox);
   const scanRepos = useAction(api.aiFindings.scanRepos);
+  const createUpgradePr = useAction(api.aiFindings.createUpgradePr);
   const dismissFinding = useMutation(api.aiFindingsStore.dismissFinding);
   const markRead = useMutation(api.aiFindingsStore.markFindingRead);
   const markAllRead = useMutation(api.aiFindingsStore.markAllRead);
@@ -171,6 +172,16 @@ export function InboxDialog({
   const [tab, setTab] = useState("findings");
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
+  const [upgradingKey, setUpgradingKey] = useState<string | null>(null);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
+  const [upgradeResult, setUpgradeResult] = useState<{
+    key: string;
+    number: number;
+    htmlUrl: string;
+    depName: string;
+    from: string;
+    to: string;
+  } | null>(null);
   const [data, setData] = useState<{
     awaitingReview: InboxPr[];
     assigned: InboxAssigned[];
@@ -415,6 +426,52 @@ export function InboxDialog({
                               {new Date(f.createdAt).toLocaleDateString()}
                             </span>
                           </div>
+                          {f.kind === "dependency" && (
+                            <div className="mt-2 flex items-center gap-2">
+                              {upgradeResult?.key === f.key ? (
+                                <a
+                                  href={upgradeResult.htmlUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                                >
+                                  <GitPullRequest className="size-3" />
+                                  PR #{upgradeResult.number} — {upgradeResult.depName}{" "}
+                                  {upgradeResult.from} → {upgradeResult.to}
+                                </a>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-6 gap-1 px-2 text-[11px]"
+                                  disabled={upgradingKey !== null}
+                                  onClick={() => {
+                                    setUpgradeError(null);
+                                    setUpgradingKey(f.key);
+                                    void createUpgradePr({ key: f.key })
+                                      .then((r) => {
+                                        setUpgradeResult({ ...r, key: f.key });
+                                        setUpgradingKey(null);
+                                      })
+                                      .catch((e) => {
+                                        setUpgradeError(errorMessage(e));
+                                        setUpgradingKey(null);
+                                      });
+                                  }}
+                                >
+                                  {upgradingKey === f.key ? (
+                                    <Loader2 className="size-3 animate-spin" />
+                                  ) : (
+                                    <GitPullRequest className="size-3" />
+                                  )}
+                                  {upgradingKey === f.key
+                                    ? "Opening PR…"
+                                    : "Upgrade & open PR"}
+                                </Button>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <button
                           type="button"
@@ -425,6 +482,11 @@ export function InboxDialog({
                           <X className="size-3.5" />
                         </button>
                       </div>
+                      {f.kind === "dependency" && upgradeError && (
+                        <p className="mt-1.5 px-1 text-[11px] text-red-600">
+                          {upgradeError}
+                        </p>
+                      )}
                     </div>
                   ))
                 )}

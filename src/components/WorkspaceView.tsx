@@ -34,6 +34,8 @@ import { PrReviewDialog } from "@/components/workspace/PrReviewDialog";
 import { CodeSearchDialog } from "@/components/workspace/CodeSearchDialog";
 import { IssuesDialog } from "@/components/workspace/IssuesDialog";
 import { AskAriaDialog } from "@/components/workspace/AskAriaDialog";
+import { RepoQaDialog } from "@/components/workspace/RepoQaDialog";
+import { StackDialog } from "@/components/workspace/StackDialog";
 import { JumpToFileDialog } from "@/components/workspace/JumpToFileDialog";
 import { DeleteFileDialog } from "@/components/workspace/DeleteFileDialog";
 import { cn } from "@/lib/utils";
@@ -97,11 +99,14 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [simpleMode, setSimpleMode] = useState(false);
   const [whyOpen, setWhyOpen] = useState(false);
   const [crossRepoOpen, setCrossRepoOpen] = useState(false);
+  const [qaOpen, setQaOpen] = useState(false);
+  const [stackOpen, setStackOpen] = useState(false);
 
   const centerPanelOpen =
     runtimeOpen || shareOpen || localOpen || dockOpen || inboxOpen ||
     reviewOpen || adminOpen || securityOpen || platformOpen || stressOpen ||
     issueOpen || whyOpen || crossRepoOpen || billingOpen || aiOpen ||
+    stackOpen ||
     vaultOpen || prsOpen || historyOpen || codeSearchOpen || searchOpen ||
     issuesOpen || checksOpen || deleteOpen || stagedDiffOpen ||
     dialog !== null || revertTarget !== null || mergeTarget !== null ||
@@ -164,6 +169,35 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       <IssuesDialog {...props} />
       <AskAriaDialog {...props} />
       <CommitHistoryDialog {...props} />
+      <StackDialog
+        open={stackOpen}
+        onOpenChange={setStackOpen}
+        owner={owner}
+        repo={repo}
+        branch={branch}
+        defaultBranch={selectedRepo?.defaultBranch ?? "main"}
+        onOpenLocal={() => setLocalOpen(true)}
+      />
+      <RepoQaDialog
+        open={qaOpen}
+        onOpenChange={setQaOpen}
+        owner={owner}
+        repo={repo}
+        branch={branch}
+        onOpenFile={(filePath) => {
+          const dir = filePath.includes("/")
+            ? filePath.slice(0, filePath.lastIndexOf("/"))
+            : "";
+          setPath(dir);
+          setQaOpen(false);
+          handleOpenEntry({
+            name: filePath.split("/").pop() ?? filePath,
+            path: filePath,
+            type: "file",
+            size: 0,
+          });
+        }}
+      />
 
       {/* Standalone heavy dialogs (still lazy, not yet extracted) */}
       <EngineeringDock open={dockOpen} onOpenChange={setDockOpen} owner={owner} repo={repo} branch={branch} connection={connection} openPath={openFile?.path ?? ""} onRefresh={onRefreshWorkspace} />
@@ -196,7 +230,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       <ShareWorkspaceDialog open={shareOpen} onOpenChange={setShareOpen} repo={selectedRepo?.fullName ?? null} branch={currentBranch} onJoin={props.handleJoinWorkspace} myShared={props.mySharedWorkspaces} createSharedWorkspace={props.createSharedWorkspace} />
 
       {/* Top bar */}
-      <WorkspaceHeader connection={connection} billing={billing} liveSessions={props.liveSessions} offline={offline} focusMode={focusMode} isMobile={isMobile} simpleMode={simpleMode} selectedRepo={selectedRepo} currentBranch={currentBranch} crossRepoAllowed={crossRepoAllowed} setSimpleMode={setSimpleMode} setFocusMode={setFocusMode} onOpenLocal={() => setLocalOpen(true)} onOpenDock={() => setDockOpen(true)} onOpenRuntime={() => setRuntimeOpen(true)} onOpenShare={() => setShareOpen(true)} onOpenCrossRepo={() => setCrossRepoOpen(true)} onOpenInbox={() => setInboxOpen(true)} onOpenReview={() => setReviewOpen(true)} onOpenAdmin={() => setAdminOpen(true)} onOpenIssue={() => setIssueOpen(true)} onOpenStress={() => setStressOpen(true)} onOpenBilling={() => setBillingOpen(true)} onLivePreview={() => { setViewMode("preview"); loadDeployment(); }} handleDisconnect={handleDisconnect} handleSignOut={handleSignOut} />
+      <WorkspaceHeader connection={connection} billing={billing} liveSessions={props.liveSessions} offline={offline} focusMode={focusMode} isMobile={isMobile} simpleMode={simpleMode} selectedRepo={selectedRepo} currentBranch={currentBranch} crossRepoAllowed={crossRepoAllowed} setSimpleMode={setSimpleMode} setFocusMode={setFocusMode} onOpenLocal={() => setLocalOpen(true)} onOpenStack={() => setStackOpen(true)} onOpenDock={() => setDockOpen(true)} onOpenRuntime={() => setRuntimeOpen(true)} onOpenShare={() => setShareOpen(true)} onOpenCrossRepo={() => setCrossRepoOpen(true)} onOpenInbox={() => setInboxOpen(true)} onOpenReview={() => setReviewOpen(true)} onOpenAdmin={() => setAdminOpen(true)} onOpenIssue={() => setIssueOpen(true)} onOpenStress={() => setStressOpen(true)} onOpenBilling={() => setBillingOpen(true)} onLivePreview={() => { setViewMode("preview"); loadDeployment(); }} handleDisconnect={handleDisconnect} handleSignOut={handleSignOut} />
 
       {/* Body */}
       <div className="flex min-h-0 flex-1">
@@ -205,7 +239,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         ) : (
           <>
             <ReposSidebar mobileView={mobileView} focusMode={focusMode} reposLoading={props.reposLoading} reposError={props.reposError} repoQuery={props.repoQuery} setRepoQuery={props.setRepoQuery} filteredRepos={filteredRepos} selectedRepo={selectedRepo} handleSelectRepo={props.handleSelectRepo} loadRepos={props.loadRepos} />
-            <FilesSidebar mobileView={mobileView} focusMode={focusMode} handleBackToRepos={props.handleBackToRepos} selectedRepo={selectedRepo} currentBranch={currentBranch} branches={branches} branchesLoading={branchesLoading} handleSwitchBranch={handleSwitchBranch} setDialog={setDialog} path={path} setPath={setPath} pathSegments={pathSegments} handleBreadcrumb={handleBreadcrumb} handleOpenEntry={handleOpenEntry} loadEntries={loadEntries} entries={entries} entriesLoading={entriesLoading} entriesError={entriesError} sortedEntries={sortedEntries} stagedPathSet={stagedPathSet} checks={checks} checksLoading={checksLoading} deployment={deployment} deploymentLoading={deploymentLoading} onOpenChecks={() => { setChecksOpen(true); if (!checks) loadChecks(); }} onPreview={() => { setViewMode("preview"); loadDeployment(); }} onJumpToFile={() => setSearchOpen(true)} onCodeSearch={() => { setCodeQuery(""); setCodeResults(null); setCodeSearchError(null); setCodeSearchOpen(true); }} onOpenHistory={() => { setHistoryOpen(true); loadHistory(); }} onOpenIssues={() => { setIssuesOpen(true); loadIssues(); }} onOpenPrs={() => { setPrsOpen(true); loadPullRequests(); }} onAskAria={() => { setAiInstruction(""); setAiResult(null); setAiError(null); setAiOpen(true); }} onOpenVault={() => setVaultOpen(true)} onNewFile={() => setDialog({ kind: "newFile" })} />
+            <FilesSidebar mobileView={mobileView} focusMode={focusMode} handleBackToRepos={props.handleBackToRepos} selectedRepo={selectedRepo} currentBranch={currentBranch} branches={branches} branchesLoading={branchesLoading} handleSwitchBranch={handleSwitchBranch} setDialog={setDialog} path={path} setPath={setPath} pathSegments={pathSegments} handleBreadcrumb={handleBreadcrumb} handleOpenEntry={handleOpenEntry} loadEntries={loadEntries} entries={entries} entriesLoading={entriesLoading} entriesError={entriesError} sortedEntries={sortedEntries} stagedPathSet={stagedPathSet} checks={checks} checksLoading={checksLoading} deployment={deployment} deploymentLoading={deploymentLoading} onOpenChecks={() => { setChecksOpen(true); if (!checks) loadChecks(); }} onPreview={() => { setViewMode("preview"); loadDeployment(); }} onJumpToFile={() => setSearchOpen(true)} onCodeSearch={() => { setCodeQuery(""); setCodeResults(null); setCodeSearchError(null); setCodeSearchOpen(true); }} onOpenHistory={() => { setHistoryOpen(true); loadHistory(); }} onOpenIssues={() => { setIssuesOpen(true); loadIssues(); }} onOpenPrs={() => { setPrsOpen(true); loadPullRequests(); }} onAskAria={() => { setAiInstruction(""); setAiResult(null); setAiError(null); setAiOpen(true); }} onAskAboutRepo={() => setQaOpen(true)} onOpenVault={() => setVaultOpen(true)} onNewFile={() => setDialog({ kind: "newFile" })} />
             <EditorPane mobileView={mobileView} connection={connection} selectedRepo={selectedRepo} currentBranch={currentBranch} openFile={openFile} setOpenFile={setOpenFile} isNewFile={isNewFile} editorContent={editorContent} setEditorContent={setEditorContent} viewMode={viewMode} setViewMode={setViewMode} fileLoading={fileLoading} dirty={dirty} openFileIsStaged={openFileIsStaged} status={status} lastCommit={lastCommit} prResult={prResult} handleOpenPr={handleOpenPr} prOpen={prOpen} staged={staged} setStaged={setStaged} stagedDiffOpen={stagedDiffOpen} setStagedDiffOpen={setStagedDiffOpen} handleUnstage={handleUnstage} flaggedSecretPaths={props.flaggedSecretPaths} allowSecrets={props.allowSecrets} setAllowSecrets={props.setAllowSecrets} commitMessage={commitMessage} setCommitMessage={setCommitMessage} canCommit={canCommit} handleCommit={handleCommit} handleStage={handleStage} committing={committing} onOpenWhy={() => setWhyOpen(true)} onRename={() => setDialog({ kind: "rename" })} onDelete={() => setDeleteOpen(true)} />
           </>
         )}

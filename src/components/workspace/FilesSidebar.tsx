@@ -19,6 +19,7 @@ import {
   GitPullRequest,
   History,
   Loader2,
+  MessageSquareCode,
   Plus,
   Search,
   Sparkles,
@@ -61,6 +62,7 @@ interface FilesSidebarCallbacks {
   onOpenIssues: () => void;
   onOpenPrs: () => void;
   onAskAria: () => void;
+  onAskAboutRepo: () => void;
   onOpenVault: () => void;
   onNewFile: () => void;
 }
@@ -146,6 +148,7 @@ export function FilesSidebar(
     onOpenIssues,
     onOpenPrs,
     onAskAria,
+    onAskAboutRepo,
     onOpenVault,
     handleBackToRepos,
     onNewFile,
@@ -285,6 +288,14 @@ export function FilesSidebar(
               title="Ask Aria"
             >
               <Sparkles className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={onAskAboutRepo}
+              className="rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+              title="Ask about this repo"
+            >
+              <MessageSquareCode className="size-3.5" />
             </button>
             <button
               type="button"

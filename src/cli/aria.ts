@@ -185,6 +185,38 @@ async function cmdRepos(flags: Flags) {
   console.log(`\n${repos.length} repository${repos.length === 1 ? "" : "s"}`);
 }
 
+async function cmdPrs(flags: Flags) {
+  const { ok, status, body } = await apiCall(flags, "/api/cli/prs");
+  if (!ok) {
+    console.error(`prs failed (${status}):`, body);
+    process.exit(1);
+  }
+  const items = (body as Array<{
+    repo: string;
+    number: number;
+    title: string;
+    htmlUrl: string;
+    draft: boolean;
+    updatedAt: string | null;
+  }>) ?? [];
+  if (flags.json) return printJson(body);
+  if (items.length === 0) {
+    console.log("No open pull requests across your connected repos.");
+    return;
+  }
+  printTable(
+    items.map((item) => ({
+      repo: item.repo,
+      pr: `#${item.number}${item.draft ? " (draft)" : ""}`,
+      title: item.title.slice(0, 64),
+      updated: (item.updatedAt ?? "?").slice(0, 10),
+    })),
+  );
+  console.log(
+    `\n${items.length} open PR${items.length === 1 ? "" : "s"} — review at ${flags.url}/dashboard.`,
+  );
+}
+
 async function cmdInbox(flags: Flags) {
   const { ok, status, body } = await apiCall(flags, "/api/cli/inbox");
   if (!ok) {
@@ -227,6 +259,7 @@ async function cmdHelp() {
       "  whoami     show the account behind this token\n" +
       "  repos      list connected repositories\n" +
       "  inbox      latest engineering-inbox findings\n" +
+      "  prs        open pull requests across your repos\n" +
       "Flags: --token <t> | --url <base> | --json\n" +
       "Env:   ARIA_TOKEN, ARIA_URL",
   );
@@ -245,6 +278,9 @@ switch (flags.command) {
     break;
   case "inbox":
     await cmdInbox(flags);
+    break;
+  case "prs":
+    await cmdPrs(flags);
     break;
   default:
     await cmdHelp();

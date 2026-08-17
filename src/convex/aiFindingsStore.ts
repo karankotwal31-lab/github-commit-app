@@ -1,5 +1,10 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { internalMutation, mutation, query } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import { v } from "convex/values";
 import { findingPriority, sortFindings } from "../lib/phase4";
 
@@ -46,6 +51,30 @@ export const unreadCount = query({
 });
 
 /** Mark a finding read (opened). Dismissed findings stay hidden. */
+/** Internal: fetch one finding by (user, key) — used by actions that act
+ *  on a finding (e.g. creating an upgrade PR) to verify ownership before
+ *  touching the repo. */
+export const findingByKey = internalQuery({
+  args: { userId: v.id("users"), key: v.string() },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("aiFindings")
+      .withIndex("by_userKey", (q) =>
+        q.eq("userId", args.userId).eq("key", args.key),
+      )
+      .first();
+    if (!row) return null;
+    return {
+      key: row.key,
+      kind: row.kind,
+      repo: row.repo,
+      title: row.title,
+      detail: row.detail,
+      url: row.url ?? null,
+    };
+  },
+});
+
 export const markFindingRead = mutation({
   args: { id: v.id("aiFindings") },
   handler: async (ctx, args) => {

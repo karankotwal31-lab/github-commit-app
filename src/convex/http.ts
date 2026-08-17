@@ -195,6 +195,20 @@ http.route({
   }),
 });
 
+http.route({
+  path: "/api/cli/prs",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const token = bearerOf(request);
+    const userId = token
+      ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
+      : null;
+    if (!userId) return unauthorized();
+    const data = await ctx.runAction(internal.cli.prsByUser, { userId });
+    return Response.json(data);
+  }),
+});
+
 // Serve the built frontend (dist/) from the deployment root with SPA
 // fallback to index.html. Exact routes registered above always win over
 // this static catch-all.

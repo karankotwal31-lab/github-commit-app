@@ -13,6 +13,7 @@
  *   tokens immediately.
  */
 import {
+  internalAction,
   internalMutation,
   internalQuery,
   mutation,
@@ -20,7 +21,14 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { internal } from "./_generated/api";
 import { sha256Hex } from "./sha256";
+import { fetchWithRetry } from "./net";
+
+const GITHUB_API = "https://api.github.com";
+const USER_AGENT = "aria";
+const MAX_PRS_REPOS = 3;
+const MAX_PRS_PER_REPO = 5;
 
 const TOKEN_PREFIX = "aria_";
 
@@ -172,5 +180,67 @@ export const inboxByUser = internalQuery({
         read: !!row.readAt,
         createdAt: row.createdAt,
       }));
+  },
+});
+
+/** Open PRs across the user's connected repos (aggregated, newest first).
+ *  Uses the user's own GitHub connection — the CLI token never sees GitHub
+ *  credentials. */
+export const prsByUser = internalAction({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const connection = (await ctx.runQuery(internal.github.connectionForUser, {
+      userId: args.userId,
+    })) as { token: string } | null;
+    if (connection === null) return [];
+    const repos = (await ctx.runQuery(internal.github.listConnectedRepos, {
+      userId: args.userId,
+    })) as string[];
+    const out: Array<{
+      repo: string;
+      number: number;
+      title: string;
+      htmlUrl: string;
+      draft: boolean;
+      updatedAt: string | null;
+    }> = [];
+    for (const repo of repos.slice(0, MAX_PRS_REPOS)) {
+      try {
+        const res = await fetchWithRetry(
+          `${GITHUB_API}/repos/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=${MAX_PRS_PER_REPO}`,
+          {
+            headers: {
+              Authorization: `Bearer ${connection.token}`,
+              Accept: "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": USER_AGENT,
+            },
+          },
+        );
+        if (!res.ok) continue;
+        const data = (await res.json()) as Array<{
+          number: number;
+          title: string;
+          html_url: string;
+          draft: boolean;
+          updated_at: string;
+        }>;
+        for (const pr of data) {
+          out.push({
+            repo,
+            number: pr.number,
+            title: pr.title.slice(0, 200),
+            htmlUrl: pr.html_url,
+            draft: pr.draft,
+            updatedAt: pr.updated_at ?? null,
+          });
+        }
+      } catch {
+        // one repo failing must not kill the whole list
+      }
+    }
+    return out.sort((a, b) =>
+      (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""),
+    );
   },
 });

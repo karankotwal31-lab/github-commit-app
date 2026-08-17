@@ -20,6 +20,7 @@ import {
   Focus,
   GitBranch,
   GitMerge,
+  Layers,
   Loader2,
   LogOut,
   Rocket,
@@ -46,6 +47,7 @@ interface WorkspaceHeaderProps {
   setSimpleMode: (v: boolean | ((prev: boolean) => boolean)) => void;
   setFocusMode: (v: boolean | ((prev: boolean) => boolean)) => void;
   onOpenLocal: () => void;
+  onOpenStack: () => void;
   onOpenDock: () => void;
   onOpenRuntime: () => void;
   onOpenShare: () => void;
@@ -77,6 +79,7 @@ export function WorkspaceHeader(props: WorkspaceHeaderProps) {
     setSimpleMode,
     setFocusMode,
     onOpenLocal,
+    onOpenStack,
     onOpenDock,
     onOpenRuntime,
     onOpenShare,
@@ -134,6 +137,18 @@ export function WorkspaceHeader(props: WorkspaceHeaderProps) {
           <GitBranch className="size-3.5 text-neutral-500" />
           <span className="hidden text-xs text-neutral-500 sm:inline">
             Local
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={onOpenStack}
+          disabled={!selectedRepo}
+          className="flex items-center gap-1.5 rounded-md border border-neutral-200 px-2 py-1.5 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+          title="Stacked PRs — review branches on top of each other, not main"
+        >
+          <Layers className="size-3.5 text-neutral-500" />
+          <span className="hidden text-xs text-neutral-500 sm:inline">
+            Stack
           </span>
         </button>
         <button

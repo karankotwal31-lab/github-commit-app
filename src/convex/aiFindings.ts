@@ -92,15 +92,26 @@ function encodePath(path: string) {
     .join("/");
 }
 
-async function githubFetch<T>(url: string, token: string): Promise<T> {
+async function githubFetch<T>(
+  url: string,
+  token: string,
+  init?: {
+    method?: string;
+    body?: string;
+    headers?: Record<string, string>;
+  },
+): Promise<T> {
   // Automatic retry (Part D): transient errors, 429s and 5xx retry with
   // backoff so a flaky network doesn't fail the whole background scan.
   const res = await fetchWithRetry(url, {
+    method: init?.method ?? "GET",
+    body: init?.body,
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": USER_AGENT,
+      ...init?.headers,
     },
   });
   const text = await res.text();
@@ -417,6 +428,276 @@ export const scanAllUsers = internalAction({
       }
     }
     return { checked, disabled: false };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// One-click dependency-upgrade PRs
+//
+// Turns a dependency finding into a real, reviewable PR: bump the package to
+// the latest version on a fresh branch (aria/upgrade/<dep>) and open a pull
+// request against the default branch. Nothing is ever force-pushed and the
+// PR is never auto-merged — a human reviews it like any other change.
+// ---------------------------------------------------------------------------
+
+interface DependencyKey {
+  repo: string;
+  depName: string;
+  suffix: "cve" | "old";
+}
+
+/** Parse a finding key like "deps:owner/repo:lodash:cve" (scoped package
+ *  names like "@types/node" are supported — the last colon splits the
+ *  suffix). Returns null when the key isn't a dependency finding. */
+function parseDependencyKey(key: string): DependencyKey | null {
+  const m = key.match(/^deps:(.+):(cve|old)$/);
+  if (!m) return null;
+  const colon = m[1].indexOf(":");
+  if (colon <= 0) return null;
+  const repo = m[1].slice(0, colon);
+  const depName = m[1].slice(colon + 1);
+  if (!repo || !depName || !repo.includes("/")) return null;
+  return { repo, depName, suffix: m[2] as "cve" | "old" };
+}
+
+/** Read the installed spec from package.json and build the upgraded spec,
+ *  preserving the range prefix (^, ~, >=, =, or exact). */
+function bumpedSpec(
+  spec: string | undefined,
+  latest: string,
+): string | null {
+  if (!spec) return null;
+  const m = spec.match(/^(\^|~|>=|<=|=|>|<)?\s*[v]?\d/);
+  const prefix = m ? m[1] ?? "" : "";
+  return `${prefix}${latest}`;
+}
+
+/**
+ * Create the upgrade PR. The finding key is parsed server-side (never
+ * trust client-supplied repo/dep names), the package's latest version is
+ * looked up from the npm registry, package.json is bumped preserving the
+ * installed range prefix, and a branch + commit + PR are created via the
+ * Git Data API — no force pushes, no auto-merges.
+ */
+export const createUpgradePr = action({
+  args: { key: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (userId === null) throw new Error("You are not signed in.");
+
+    const parsed = parseDependencyKey(args.key.trim());
+    if (!parsed) {
+      throw new Error("This finding isn't a dependency upgrade — nothing to bump.");
+    }
+    const { repo, depName, suffix } = parsed;
+    const [owner, name] = repo.split("/");
+
+    // Ownership gate: the finding must actually belong to this user, and the
+    // repo must be one they've connected — never operate on another user's
+    // repo via a crafted key.
+    const finding = (await ctx.runQuery(
+      internal.aiFindingsStore.findingByKey,
+      { userId, key: args.key.trim() },
+    )) as { title: string; detail: string; repo: string } | null;
+    if (!finding || finding.repo !== repo) {
+      throw new Error("Finding not found — scan again and retry.");
+    }
+    const connection = (await ctx.runQuery(internal.github.connectionForUser, {
+      userId,
+    })) as { token: string } | null;
+    if (connection === null) {
+      throw new Error("GitHub is not connected.");
+    }
+    const token = connection.token;
+    const repoUrl = `${GITHUB_API}/repos/${owner}/${name}`;
+
+    // Default branch + its tree (base for the new commit).
+    const meta = await githubFetch<{ default_branch: string }>(repoUrl, token);
+    const defaultBranch = meta.default_branch;
+    const branchRef = await githubFetch<{ object: { sha: string } }>(
+      `${repoUrl}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
+      token,
+    );
+    const baseSha = branchRef.object.sha;
+    const baseCommit = await githubFetch<{ tree: { sha: string } }>(
+      `${repoUrl}/git/commits/${baseSha}`,
+      token,
+    );
+    const baseTreeSha = baseCommit.tree.sha;
+
+    // package.json (npm only — the registry check this finding is based on).
+    const pkgRes = await githubFetch<{
+      content: string;
+      encoding: string;
+    }>(`${repoUrl}/contents/package.json?ref=${encodeURIComponent(defaultBranch)}`, token);
+    if (pkgRes.encoding !== "base64") {
+      throw new Error("package.json isn't readable as text.");
+    }
+    const pkgText = Buffer.from(pkgRes.content, "base64").toString("utf8");
+    const pkg = JSON.parse(pkgText) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const inDeps = Object.prototype.hasOwnProperty.call(
+      pkg.dependencies ?? {},
+      depName,
+    );
+    const inDevDeps = Object.prototype.hasOwnProperty.call(
+      pkg.devDependencies ?? {},
+      depName,
+    );
+    if (!inDeps && !inDevDeps) {
+      throw new Error(
+        `${depName} isn't in package.json anymore — this finding is stale. Scan again.`,
+      );
+    }
+
+    // Latest version from the npm registry (same source the scan used).
+    const latestRes = await fetchWithRetry(
+      `${NPM_REGISTRY}/${encodeURIComponent(depName)}/latest`,
+      undefined,
+      { attempts: 3 },
+    );
+    if (!latestRes.ok) {
+      throw new Error(`Couldn't reach the npm registry (${latestRes.status}).`);
+    }
+    const latestData = (await latestRes.json()) as { version?: string };
+    const latest = latestData.version;
+    if (!latest) throw new Error("The npm registry returned no version.");
+
+    const spec = inDeps ? pkg.dependencies![depName] : pkg.devDependencies![depName];
+    const newSpec = bumpedSpec(spec, latest);
+    if (!newSpec || newSpec === spec) {
+      throw new Error(`${depName} is already at the target version.`);
+    }
+    if (inDeps) pkg.dependencies![depName] = newSpec;
+    if (inDevDeps) pkg.devDependencies![depName] = newSpec;
+    const updated = JSON.stringify(pkg, null, 2) + "\n";
+
+    // Create the upgrade branch, commit, and PR.
+    const branchName = `aria/upgrade/${depName
+      .replace(/^@/, "")
+      .replace(/\//g, "-")}`;
+    try {
+      await githubFetch<unknown>(
+        `${repoUrl}/git/refs`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ref: `refs/heads/${branchName}`,
+            sha: baseSha,
+          }),
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "";
+      if (/already exists/i.test(message)) {
+        throw new Error(
+          `Branch ${branchName} already exists — a PR may already be open. Check the pull requests tab.`,
+        );
+      }
+      throw e;
+    }
+
+    const blob = await githubFetch<{ sha: string }>(
+      `${repoUrl}/git/blobs`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({ content: updated, encoding: "utf-8" }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    const tree = await githubFetch<{ sha: string }>(
+      `${repoUrl}/git/trees`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          base_tree: baseTreeSha,
+          tree: [
+            {
+              path: "package.json",
+              mode: "100644",
+              type: "blob",
+              sha: blob.sha,
+            },
+          ],
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    const reason = suffix === "cve" ? "known-vulnerable version" : "outdated major version";
+    const commit = await githubFetch<{ sha: string }>(
+      `${repoUrl}/git/commits`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          message: `chore(deps): upgrade ${depName} to ${latest}`,
+          tree: tree.sha,
+          parents: [baseSha],
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+    await githubFetch<unknown>(
+      `${repoUrl}/git/refs/heads/${encodeURIComponent(branchName)}`,
+      token,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ sha: commit.sha, force: false }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+    const pr = await githubFetch<{ number: number; html_url: string }>(
+      `${repoUrl}/pulls`,
+      token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          title: `chore(deps): upgrade ${depName} to ${latest}`,
+          head: branchName,
+          base: defaultBranch,
+          body: `Aria found that **${depName}** is on a ${reason}.
+
+- Installed: \`${spec}\`
+- Target: \`${latest}\`
+- Branch: \`${branchName}\`
+
+Generated from this finding:
+> ${finding.title}
+
+> ${finding.detail}
+
+No auto-merge — review and merge when CI is green.`,
+        }),
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+
+    await ctx
+      .runMutation(internal.securityCenter.audit, {
+        userId,
+        action: "pr.create",
+        repo,
+        branch: branchName,
+        result: "ok",
+        detail: `Upgrade PR #${pr.number} for ${depName}`,
+      })
+      .catch(() => {});
+
+    return {
+      number: pr.number,
+      htmlUrl: pr.html_url,
+      branch: branchName,
+      depName,
+      from: spec,
+      to: latest,
+    };
   },
 });
 
