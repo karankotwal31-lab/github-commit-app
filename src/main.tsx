@@ -1,6 +1,7 @@
 import '@vly-ai/integrations';
 import { InstrumentationProvider } from "./instrumentation";
 import { Toaster } from "@/components/ui/sonner";
+import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { RequireAuth } from "@/components/RequireAuth";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
@@ -258,6 +259,7 @@ createRoot(document.getElementById("root")!).render(
             </Suspense>
           </BrowserRouter>
           <Toaster />
+          <ConnectionBanner />
         </ConvexAuthProvider>
       </InstrumentationProvider>
     </RootErrorBoundary>

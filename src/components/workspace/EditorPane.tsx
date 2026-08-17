@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DiffView } from "@/components/workspace-shared";
 import { diffLines } from "@/lib/diff";
+import { formatSize } from "@/lib/github";
 import { cn } from "@/lib/utils";
 import { lazy, useMemo } from "react";
 import type { WorkspaceViewProps } from "./types";
@@ -229,6 +230,14 @@ export function EditorPane(props: EditorPaneProps & EditorPaneCallbacks) {
               </div>
             ) : viewMode === "diff" ? (
               <DiffView lines={diff} />
+            ) : openFile.size > 1_000_000 ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+                <p className="text-sm font-medium text-neutral-700">This file is {formatSize(openFile.size)}.</p>
+                <p className="text-xs text-neutral-500 max-w-md">Large files may be slow to load in the editor. The file is read-only for performance.</p>
+                <div className="max-h-[70vh] w-full overflow-auto rounded-lg border border-neutral-200">
+                  <pre className="p-4 text-xs font-mono leading-5 text-neutral-800 whitespace-pre-wrap">{editorContent.slice(0, 50_000)}{editorContent.length > 50_000 ? "\n\n… truncated for performance" : ""}</pre>
+                </div>
+              </div>
             ) : (
               <CodeEditor
                 key={openFile?.path ?? "editor"}
