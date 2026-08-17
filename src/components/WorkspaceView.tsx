@@ -1,26 +1,14 @@
-// CodeEditor pulls in Monaco (≈1.5 MB gzipped) — lazy-load it so the app
-// shell loads fast and the editor arrives on the first file open. The tiny
-// symbol-insertion/focus registry stays in the main bundle (type-only monaco
-// import in editorRegistry).
-const CodeEditor = lazy(() =>
-  import("@/components/CodeEditor").then((m) => ({ default: m.CodeEditor })),
-);
+// Heavy dialogs are lazy-loaded so the app shell loads fast. The lazy()
+// calls live AFTER the imports on purpose: referencing an imported binding
+// before the import statement in the same module is legal ESM (imports
+// hoist), but a mixed/stale dev module graph can evaluate the binding from
+// its temporal dead zone — "Cannot access 'lazy' before initialization".
 import { insertTextAtCursor, onActiveEditorFocus } from "@/lib/editorRegistry";
 import { CodingAccessoryBar } from "@/components/CodingAccessoryBar";
 import { PreviewPanel, type DeploymentInfo } from "@/components/PreviewPanel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useVisualViewport } from "@/hooks/use-visual-viewport";
 import { RuntimeDialog } from "@/components/RuntimeDialog";
-// LocalGitDialog pulls in isomorphic-git + LightningFS (≈500 KB gzipped) —
-// lazy-load it so the browser git engine only loads when the user opens it.
-const LocalGitDialog = lazy(() =>
-  import("@/components/LocalGitDialog").then((m) => ({ default: m.LocalGitDialog })),
-);
-// EngineeringDock pulls in isomorphic-git + LightningFS via localGit — lazy,
-// same as LocalGitDialog, so the command center loads only when opened.
-const EngineeringDock = lazy(() =>
-  import("@/components/EngineeringDock").then((m) => ({ default: m.EngineeringDock })),
-);
 import { BillingDialog } from "@/components/BillingDialog";
 import { AiUsageMeter } from "@/components/AiUsageMeter";
 import { AiCommitMessageButton } from "@/components/AiCommitMessageButton";
@@ -126,6 +114,24 @@ import {
   X,
   XCircle,
 } from "lucide-react";
+
+// CodeEditor pulls in Monaco (≈1.5 MB gzipped) — lazy-load it so the app
+// shell loads fast and the editor arrives on the first file open. The tiny
+// symbol-insertion/focus registry stays in the main bundle (type-only monaco
+// import in editorRegistry).
+const CodeEditor = lazy(() =>
+  import("@/components/CodeEditor").then((m) => ({ default: m.CodeEditor })),
+);
+// LocalGitDialog pulls in isomorphic-git + LightningFS (≈500 KB gzipped) —
+// lazy-load it so the browser git engine only loads when the user opens it.
+const LocalGitDialog = lazy(() =>
+  import("@/components/LocalGitDialog").then((m) => ({ default: m.LocalGitDialog })),
+);
+// EngineeringDock pulls in isomorphic-git + LightningFS via localGit — lazy,
+// same as LocalGitDialog, so the command center loads only when opened.
+const EngineeringDock = lazy(() =>
+  import("@/components/EngineeringDock").then((m) => ({ default: m.EngineeringDock })),
+);
 
 /** Compact deployment chip shown next to the CI chip in the files sidebar. */
 function DeploymentChip({
