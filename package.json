@@ -11,7 +11,8 @@
     "test": "bun test",
     "cli": "bun src/cli/aria.ts",
     "format": "prettier --write .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify": "bunx convex dev --once && bunx tsc -b --noEmit && bun test"
   },
   "dependencies": {
     "@auth/core": "^0.37.0",
