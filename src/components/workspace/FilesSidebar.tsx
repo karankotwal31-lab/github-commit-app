@@ -381,7 +381,14 @@ export function FilesSidebar(
                 </button>
               </li>
             )}
-            {sortedEntries.map((entry) => (
+            {sortedEntries.length > 500 && (
+              <li className="px-2.5 pb-1 pt-0.5 text-[10px] leading-4 text-neutral-400">
+                Large directory — showing the first 500 of{" "}
+                {sortedEntries.length.toLocaleString()} entries. Use ⌘K
+                jump-to-file for the rest.
+              </li>
+            )}
+            {sortedEntries.slice(0, 500).map((entry) => (
               <li key={entry.path}>
                 <button
                   type="button"

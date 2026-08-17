@@ -50,6 +50,9 @@ Package manager is **Bun**.
   `/api/cli/*` endpoints: `aria whoami`, `aria repos`, `aria inbox`, `aria prs`.
   Authenticate with a personal access token from **Platform → CLI & API**.
   See `cli/README.md`.
+- **VS Code extension** — `extensions/vscode/` shows your repos, open PRs, and
+  inbox in the sidebar, authenticated with the same personal access token
+  (stored in VS Code's OS keychain). See `extensions/vscode/README.md`.
 
 ## Setup
 

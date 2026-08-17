@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Deep teal ink squircle -->
+  <rect width="64" height="64" rx="16" fill="#002629"/>
+  <!-- The "A" -->
+  <path d="M21.5 47.5 L32 19 L42.5 47.5" stroke="#9FE3DB" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Melody crossbar: a note that sings across the A -->
+  <path d="M24.5 37 C27.5 34.4, 30.5 34.4, 33.5 37 C36 39.1, 38.5 39.3, 41 38.1" stroke="#9FE3DB" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- Note head -->
+  <circle cx="43.4" cy="38.4" r="3" fill="#9FE3DB"/>
+</svg>

@@ -1,0 +1,105 @@
+{
+  "name": "aria-vscode",
+  "displayName": "Aria — GitHub workspace in VS Code",
+  "description": "Your Aria repositories, open pull requests, and unified inbox — right in the editor, authenticated with the same personal access token as the Aria CLI.",
+  "version": "0.1.0",
+  "publisher": "aria-labs",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "github",
+    "pull requests",
+    "inbox",
+    "aria",
+    "ai"
+  ],
+  "activationEvents": [
+    "onView:ariaRepos",
+    "onView:ariaPrs",
+    "onView:ariaInbox",
+    "onCommand:aria.login",
+    "onCommand:aria.whoami",
+    "onCommand:aria.refresh",
+    "onCommand:aria.openApp"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aria.login",
+        "title": "Aria: Sign in",
+        "category": "Aria"
+      },
+      {
+        "command": "aria.logout",
+        "title": "Aria: Sign out",
+        "category": "Aria"
+      },
+      {
+        "command": "aria.whoami",
+        "title": "Aria: Who am I",
+        "category": "Aria"
+      },
+      {
+        "command": "aria.refresh",
+        "title": "Aria: Refresh",
+        "category": "Aria"
+      },
+      {
+        "command": "aria.openApp",
+        "title": "Aria: Open web app",
+        "category": "Aria"
+      }
+    ],
+    "configuration": {
+      "title": "Aria",
+      "properties": {
+        "aria.siteUrl": {
+          "type": "string",
+          "default": "https://steady-scorpion-839.convex.site",
+          "description": "The Aria backend URL. Override only if the app is deployed elsewhere."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ariaViews",
+          "title": "Aria",
+          "icon": "media/aria.svg"
+        }
+      ]
+    },
+    "views": {
+      "ariaViews": [
+        {
+          "id": "ariaRepos",
+          "name": "Repositories"
+        },
+        {
+          "id": "ariaPrs",
+          "name": "Pull Requests"
+        },
+        {
+          "id": "ariaInbox",
+          "name": "Inbox"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "tsc -p ./",
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  }
+}

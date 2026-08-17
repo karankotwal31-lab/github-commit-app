@@ -61,6 +61,15 @@ const DEVICE_ID =
 // Workspace
 // ---------------------------------------------------------------------------
 
+/** True when a Convex/GitHub failure looks like a connectivity problem
+ *  (used by the offline commit queue — network failures queue the commit
+ *  instead of losing it). */
+function isNetworkError(message: string): boolean {
+  return /failed to fetch|networkerror|network error|offline|ecoconn|fetch failed|timeout|enetdown|socket hang up/i.test(
+    message,
+  );
+}
+
 function Workspace({
   connection,
 }: {
@@ -655,6 +664,8 @@ function Workspace({
     setHistory,
     historyLoading,
     historyError,
+    historyPage,
+    loadMoreHistory,
     revertTarget,
     setRevertTarget,
     reverting,
@@ -1011,6 +1022,38 @@ function Workspace({
   // returns — via saveDraftIfNewer so a fresher draft from another device
   // always wins.
   const offlineToastShownRef = useRef(false);
+  const { online, pendingCount: offlinePending, syncing: offlineSyncing } =
+    useNetworkReconciliation({
+      enabled: selectedRepo !== null,
+      push: async (draft) => {
+        await saveDraftIfNewer({
+          repo: draft.repo,
+          branch: draft.branch,
+          path: draft.path,
+          content: draft.content,
+          cursorLine: draft.cursorLine ?? undefined,
+          cursorColumn: draft.cursorColumn ?? undefined,
+          updatedAt: draft.updatedAt,
+        });
+      },
+      onSynced: (count) => {
+        toast.success(
+          `${count} offline edit${count > 1 ? "s" : ""} synced to the draft vault.`,
+        );
+      },
+      onOffline: () => {
+        if (!offlineToastShownRef.current) {
+          offlineToastShownRef.current = true;
+          toast.warning(
+            "You're offline — edits are saved on this device and will sync when you're back.",
+          );
+        }
+      },
+    });
+  useEffect(() => {
+    if (online) offlineToastShownRef.current = false;
+  }, [online]);
+
   // Offline commits: handleCommit queues the full staged change set when the
   // network is down; this effect replays the queue oldest-first through the
   // normal commit action the moment connectivity returns.
@@ -1058,38 +1101,6 @@ function Workspace({
     void flush();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online, selectedRepo, pendingCommitsVersion]);
-
-  const { online, pendingCount: offlinePending, syncing: offlineSyncing } =
-    useNetworkReconciliation({
-      enabled: selectedRepo !== null,
-      push: async (draft) => {
-        await saveDraftIfNewer({
-          repo: draft.repo,
-          branch: draft.branch,
-          path: draft.path,
-          content: draft.content,
-          cursorLine: draft.cursorLine ?? undefined,
-          cursorColumn: draft.cursorColumn ?? undefined,
-          updatedAt: draft.updatedAt,
-        });
-      },
-      onSynced: (count) => {
-        toast.success(
-          `${count} offline edit${count > 1 ? "s" : ""} synced to the draft vault.`,
-        );
-      },
-      onOffline: () => {
-        if (!offlineToastShownRef.current) {
-          offlineToastShownRef.current = true;
-          toast.warning(
-            "You're offline — edits are saved on this device and will sync when you're back.",
-          );
-        }
-      },
-    });
-  useEffect(() => {
-    if (online) offlineToastShownRef.current = false;
-  }, [online]);
 
   const handleAiAsk = async () => {
     if (!selectedRepo || !currentBranch) return;
@@ -2044,7 +2055,11 @@ function Workspace({
       deploymentLoading={deploymentLoading}
       deploymentError={deploymentError}
       loadDeployment={loadDeployment}
-      offline={{ online, pending: offlinePending, syncing: offlineSyncing }}
+      offline={{
+        online,
+        pending: offlinePending + pendingCommitCount(),
+        syncing: offlineSyncing,
+      }}
       fileLoading={fileLoading}
       dirty={dirty}
       openFileIsStaged={openFileIsStaged}
@@ -2081,6 +2096,8 @@ function Workspace({
       history={history}
       historyError={historyError}
       loadHistory={loadHistory}
+      historyPage={historyPage}
+      loadMoreHistory={loadMoreHistory}
       revertTarget={revertTarget}
       setRevertTarget={setRevertTarget}
       reverting={reverting}

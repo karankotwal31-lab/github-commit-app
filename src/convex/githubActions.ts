@@ -643,14 +643,16 @@ export const getCommitHistory = action({
     repo: v.string(),
     branch: v.string(),
     perPage: v.optional(v.number()),
+    page: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
     const perPage = Math.min(Math.max(args.perPage ?? 50, 1), 100);
+    const page = Math.max(args.page ?? 1, 1);
     const data = await githubFetch<GitHubCommitItem[]>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/commits?sha=${encodeURIComponent(
         args.branch,
-      )}&per_page=${perPage}`,
+      )}&per_page=${perPage}&page=${page}`,
       token,
     );
     return data.map((c) => ({

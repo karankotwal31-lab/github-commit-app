@@ -29,26 +29,42 @@ export function useCommitHistory<R extends RepoRef>(opts: {
   const [history, setHistory] = useState<HistoryEntry[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyPage, setHistoryPage] = useState(1);
   const [revertTarget, setRevertTarget] = useState<RevertTarget | null>(null);
   const [reverting, setReverting] = useState(false);
+  const PER_PAGE = 50;
 
-  const loadHistory = useCallback(async () => {
-    if (!selectedRepo || !currentBranch) return;
-    setHistoryLoading(true);
-    setHistoryError(null);
-    try {
-      const data = await getCommitHistory({
-        owner: ownerOf(selectedRepo.fullName),
-        repo: repoNameOf(selectedRepo.fullName),
-        branch: currentBranch,
-      });
-      setHistory(data);
-    } catch (e) {
-      setHistoryError(errorMessage(e));
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [selectedRepo, currentBranch, getCommitHistory]);
+  const loadHistory = useCallback(
+    async (page: number = 1, append = false) => {
+      if (!selectedRepo || !currentBranch) return;
+      setHistoryLoading(true);
+      setHistoryError(null);
+      try {
+        const data = await getCommitHistory({
+          owner: ownerOf(selectedRepo.fullName),
+          repo: repoNameOf(selectedRepo.fullName),
+          branch: currentBranch,
+          perPage: PER_PAGE,
+          page,
+        });
+        setHistory((prev) => {
+          if (!append || !prev) return data;
+          const seen = new Set(prev.map((c) => c.sha));
+          return [...prev, ...data.filter((c) => !seen.has(c.sha))];
+        });
+        setHistoryPage(page);
+      } catch (e) {
+        setHistoryError(errorMessage(e));
+      } finally {
+        setHistoryLoading(false);
+      }
+    },
+    [selectedRepo, currentBranch, getCommitHistory],
+  );
+
+  const loadMoreHistory = useCallback(() => {
+    void loadHistory(historyPage + 1, true);
+  }, [historyPage, loadHistory]);
 
   const handleRevert = async () => {
     if (!revertTarget || !selectedRepo || !currentBranch) return;
@@ -81,6 +97,8 @@ export function useCommitHistory<R extends RepoRef>(opts: {
     setHistory,
     historyLoading,
     historyError,
+    historyPage,
+    loadMoreHistory,
     revertTarget,
     setRevertTarget,
     reverting,

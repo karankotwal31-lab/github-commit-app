@@ -1,0 +1,137 @@
+/**
+ * Aria API client — talks to the exact same read-only endpoints as the Aria
+ * CLI (`/api/cli/*`), authenticated with the same personal access token.
+ *
+ * Deliberately free of any `vscode` import so this module can be unit-tested
+ * with a mocked `fetch` (see api.test.ts).
+ */
+
+export const DEFAULT_SITE = "https://steady-scorpion-839.convex.site";
+const USER_AGENT = "aria-vscode/0.1.0";
+
+export interface WhoamiData {
+  user: { name: string | null } | null;
+  github: { login: string; name: string | null } | null;
+}
+
+export interface RepoRow {
+  repo: string;
+  private: boolean;
+}
+
+export interface FindingRow {
+  kind: string;
+  priority: string;
+  repo: string;
+  title: string;
+  detail: string;
+  url: string | null;
+  read: boolean;
+  createdAt: number;
+}
+
+export interface PrRow {
+  repo: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  draft: boolean;
+  updatedAt: string | null;
+}
+
+export class AriaApiError extends Error {
+  readonly status: number | undefined;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "AriaApiError";
+    this.status = status;
+  }
+}
+
+export class AriaApi {
+  readonly site: string;
+
+  constructor(site: string) {
+    this.site = site.replace(/\/+$/, "");
+  }
+
+  private async get<T>(path: string, token: string): Promise<T> {
+    if (!token) {
+      throw new AriaApiError(
+        "No token. Run the “Aria: Sign in” command (create a token in the " +
+          "web app under Platform → CLI & API).",
+      );
+    }
+    const res = await fetch(
+      new Request(this.site + path, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+          "User-Agent": USER_AGENT,
+        },
+      }),
+    );
+    const text = await res.text();
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+    if (!res.ok) {
+      const message =
+        data &&
+        typeof data === "object" &&
+        "error" in data &&
+        typeof (data as { error?: unknown }).error === "string"
+          ? (data as { error: string }).error
+          : `Request failed (${res.status} ${res.statusText})`;
+      throw new AriaApiError(message, res.status);
+    }
+    return data as T;
+  }
+
+  whoami(token: string): Promise<WhoamiData> {
+    return this.get<WhoamiData>("/api/cli/whoami", token);
+  }
+
+  repos(token: string): Promise<RepoRow[]> {
+    return this.get<RepoRow[]>("/api/cli/repos", token);
+  }
+
+  inbox(token: string): Promise<FindingRow[]> {
+    return this.get<FindingRow[]>("/api/cli/inbox", token);
+  }
+
+  prs(token: string): Promise<PrRow[]> {
+    return this.get<PrRow[]>("/api/cli/prs", token);
+  }
+}
+
+/** Human label for a finding kind (mirrors the CLI's mapping). */
+export function kindLabel(kind: string): string {
+  const map: Record<string, string> = {
+    dependency: "dependency",
+    stale_pr: "stale PR",
+    config_change: "config change",
+    failing_ci: "failing CI",
+    security: "security",
+    dependency_upgrade: "upgrade",
+    docs: "docs",
+    mission: "mission",
+  };
+  return map[kind] ?? kind;
+}
+
+/** Compact relative time for a millisecond timestamp (or empty). */
+export function relativeTime(ms: number | null | undefined): string {
+  if (!ms) return "";
+  const diff = Date.now() - ms;
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}

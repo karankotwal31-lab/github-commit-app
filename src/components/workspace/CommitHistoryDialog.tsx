@@ -29,6 +29,8 @@ type CommitHistoryDialogProps = Pick<
   | "history"
   | "historyError"
   | "loadHistory"
+  | "historyPage"
+  | "loadMoreHistory"
   | "revertTarget"
   | "setRevertTarget"
   | "reverting"
@@ -46,6 +48,8 @@ export function CommitHistoryDialog(props: CommitHistoryDialogProps) {
     history,
     historyError,
     loadHistory,
+    historyPage,
+    loadMoreHistory,
     revertTarget,
     setRevertTarget,
     reverting,
@@ -121,6 +125,25 @@ export function CommitHistoryDialog(props: CommitHistoryDialogProps) {
                   </li>
                 ))}
               </ul>
+            )}
+            {history && history.length >= historyPage * 50 && (
+              <div className="mt-2 flex justify-center">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1 text-xs"
+                  onClick={loadMoreHistory}
+                  disabled={historyLoading}
+                >
+                  {historyLoading ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-3" />
+                  )}
+                  Load more
+                </Button>
+              </div>
             )}
           </div>
         </DialogContent>

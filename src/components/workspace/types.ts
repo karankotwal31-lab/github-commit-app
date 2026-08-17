@@ -107,6 +107,8 @@ export interface WorkspaceViewProps {
   }> | null;
   historyError: string | null;
   loadHistory: () => void;
+  historyPage: number;
+  loadMoreHistory: () => void;
   revertTarget: { sha: string; message: string } | null;
   setRevertTarget: (v: { sha: string; message: string } | null) => void;
   reverting: boolean;
