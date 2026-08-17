@@ -45,7 +45,6 @@ type FilesSidebarProps = Pick<
   | "entriesLoading"
   | "entriesError"
   | "sortedEntries"
-  | "stagedPathSet"
   | "checks"
   | "checksLoading"
   | "deployment"
@@ -53,6 +52,7 @@ type FilesSidebarProps = Pick<
 >;
 
 interface FilesSidebarCallbacks {
+  stagedPathSet: Set<string>;
   onOpenChecks: () => void;
   onPreview: () => void;
   onJumpToFile: () => void;
