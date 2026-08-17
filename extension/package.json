@@ -1,66 +1,36 @@
 {
-  "name": "aria-vscode",
-  "displayName": "Aria — AI Git Workbench",
-  "description": "Aria's engineering inbox, findings, and account right in VS Code. Uses your Aria access token; nothing leaves the Aria backend.",
+  "name": "aria-for-vscode",
+  "displayName": "Aria for VS Code",
+  "description": "Your Aria engineering inbox and account, right in the editor. Reuses your Aria personal access token — the backend enforces scoping server-side.",
   "version": "0.1.0",
-  "publisher": "arialabs",
-  "license": "MIT",
+  "publisher": "aria",
+  "license": "SEE LICENSE IN ../LICENSE",
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": [
-    "Other"
-  ],
-  "keywords": [
-    "git",
-    "github",
-    "ai",
-    "inbox",
-    "pull requests"
-  ],
-  "activationEvents": [
-    "onStartupFinished"
-  ],
+  "categories": ["Other"],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "aria.login",
+        "command": "aria.signIn",
         "title": "Aria: Sign in (paste access token)"
       },
       {
-        "command": "aria.logout",
+        "command": "aria.signOut",
         "title": "Aria: Sign out"
       },
       {
         "command": "aria.refresh",
-        "title": "Aria: Refresh inbox",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "aria.openFinding",
-        "title": "Open finding"
+        "title": "Aria: Refresh inbox"
       },
       {
         "command": "aria.openInAria",
-        "title": "Open in Aria"
+        "title": "Aria: Open in Aria",
+        "when": "resourceScheme == file"
       }
     ],
-    "menus": {
-      "editor/context": [
-        {
-          "command": "aria.openInAria",
-          "group": "navigation@5"
-        }
-      ],
-      "view/title": [
-        {
-          "command": "aria.refresh",
-          "when": "view == aria.inboxView",
-          "group": "navigation"
-        }
-      ]
-    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -73,12 +43,31 @@
     "views": {
       "aria": [
         {
-          "id": "aria.inboxView",
-          "name": "Inbox"
+          "id": "aria.inbox",
+          "name": "Inbox",
+          "icon": "media/inbox.svg",
+          "contextualTitle": "Aria Inbox"
         },
         {
-          "id": "aria.accountView",
-          "name": "Account"
+          "id": "aria.account",
+          "name": "Account",
+          "icon": "media/account.svg",
+          "contextualTitle": "Aria Account"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "aria.openInAria",
+          "group": "navigation@1"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "aria.refresh",
+          "when": "view == aria.inbox",
+          "group": "navigation@1"
         }
       ]
     },
@@ -88,19 +77,21 @@
         "aria.url": {
           "type": "string",
           "default": "https://steady-scorpion-839.convex.site",
-          "description": "Aria backend URL (the deployed app)."
+          "description": "Aria backend URL"
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "bunx tsc -p ./",
-    "compile": "bunx tsc -p ./",
-    "watch": "bunx tsc -watch -p ./",
-    "package": "bunx @vscode/vsce package"
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
   },
   "devDependencies": {
+    "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.9.3"
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0"
   }
 }

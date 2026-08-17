@@ -48,7 +48,10 @@ bunx @vscode/vsce package
 
 ## Honest limits
 
-- The inbox currently shows findings; PR/issue lists are a natural next step
-  (same API family: `/api/cli/repos`, `/api/cli/inbox`).
+- The inbox shows findings (same API family as `/api/cli/repos`,
+  `/api/cli/inbox`, `/api/cli/prs` — PRs/issues via `aria prs` in the CLI).
 - "Open in Aria" deep-links to the repo + active file via `?repo=&path=`;
-  the web app opens exactly that file on its default branch.
+  the web app opens exactly that file on its default branch. Set the
+  `aria.repo` configuration (e.g. `owner/name`) so the deep link knows which
+  repository you're in — the file path is filled automatically from the
+  active editor.

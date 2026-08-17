@@ -46,6 +46,10 @@ Package manager is **Bun**.
 - **Premium billing (optional)** — a Pro subscription unlocks Ask Aria. Billing
   only activates once Stripe keys are configured; until then everything is
   unlocked.
+- **Terminal CLI** — `cli/aria.mjs` is a zero-dependency Node client for the
+  `/api/cli/*` endpoints: `aria whoami`, `aria repos`, `aria inbox`, `aria prs`.
+  Authenticate with a personal access token from **Platform → CLI & API**.
+  See `cli/README.md`.
 
 ## Setup
 

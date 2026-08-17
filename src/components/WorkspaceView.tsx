@@ -174,7 +174,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
         onOpenChange={setStackOpen}
         owner={owner}
         repo={repo}
-        branch={branch}
+        currentBranch={branch}
         defaultBranch={selectedRepo?.defaultBranch ?? "main"}
         onOpenLocal={() => setLocalOpen(true)}
       />
