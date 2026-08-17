@@ -50,5 +50,5 @@ bunx @vscode/vsce package
 
 - The inbox currently shows findings; PR/issue lists are a natural next step
   (same API family: `/api/cli/repos`, `/api/cli/inbox`).
-- "Open in Aria" opens the dashboard (deep links per repo/file are not wired
-  on the web side yet).
+- "Open in Aria" deep-links to the repo + active file via `?repo=&path=`;
+  the web app opens exactly that file on its default branch.

@@ -561,6 +561,26 @@ function Workspace({
   // store (see @/lib/cursorSync) — the editor writes it, we read it to save.
   const restoredRef = useRef(false);
   const restoringRef = useRef(false);
+  // Deep-link target (?repo=&branch=&path=), captured once from the URL. The
+  // restore effect prefers it over the last-saved workspace, so the
+  // extension/desktop "Open in Aria" (and any shared link) jumps straight to
+  // the file instead of landing on whatever was open before.
+  const [searchParams] = useSearchParams();
+  const deepLinkRef = useRef<{
+    repo: string;
+    branch: string | null;
+    path: string | null;
+  } | null>(null);
+  if (deepLinkRef.current === null) {
+    const repo = searchParams.get("repo");
+    if (repo) {
+      deepLinkRef.current = {
+        repo,
+        branch: searchParams.get("branch"),
+        path: searchParams.get("path"),
+      };
+    }
+  }
 
   // Live deployment preview — fetch + 30s polling for the branch's latest
   // GitHub deployment (Vercel / Netlify / Actions register these on push).
@@ -717,15 +737,23 @@ function Workspace({
     if (restoredRef.current) return;
     if (repos === null || workspaceState === undefined) return; // still loading
     restoredRef.current = true;
-    if (!workspaceState) return;
+    // A deep link (?repo=&branch=&path= — extension/desktop "Open in Aria" or
+    // a shared URL) takes priority over the last-saved workspace.
+    const deep = deepLinkRef.current;
+    if (!workspaceState && !deep) return;
     const saved = workspaceState;
-    const repo = repos.find((r) => r.fullName === saved.repo);
+    const repo = repos.find((r) => r.fullName === (deep?.repo ?? saved?.repo));
     if (!repo) return; // repo no longer accessible — don't force it
+    const branch = deep?.branch ?? saved?.branch ?? repo.defaultBranch;
+    const openPath = deep?.path ?? saved?.openPath;
+    const dirPath = openPath?.includes("/")
+      ? openPath.slice(0, openPath.lastIndexOf("/"))
+      : saved?.path ?? "";
     const timer = setTimeout(() => {
       restoringRef.current = true;
-      // Select repo + saved branch.
+      // Select repo + branch (deep link or saved).
       setSelectedRepo(repo);
-      setBranch(saved.branch);
+      setBranch(branch);
       setBranches(null);
       setEntries(null);
       setStatus(null);
@@ -742,54 +770,55 @@ function Workspace({
       setPrsOpen(false);
       setPrs(null);
       setChecks(null);
-      setPath(saved.path ?? "");
+      setPath(dirPath);
       // Restore the open tabs (paths only — content loads on demand from
       // GitHub + the draft vault when each tab is activated). The active tab
       // is added/kept by the tab-registry effect.
       setTabs(
-        (saved.openTabs ?? [])
+        (saved?.openTabs ?? [])
           .filter((p) => p)
           .slice(0, 10)
           .map((p) => ({ path: p, isNewFile: false })),
       );
       // Restore the active panel + layout exactly as left (defaults when
       // missing — older saves predate these fields).
-      setViewMode(saved.viewMode ?? "edit");
-      setFocusMode(saved.focusMode ?? false);
+      setViewMode(saved?.viewMode ?? "edit");
+      setFocusMode(saved?.focusMode ?? false);
       // Restore the editor scroll offset so the open file lands where it was.
       setScrollSync(
-        saved.scrollTop != null
+        saved?.scrollTop != null
           ? { top: saved.scrollTop, left: saved.scrollLeft ?? 0 }
           : null,
       );
-      loadEntries(repo, saved.branch, saved.path ?? "");
+      loadEntries(repo, branch, dirPath);
       loadBranches(repo);
-      loadTreeFiles(repo, saved.branch);
+      loadTreeFiles(repo, branch);
       toast.success(
-        saved.openPath
-          ? `Resumed ${saved.repo} on ${saved.branch} — ${saved.openPath} is open${saved.draft ? ", with your unsaved edits" : ""}.`
-          : `Resumed ${saved.repo} on ${saved.branch}.`,
+        openPath
+          ? deep
+            ? `Opened ${repo.fullName} — ${openPath}`
+            : `Resumed ${repo.fullName} on ${branch} — ${openPath} is open${saved?.draft ? ", with your unsaved edits" : ""}.`
+          : `Resumed ${repo.fullName} on ${branch}.`,
       );
-      if (saved.openPath) {
-        const openPath = saved.openPath;
+      if (openPath) {
         void (async () => {
           try {
             const data = await getFile({
               owner: ownerOf(repo.fullName),
               repo: repoNameOf(repo.fullName),
               path: openPath,
-              branch: saved.branch,
+              branch,
             });
             setOpenFile({ ...data, path: openPath });
             setIsNewFile(false);
             // Restore the unsaved draft when it differs from the committed file;
             // otherwise open the committed content.
             setEditorContent(
-              saved.draft && saved.draft !== data.content
+              saved?.draft && saved.draft !== data.content
                 ? saved.draft
                 : data.content,
             );
-            if (saved.cursorLine && saved.cursorColumn) {
+            if (saved?.cursorLine && saved?.cursorColumn) {
               setCursorSync({
                 line: saved.cursorLine,
                 column: saved.cursorColumn,

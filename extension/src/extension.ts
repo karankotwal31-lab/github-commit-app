@@ -252,7 +252,9 @@ function cmdOpenFinding(finding: Finding): void {
 }
 
 /** Best-effort: detect the GitHub repo of the active workspace via the
- *  built-in Git extension (origin remote). Falls back to opening Aria. */
+ *  built-in Git extension (origin remote) and the active file's relative
+ *  path, then open Aria straight on that file (?repo=&path= deep link).
+ *  Falls back to the plain dashboard. */
 async function cmdOpenInAria(): Promise<void> {
   readConfig();
   let repo: string | null = null;
@@ -280,7 +282,16 @@ async function cmdOpenInAria(): Promise<void> {
   } catch {
     repo = null; // git API unavailable — open Aria anyway
   }
-  const target = repo ? `${baseUrl}/dashboard` : `${baseUrl}/dashboard`;
+  const params = new URLSearchParams();
+  if (repo) params.set("repo", repo);
+  const activeUri = vscode.window.activeTextEditor?.document.uri;
+  const folder = vscode.workspace.getWorkspaceFolder(activeUri ?? vscode.Uri.file("/"));
+  if (activeUri && folder) {
+    const rel = vscode.workspace.asRelativePath(activeUri, false);
+    if (rel && !rel.startsWith("..")) params.set("path", rel);
+  }
+  const qs = params.toString();
+  const target = `${baseUrl}/dashboard${qs ? `?${qs}` : ""}`;
   void vscode.env.openExternal(vscode.Uri.parse(target));
 }
 
