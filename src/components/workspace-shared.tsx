@@ -266,10 +266,52 @@ export function InputDialog({
 // Diff view
 // ---------------------------------------------------------------------------
 
+/** Diffs above this many changed lines collapse behind a summary card. */
+const LARGE_DIFF_THRESHOLD = 400;
+
 export function DiffView({ lines }: { lines: DiffLine[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const changed = lines.filter((l) => l.type !== "same").length;
+  const isLarge = changed > LARGE_DIFF_THRESHOLD;
+
   return (
     <div className="h-full overflow-auto bg-background">
-      <table className="w-full border-collapse font-mono text-sm leading-6">
+      {isLarge && !expanded ? (
+        <div className="flex h-full min-h-48 flex-col items-center justify-center gap-2 px-6 py-10 text-center">
+          <p className="text-sm font-medium text-neutral-800">
+            Large diff — {changed.toLocaleString()} changed lines
+          </p>
+          <p className="max-w-sm text-xs text-neutral-500">
+            This diff is big enough that rendering it all at once can stall the
+            UI. Expand it only when you need the details.
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            className="mt-1"
+            onClick={() => setExpanded(true)}
+          >
+            Show full diff
+          </Button>
+        </div>
+      ) : (
+        <>
+          {isLarge && (
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-neutral-200 bg-neutral-50 px-4 py-2">
+              <p className="text-sm text-neutral-600">
+                {changed.toLocaleString()} changed lines
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setExpanded(false)}
+              >
+                Collapse diff
+              </Button>
+            </div>
+          )}
+          <table className="w-full border-collapse font-mono text-sm leading-6">
         <tbody>
           {lines.map((line, i) => (
             <tr
@@ -302,9 +344,11 @@ export function DiffView({ lines }: { lines: DiffLine[] }) {
             </tr>
           ))}
         </tbody>
-      </table>
-      {lines.length === 0 && (
-        <p className="p-6 text-sm text-neutral-400">No changes yet.</p>
+          </table>
+          {lines.length === 0 && (
+            <p className="p-6 text-sm text-neutral-400">No changes yet.</p>
+          )}
+        </>
       )}
     </div>
   );

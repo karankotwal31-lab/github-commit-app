@@ -32,7 +32,8 @@ interface ResilientOptions {
   toastPrefix?: string;
 }
 
-function isRetryableError(err: unknown): boolean {
+/** Classify an error as transient (worth retrying) vs permanent. */
+export function isRetryableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
   // Network errors, timeouts, rate limits, server errors — all retryable
   if (msg.includes("network") || msg.includes("timeout") || msg.includes("fetch")) return true;
@@ -43,7 +44,8 @@ function isRetryableError(err: unknown): boolean {
   return false;
 }
 
-function backoffMs(attempt: number, base: number): number {
+/** Exponential backoff with jitter (capped at 8s so retries never stall a UI). */
+export function backoffMs(attempt: number, base: number): number {
   return Math.min(8000, base * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 200);
 }
 
