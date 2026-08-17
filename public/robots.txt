@@ -4,4 +4,4 @@ Disallow: /dashboard
 Disallow: /auth
 
 # Uncomment and update once you have a real domain + sitemap:
-# Sitemap: https://your-domain.com/sitemap.xml
+# Sitemap: https://steady-scorpion-839.convex.site/sitemap.xml
