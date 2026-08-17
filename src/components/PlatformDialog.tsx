@@ -6,6 +6,8 @@ import { type Id } from "@/convex/_generated/dataModel";
 import {
   BadgeCheck,
   Boxes,
+  Check,
+  Copy,
   Cpu,
   Globe,
   Laptop,
@@ -14,6 +16,7 @@ import {
   Rocket,
   Shield,
   Smartphone,
+  Sparkles,
   Tablet,
   Terminal,
   Users,
@@ -1476,6 +1479,163 @@ function CliTab() {
   );
 }
 
+/** Copy a string to the clipboard, with a fallback for sandboxed iframes. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** One provider row: status dot, env-var name with copy button, model. */
+function ProviderRow({
+  label,
+  keyName,
+  model,
+  configured,
+}: {
+  label: string;
+  keyName: string;
+  model: string;
+  configured: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <li className="flex items-center gap-3 px-3 py-2.5">
+      <span
+        className={`size-2 shrink-0 rounded-full ${
+          configured ? "bg-emerald-500" : "bg-neutral-300"
+        }`}
+        title={configured ? "Configured" : "Not configured"}
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] font-medium text-neutral-800">
+          {label}
+          {!configured && (
+            <span className="ml-1.5 text-[11px] font-normal text-neutral-400">
+              not configured
+            </span>
+          )}
+        </span>
+        <span className="block truncate font-mono text-[11px] text-neutral-500">
+          {keyName}
+        </span>
+      </span>
+      <span className="shrink-0 font-mono text-[11px] text-neutral-400">
+        {model}
+      </span>
+      <button
+        type="button"
+        onClick={async () => {
+          const ok = await copyText(keyName);
+          if (ok) {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          }
+        }}
+        className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+        title={`Copy ${keyName}`}
+      >
+        {copied ? (
+          <Check className="size-3.5 text-emerald-600" />
+        ) : (
+          <Copy className="size-3.5" />
+        )}
+      </button>
+    </li>
+  );
+}
+
+/**
+ * AI tab — live provider status + the exact keys to paste into the project's
+ * Keys UI. Booleans and model names only; keys never leave the server.
+ */
+function AiTab() {
+  const ai = useQuery(api.aiStatus.status);
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-3 text-[11px] leading-5 text-neutral-600">
+        Aria's AI runs through providers configured with{" "}
+        <span className="font-medium text-neutral-700">project keys</span> —
+        they are read server-side and never exposed to the browser. Paste the
+        key for any provider below into Freebuff's{" "}
+        <span className="font-medium text-neutral-700">Keys</span> panel, then
+        reload. The first configured provider wins (order:{" "}
+        <code className="font-mono">AI_PROVIDER_ORDER</code>).
+      </div>
+
+      {ai === undefined ? (
+        <div className="flex items-center gap-2 py-4 text-[11px] text-neutral-400">
+          <Loader2 className="size-3.5 animate-spin" />
+          Checking provider status…
+        </div>
+      ) : ai.configured ? (
+        <div className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2.5 text-[11px] text-emerald-800">
+          An AI provider is configured — Aria is ready to use.
+        </div>
+      ) : (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] leading-5 text-amber-800">
+          No AI provider is configured yet. Ask Aria, AI reviews, and the
+          other AI features will show a setup error until you add one of the
+          keys below.
+        </div>
+      )}
+
+      <ul className="divide-y divide-neutral-100 rounded-lg border border-neutral-200">
+        {(ai?.providers ?? []).map((p) => (
+          <ProviderRow
+            key={p.id}
+            label={p.label}
+            keyName={p.key}
+            model={p.model}
+            configured={p.configured}
+          />
+        ))}
+      </ul>
+
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-neutral-200 px-3 py-2.5">
+        <p className="text-[11px] text-neutral-500">
+          Provider priority (comma list, first configured wins)
+        </p>
+        <button
+          type="button"
+          onClick={async () => {
+            const ok = await copyText("AI_PROVIDER_ORDER");
+            if (ok) {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }
+          }}
+          className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700"
+        >
+          <code className="font-mono">AI_PROVIDER_ORDER</code>
+          {copied ? (
+            <Check className="size-3.5 text-emerald-600" />
+          ) : (
+            <Copy className="size-3.5" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Dialog shell
 // ---------------------------------------------------------------------------
@@ -1565,6 +1725,9 @@ export function PlatformDialog({
             <TabsTrigger value="cli">
               <Terminal className="mr-1.5 size-3.5" /> CLI & API
             </TabsTrigger>
+            <TabsTrigger value="ai">
+              <Sparkles className="mr-1.5 size-3.5" /> AI
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="org" className="mt-3">
@@ -1589,6 +1752,9 @@ export function PlatformDialog({
           </TabsContent>
           <TabsContent value="cli" className="mt-3">
             <CliTab />
+          </TabsContent>
+          <TabsContent value="ai" className="mt-3">
+            <AiTab />
           </TabsContent>
         </Tabs>
       </DialogContent>
