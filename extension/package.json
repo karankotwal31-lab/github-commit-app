@@ -1,0 +1,106 @@
+{
+  "name": "aria-vscode",
+  "displayName": "Aria — AI Git Workbench",
+  "description": "Aria's engineering inbox, findings, and account right in VS Code. Uses your Aria access token; nothing leaves the Aria backend.",
+  "version": "0.1.0",
+  "publisher": "arialabs",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "git",
+    "github",
+    "ai",
+    "inbox",
+    "pull requests"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aria.login",
+        "title": "Aria: Sign in (paste access token)"
+      },
+      {
+        "command": "aria.logout",
+        "title": "Aria: Sign out"
+      },
+      {
+        "command": "aria.refresh",
+        "title": "Aria: Refresh inbox",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "aria.openFinding",
+        "title": "Open finding"
+      },
+      {
+        "command": "aria.openInAria",
+        "title": "Open in Aria"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "aria.openInAria",
+          "group": "navigation@5"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "aria.refresh",
+          "when": "view == aria.inboxView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aria",
+          "title": "Aria",
+          "icon": "media/aria.svg"
+        }
+      ]
+    },
+    "views": {
+      "aria": [
+        {
+          "id": "aria.inboxView",
+          "name": "Inbox"
+        },
+        {
+          "id": "aria.accountView",
+          "name": "Account"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Aria",
+      "properties": {
+        "aria.url": {
+          "type": "string",
+          "default": "https://steady-scorpion-839.convex.site",
+          "description": "Aria backend URL (the deployed app)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "bunx tsc -p ./",
+    "compile": "bunx tsc -p ./",
+    "watch": "bunx tsc -watch -p ./",
+    "package": "bunx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.9.3"
+  }
+}

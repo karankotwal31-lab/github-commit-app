@@ -12,7 +12,8 @@
     "cli": "bun src/cli/aria.ts",
     "format": "prettier --write .",
     "preview": "vite preview",
-    "verify": "bunx convex dev --once && bunx tsc -b --noEmit && bun test"
+    "verify": "bunx convex dev --once && bunx tsc -b --noEmit && bun test",
+    "extension:typecheck": "cd extension && bunx tsc -p ./ --noEmit"
   },
   "dependencies": {
     "@auth/core": "^0.37.0",
