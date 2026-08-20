@@ -19,10 +19,13 @@ import {
   BookOpen,
   CheckCircle2,
   FileText,
+  Globe,
   GitBranch,
   History,
   Loader2,
   Lock,
+  Mail,
+  MonitorSmartphone,
   RefreshCw,
   ScrollText,
   ShieldAlert,
@@ -40,7 +43,8 @@ type Tab =
   | "memory"
   | "docs"
   | "missions"
-  | "flight";
+  | "flight"
+  | "sessions";
 
 const TABS: Array<[Tab, string, typeof ShieldCheck]> = [
   ["overview", "Health", Activity],
@@ -51,6 +55,7 @@ const TABS: Array<[Tab, string, typeof ShieldCheck]> = [
   ["docs", "Docs", FileText],
   ["missions", "Missions", Target],
   ["flight", "Flight & audit", History],
+  ["sessions", "Sessions", MonitorSmartphone],
 ];
 
 interface SecurityFinding {
@@ -188,9 +193,14 @@ export function SecurityCenterDialog({
   const missions = useQuery(api.securityCenter.listMissions, { repo: fullName });
   const flights = useQuery(api.securityCenter.listFlightRecords);
   const audit = useQuery(api.securityCenter.listAuditLogs);
+  const loginHistory = useQuery(api.securityHardening.listLoginHistory);
+  const sessions = useQuery(api.securityHardening.listSessions);
+  const securityEvents = useQuery(api.securityHardening.listSecurityEvents);
+  const emailStatus = useQuery(api.securityHardening.emailVerificationStatus);
 
   const scanRepo = useAction(api.securityScanner.scanRepo);
   const dismissFinding = useMutation(api.securityCenter.dismissSecurityFinding);
+  const signOutAllSessions = useMutation(api.securityHardening.signOutAllSessions);
 
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
@@ -309,6 +319,15 @@ export function SecurityCenterDialog({
             )}
             {tab === "flight" && (
               <FlightTab flights={flights ?? []} audit={audit ?? []} />
+            )}
+            {tab === "sessions" && (
+              <SessionsTab
+                loginHistory={loginHistory ?? []}
+                sessions={sessions ?? []}
+                securityEvents={securityEvents ?? []}
+                emailStatus={emailStatus}
+                onSignOutAll={() => signOutAllSessions({})}
+              />
             )}
           </div>
         </div>
@@ -1431,6 +1450,259 @@ function EmptyState({
       </div>
       <p className="mt-3 text-sm font-medium text-neutral-800">{title}</p>
       <p className="mt-1 max-w-sm text-xs leading-5 text-neutral-500">{body}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sessions — login history, active devices, security events, email status
+// ---------------------------------------------------------------------------
+
+function SessionsTab({
+  loginHistory,
+  sessions,
+  securityEvents,
+  emailStatus,
+  onSignOutAll,
+}: {
+  loginHistory: Array<{
+    _id: Id<"loginActivity">;
+    email: string;
+    result: string;
+    ip: string | null;
+    userAgent: string | null;
+    detail: string | null;
+    createdAt: number;
+  }>;
+  sessions: Array<{
+    _id: Id<"liveSessions">;
+    deviceId: string;
+    label: string;
+    repo: string | null;
+    branch: string | null;
+    path: string | null;
+    lastSeen: number;
+    active: boolean;
+  }>;
+  securityEvents: Array<{
+    _id: Id<"securityEvents">;
+    kind: string;
+    title: string;
+    detail: string;
+    sentAt: number;
+  }>;
+  emailStatus: {
+    email: string | null;
+    verified: boolean;
+    verifiedAt: number | null;
+  } | null | undefined;
+  onSignOutAll: () => void;
+}) {
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
+  const now = Date.now();
+
+  const RESULT_STYLE: Record<string, string> = {
+    success: "text-emerald-600",
+    failed_otp: "text-red-600",
+    locked_out: "text-red-600",
+    rate_limited: "text-amber-600",
+  };
+
+  const EVENT_STYLE: Record<string, string> = {
+    new_device: "text-sky-600",
+    lockout: "text-red-600",
+    sign_out_all: "text-amber-600",
+    token_revoked: "text-red-600",
+  };
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* Email verification status */}
+      <div>
+        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+          <Mail className="size-3.5" /> Email verification
+        </p>
+        {emailStatus ? (
+          <div className="mt-2 rounded-lg border border-neutral-200 px-3 py-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm text-neutral-700">
+                <span className="font-mono text-xs text-neutral-500">{emailStatus.email ?? "—"}</span>
+              </p>
+              <Badge
+                variant="outline"
+                className={cn(
+                  emailStatus.verified
+                    ? "border-emerald-200 text-emerald-600"
+                    : "border-amber-200 text-amber-600",
+                )}
+              >
+                {emailStatus.verified ? "Verified" : "Unverified"}
+              </Badge>
+            </div>
+            {emailStatus.verifiedAt && (
+              <p className="mt-1 text-[11px] text-neutral-400">
+                Verified {new Date(emailStatus.verifiedAt).toLocaleDateString()}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-neutral-400">Loading...</p>
+        )}
+      </div>
+
+      {/* Active sessions */}
+      <div>
+        <div className="flex items-center justify-between">
+          <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+            <MonitorSmartphone className="size-3.5" /> Active sessions
+          </p>
+          {sessions.length > 0 && (
+            <>
+              {confirmSignOut ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-red-500">Sign out all?</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    className="h-6 px-2 text-[11px]"
+                    onClick={() => {
+                      onSignOutAll();
+                      setConfirmSignOut(false);
+                    }}
+                  >
+                    Confirm
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-[11px]"
+                    onClick={() => setConfirmSignOut(false)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={() => setConfirmSignOut(true)}
+                >
+                  Sign out all
+                </Button>
+              )}
+            </>
+          )}
+        </div>
+        <div className="mt-2 flex flex-col gap-1.5">
+          {sessions.length === 0 ? (
+            <p className="text-xs text-neutral-400">No active sessions.</p>
+          ) : (
+            sessions.map((s) => (
+              <div
+                key={s._id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-neutral-700">{s.label}</p>
+                  <p className="mt-0.5 text-[11px] text-neutral-400">
+                    {s.repo ?? "—"}
+                    {s.path && <span className="text-neutral-300"> · {s.path}</span>}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span
+                    className={cn(
+                      "size-2 rounded-full",
+                      s.active ? "bg-emerald-500" : "bg-neutral-300",
+                    )}
+                  />
+                  <span className="text-[10px] text-neutral-400">
+                    {Math.floor((now - s.lastSeen) / 60_000)}m ago
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Security events */}
+      <div>
+        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+          <ShieldAlert className="size-3.5" /> Security events
+        </p>
+        <ul className="mt-2 divide-y divide-neutral-100">
+          {securityEvents.length === 0 ? (
+            <li className="py-1 text-xs text-neutral-400">No security events recorded.</li>
+          ) : (
+            securityEvents.map((e) => (
+              <li key={e._id} className="flex items-baseline justify-between gap-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-xs text-neutral-700">
+                    <span className={cn("font-medium", EVENT_STYLE[e.kind] ?? "text-neutral-600")}>
+                      {e.title}
+                    </span>
+                  </p>
+                  <p className="mt-0.5 truncate text-[11px] text-neutral-400">{e.detail}</p>
+                </div>
+                <span className="shrink-0 font-mono text-[10px] text-neutral-400">
+                  {new Date(e.sentAt).toLocaleString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                </span>
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
+
+      {/* Login history */}
+      <div>
+        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-neutral-400">
+          <Globe className="size-3.5" /> Login history
+        </p>
+        <ul className="mt-2 divide-y divide-neutral-100">
+          {loginHistory.length === 0 ? (
+            <li className="py-1 text-xs text-neutral-400">No login attempts recorded yet.</li>
+          ) : (
+            loginHistory.map((l) => (
+              <li key={l._id} className="flex items-baseline justify-between gap-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-xs text-neutral-700">
+                    <span className={cn("font-medium", RESULT_STYLE[l.result] ?? "text-neutral-600")}>
+                      {l.result === "success" ? "Signed in" : l.result === "failed_otp" ? "Failed attempt" : l.result === "locked_out" ? "Locked out" : "Rate limited"}
+                    </span>
+                    <span className="text-neutral-400"> · {l.email}</span>
+                  </p>
+                  {l.detail && (
+                    <p className="mt-0.5 truncate text-[11px] text-neutral-400">{l.detail}</p>
+                  )}
+                  {l.ip && (
+                    <p className="mt-0.5 font-mono text-[10px] text-neutral-400">
+                      IP: {l.ip}{l.userAgent && <span> · {l.userAgent.slice(0, 60)}</span>}
+                    </p>
+                  )}
+                </div>
+                <span className="shrink-0 font-mono text-[10px] text-neutral-400">
+                  {new Date(l.createdAt).toLocaleString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                </span>
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
     </div>
   );
 }

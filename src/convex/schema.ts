@@ -637,6 +637,57 @@ const schema = defineSchema(
     })
       .index("by_hash", ["tokenHash"])
       .index("by_user", ["userId"]),
+
+    // Login activity (security hardening): one row per sign-in attempt
+    // (success or failure). Records IP, user agent, timestamp, and result
+    // so users can spot unauthorized access. Capped per user; old entries
+    // are pruned automatically.
+    loginActivity: defineTable({
+      userId: v.optional(v.id("users")), // null for failed-attempt rows where user isn't known yet
+      email: v.string(), // the email that was attempted
+      result: v.union(
+        v.literal("success"),
+        v.literal("failed_otp"),
+        v.literal("locked_out"),
+        v.literal("rate_limited"),
+      ),
+      ip: v.optional(v.string()),
+      userAgent: v.optional(v.string()),
+      detail: v.optional(v.string()), // e.g. "wrong code attempt 3/5"
+      createdAt: v.number(),
+    })
+      .index("by_userId", ["userId"])
+      .index("by_email", ["email"])
+      .index("by_createdAt", ["createdAt"]),
+
+    // Account lockouts (security hardening): one row per email that has been
+    // temporarily locked after too many failed OTP attempts. The lock
+    // expires automatically — the query checks `lockedUntil` at read time.
+    accountLockouts: defineTable({
+      email: v.string(),
+      failedAttempts: v.number(), // count in current window
+      lockedUntil: v.optional(v.number()), // null = not locked, just counting
+      windowStart: v.number(), // start of the current failure window
+    }).index("by_email", ["email"]),
+
+    // Security event notifications (security hardening): alerts sent to the
+    // user about suspicious activity (new device login, lockout, etc.).
+    // Deduped by (userId, key) so the same event isn't emailed twice.
+    securityEvents: defineTable({
+      userId: v.id("users"),
+      key: v.string(), // dedup, e.g. "new_device:2026-08-20T10:00"
+      kind: v.union(
+        v.literal("new_device"),
+        v.literal("lockout"),
+        v.literal("sign_out_all"),
+        v.literal("token_revoked"),
+      ),
+      title: v.string(),
+      detail: v.string(),
+      sentAt: v.number(),
+    })
+      .index("by_userKey", ["userId", "key"])
+      .index("by_userId", ["userId"]),
   },
   {
     schemaValidation: false,
