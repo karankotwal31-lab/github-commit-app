@@ -21,25 +21,7 @@
   <meta name="twitter:card" content="summary" />
 
   <title>Aria — a quiet desk for your GitHub</title>
-
-  <!-- PWA: register the network-only service worker on production hosts only
-       (never on the dev/preview environment) so users get installability. -->
-  <script>
-    if (
-      "serviceWorker" in navigator &&
-      location.protocol === "https:" &&
-      !location.hostname.endsWith(".vly.sh") &&
-      location.hostname !== "localhost"
-    ) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/sw.js").catch(() => {
-          /* Installability is progressive — failure is harmless. */
-        });
-      });
-    }
-  </script>
 </head>
-
 
 <body style="background-color: #72D0D0;">
   <div id="root"></div>
