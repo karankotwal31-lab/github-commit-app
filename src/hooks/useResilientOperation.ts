@@ -11,7 +11,7 @@
  *   const { run, loading, error, retryCount, isRecovering } = useResilientOperation();
  *   await run(() => myConvexAction({ ... }));
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 interface ResilientState {
@@ -35,7 +35,6 @@ interface ResilientOptions {
 /** Classify an error as transient (worth retrying) vs permanent. */
 export function isRetryableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-  // Network errors, timeouts, rate limits, server errors — all retryable
   if (msg.includes("network") || msg.includes("timeout") || msg.includes("fetch")) return true;
   if (msg.includes("429") || msg.includes("rate limit")) return true;
   if (msg.includes("500") || msg.includes("502") || msg.includes("503") || msg.includes("504")) return true;
@@ -64,13 +63,11 @@ export function useResilientOperation(options?: ResilientOptions) {
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
 
-  // Cleanup on unmount
   const cleanup = useCallback(() => {
     abortRef.current?.abort();
     mountedRef.current = false;
   }, []);
 
-  // Reset to clean state
   const reset = useCallback(() => {
     setState({ loading: false, error: null, retryCount: 0, isRecovering: false });
   }, []);
@@ -113,13 +110,10 @@ export function useResilientOperation(options?: ResilientOptions) {
         }
       }
 
-      // Final failure
       const msg = lastError instanceof Error ? lastError.message : "An unexpected error occurred";
       if (!signal.aborted) {
         setState({ loading: false, error: msg, retryCount: 0, isRecovering: false });
-        if (showToast) {
-          toast.error(`${toastPrefix}${msg}`);
-        }
+        if (showToast) toast.error(`${toastPrefix}${msg}`);
       }
       return null;
     },
@@ -129,27 +123,23 @@ export function useResilientOperation(options?: ResilientOptions) {
   return { ...state, run, reset, cleanup };
 }
 
-/**
- * Checks if the browser is online and provides a reactive online status.
- */
+/** Reactive online status with normal React subscription lifecycle. */
 export function useOnlineStatus() {
   const [online, setOnline] = useState(
     typeof navigator !== "undefined" ? navigator.onLine : true,
   );
 
-  // Note: we intentionally don't add cleanup for the event listeners here
-  // because this hook lives for the app's lifetime. If you need cleanup,
-  // use the cleanup from useResilientOperation instead.
-  if (typeof window !== "undefined") {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
     const handleOnline = () => setOnline(true);
     const handleOffline = () => setOnline(false);
-    // Use a ref-based pattern to avoid double-subscribing in dev mode
-    if (!(window as any).__aria_online_hooked) {
-      (window as any).__aria_online_hooked = true;
-      window.addEventListener("online", handleOnline);
-      window.addEventListener("offline", handleOffline);
-    }
-  }
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
   return online;
 }
