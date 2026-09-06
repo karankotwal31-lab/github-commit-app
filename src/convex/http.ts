@@ -271,6 +271,9 @@ http.route({
   }),
 });
 
-registerStaticRoutes(http, components.staticHosting);
+registerStaticRoutes(
+  http,
+  components.staticHosting as Parameters<typeof registerStaticRoutes>[1],
+);
 
 export default http;
