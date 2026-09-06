@@ -1,4 +1,4 @@
-import '@vly-ai/integrations';
+import "@vly-ai/integrations";
 import { InstrumentationProvider } from "./instrumentation";
 import { Toaster } from "@/components/ui/sonner";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
@@ -9,19 +9,10 @@ import { ConvexReactClient } from "convex/react";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
-// Load Inter Variable through the bundler (guaranteed to resolve + ship with
-// the app), then the Tailwind theme that maps it to every font utility.
 import "@fontsource-variable/inter";
 import "./index.css";
 
-/**
- * Retry a dynamic import a few times before giving up.
- *
- * Dev servers re-optimize dependencies and occasionally restart, which can
- * briefly leave a chunk URL stale — navigating then fails with "Failed to
- * fetch dynamically imported module". Retrying with a short backoff turns
- * that transient failure into a seamless recovery instead of a dead screen.
- */
+/** Retry transient lazy-chunk failures before surfacing a route error. */
 async function importWithRetry<T>(loader: () => Promise<T>): Promise<T> {
   const MAX_ATTEMPTS = 3;
   let lastError: unknown;
@@ -38,7 +29,6 @@ async function importWithRetry<T>(loader: () => Promise<T>): Promise<T> {
   throw lastError;
 }
 
-// Lazy load route components for better code splitting.
 const Landing = lazy(() => importWithRetry(() => import("./pages/Landing.tsx")));
 const AuthPage = lazy(() => importWithRetry(() => import("./pages/Auth.tsx")));
 const Dashboard = lazy(() => importWithRetry(() => import("./pages/Dashboard.tsx")));
@@ -46,7 +36,6 @@ const NotFound = lazy(() => importWithRetry(() => import("./pages/NotFound.tsx")
 const Privacy = lazy(() => importWithRetry(() => import("./pages/Privacy.tsx")));
 const Terms = lazy(() => importWithRetry(() => import("./pages/Terms.tsx")));
 
-// Simple loading fallback for route transitions
 function RouteLoading() {
   return (
     <div className="min-h-screen flex items-center justify-center">
@@ -55,8 +44,6 @@ function RouteLoading() {
   );
 }
 
-/** Silent error boundary — if VlyToolbar crashes it renders nothing instead of
- *  crashing the whole app (e.g. hook errors in WebContainer environment). */
 class ToolbarErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean }
@@ -73,7 +60,7 @@ class ToolbarErrorBoundary extends React.Component<
   }
 }
 
-/** Hard guard so runtime errors never leave the preview as a blank page. */
+/** Runtime guard that never exposes production stack traces to end users. */
 class RootErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; message: string; stack: string }
@@ -87,18 +74,18 @@ class RootErrorBoundary extends React.Component<
     };
   }
   componentDidCatch(err: Error) {
-    console.error("[WebContainer preview] Root crash:", err);
+    console.error("[Aria] Root crash:", err);
   }
   render() {
     if (this.state.hasError) {
       return (
         <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-6">
           <div className="max-w-lg text-center">
-            <p className="text-sm font-semibold">Preview runtime error</p>
+            <p className="text-sm font-semibold">Aria hit an unexpected error</p>
             <p className="mt-2 text-xs text-muted-foreground break-words">
               {this.state.message}
             </p>
-            {this.state.stack && (
+            {import.meta.env.DEV && this.state.stack && (
               <pre className="mt-3 text-left text-[10px] leading-4 text-muted-foreground/80 max-h-40 overflow-auto rounded border border-border/60 p-2">
                 {this.state.stack}
               </pre>
@@ -108,7 +95,7 @@ class RootErrorBoundary extends React.Component<
               onClick={() => window.location.reload()}
               className="mt-4 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
             >
-              Reload preview
+              Reload Aria
             </button>
           </div>
         </div>
@@ -118,26 +105,68 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
+function createConvexClient(): ConvexReactClient | null {
+  const value = import.meta.env.VITE_CONVEX_URL?.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
+      return null;
+    }
+    return new ConvexReactClient(value);
+  } catch {
+    return null;
+  }
+}
 
+const convex = createConvexClient();
 
+function ConfigurationError() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-6">
+      <div className="max-w-lg text-center">
+        <p className="text-base font-semibold">Aria is not configured yet</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          The deployment is missing a valid VITE_CONVEX_URL. Configure the
+          production Convex URL and rebuild the frontend.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function parentOrigin(): string | null {
+  if (window.parent === window || !document.referrer) return null;
+  try {
+    return new URL(document.referrer).origin;
+  } catch {
+    return null;
+  }
+}
 
 function RouteSyncer() {
   const location = useLocation();
+
   useEffect(() => {
+    const targetOrigin = parentOrigin();
+    if (!targetOrigin) return;
     window.parent.postMessage(
       { type: "iframe-route-change", path: location.pathname },
-      "*",
+      targetOrigin,
     );
   }, [location.pathname]);
 
   useEffect(() => {
+    const targetOrigin = parentOrigin();
+    if (!targetOrigin) return;
+
     function handleMessage(event: MessageEvent) {
-      if (event.data?.type === "navigate") {
-        if (event.data.direction === "back") window.history.back();
-        if (event.data.direction === "forward") window.history.forward();
-      }
+      if (event.source !== window.parent || event.origin !== targetOrigin) return;
+      if (event.data?.type !== "navigate") return;
+      if (event.data.direction === "back") window.history.back();
+      if (event.data.direction === "forward") window.history.forward();
     }
+
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
@@ -145,33 +174,29 @@ function RouteSyncer() {
   return null;
 }
 
-/**
- * Registers the service worker. Always registered so web-push works; the
- * `?cache=1` flag (production builds only) tells the worker to also cache the
- * app shell so the app opens instantly on repeat visits.
- *
- * Self-repair: a transient registration failure (sandboxed iframe, storage
- * hiccup) is retried with backoff up to 3 times, and every time the tab
- * becomes visible again we nudge a waiting/outdated worker to update — and
- * re-register if the browser lost the registration entirely.
- */
+/** Register exactly one service worker on supported, trusted hosts. */
 function ServiceWorkerRegistrar() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
+    if (location.hostname.endsWith(".vly.sh")) return;
+    const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    if (!window.isSecureContext && !local) return;
+
     const flag = import.meta.env.PROD ? "?cache=1" : "";
     let cancelled = false;
     let attempts = 0;
-    let registered: ServiceWorkerRegistration | null = null;
+    let retryTimer: number | undefined;
 
     const register = async () => {
       if (cancelled) return;
       attempts += 1;
       try {
-        registered = await navigator.serviceWorker.register(`/sw.js${flag}`);
+        const registration = await navigator.serviceWorker.register(`/sw.js${flag}`);
+        if (!cancelled) void registration.update().catch(() => {});
       } catch (err) {
         if (!cancelled && attempts < 3) {
-          setTimeout(register, 1000 * attempts * attempts);
-        } else {
+          retryTimer = window.setTimeout(register, 1000 * attempts * attempts);
+        } else if (!cancelled) {
           console.warn("[PWA] Service worker registration failed:", err);
         }
       }
@@ -179,26 +204,27 @@ function ServiceWorkerRegistrar() {
 
     const onVisibility = () => {
       if (document.visibilityState !== "visible") return;
-      navigator.serviceWorker
+      void navigator.serviceWorker
         .getRegistration()
-        .then((reg) => {
-          if (reg) {
-            if (reg.waiting || reg.installing) void reg.update().catch(() => {});
-          } else if (!cancelled && registered === null) {
-            attempts = 0;
-            void register();
-          }
+        .then((registration) => {
+          if (registration) return registration.update();
+          attempts = 0;
+          return register();
         })
         .catch(() => {});
     };
 
-    const onLoad = () => {
+    const onLoad = () => void register();
+    if (document.readyState === "complete") {
       void register();
-    };
-    window.addEventListener("load", onLoad);
+    } else {
+      window.addEventListener("load", onLoad, { once: true });
+    }
     document.addEventListener("visibilitychange", onVisibility);
+
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       window.removeEventListener("load", onLoad);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -206,62 +232,68 @@ function ServiceWorkerRegistrar() {
   return null;
 }
 
-/**
- * GitHub OAuth popup bridge. The authorization flow runs in a popup because
- * GitHub refuses to render inside the preview iframe. When the Convex
- * callback redirects that popup back to the app (?github=connected|config|error),
- * this reports the outcome to the opener frame and closes the popup.
- */
+/** Bridge the GitHub OAuth popup only to its same-origin opener. */
 function OAuthPopupBridge() {
   useEffect(() => {
     if (!window.opener) return;
     const status = new URLSearchParams(window.location.search).get("github");
-    if (!status) return;
-    window.opener.postMessage({ type: "aria-github-oauth", status }, "*");
+    if (!status || !["connected", "config", "error"].includes(status)) return;
+    window.opener.postMessage(
+      { type: "aria-github-oauth", status },
+      window.location.origin,
+    );
     window.close();
   }, []);
 
   return null;
 }
 
+const rootElement = document.getElementById("root");
+if (!rootElement) {
+  throw new Error("Aria root element is missing.");
+}
 
-createRoot(document.getElementById("root")!).render(
+createRoot(rootElement).render(
   <StrictMode>
     <RootErrorBoundary>
-      <InstrumentationProvider>
-        <ToolbarErrorBoundary>
-          <VlyToolbar />
-        </ToolbarErrorBoundary>
-        <ConvexAuthProvider client={convex}>
-          <BrowserRouter>
-            <ServiceWorkerRegistrar />
-            <RouteSyncer />
-            <OAuthPopupBridge />
-            <Suspense fallback={<RouteLoading />}>
-              <Routes>
-                <Route path="/" element={<Landing />} />
-                <Route
-                  path="/auth"
-                  element={<AuthPage redirectAfterAuth="/dashboard" />}
-                />
-                <Route
-                  path="/dashboard"
-                  element={
-                    <RequireAuth>
-                      <Dashboard />
-                    </RequireAuth>
-                  }
-                />
-                <Route path="/privacy" element={<Privacy />} />
-                <Route path="/terms" element={<Terms />} />
-                <Route path="*" element={<NotFound />} />
-              </Routes>
-            </Suspense>
-          </BrowserRouter>
-          <Toaster />
-          <ConnectionBanner />
-        </ConvexAuthProvider>
-      </InstrumentationProvider>
+      {convex ? (
+        <InstrumentationProvider>
+          <ToolbarErrorBoundary>
+            <VlyToolbar />
+          </ToolbarErrorBoundary>
+          <ConvexAuthProvider client={convex}>
+            <BrowserRouter>
+              <ServiceWorkerRegistrar />
+              <RouteSyncer />
+              <OAuthPopupBridge />
+              <Suspense fallback={<RouteLoading />}>
+                <Routes>
+                  <Route path="/" element={<Landing />} />
+                  <Route
+                    path="/auth"
+                    element={<AuthPage redirectAfterAuth="/dashboard" />}
+                  />
+                  <Route
+                    path="/dashboard"
+                    element={
+                      <RequireAuth>
+                        <Dashboard />
+                      </RequireAuth>
+                    }
+                  />
+                  <Route path="/privacy" element={<Privacy />} />
+                  <Route path="/terms" element={<Terms />} />
+                  <Route path="*" element={<NotFound />} />
+                </Routes>
+              </Suspense>
+            </BrowserRouter>
+            <Toaster />
+            <ConnectionBanner />
+          </ConvexAuthProvider>
+        </InstrumentationProvider>
+      ) : (
+        <ConfigurationError />
+      )}
     </RootErrorBoundary>
   </StrictMode>,
 );
