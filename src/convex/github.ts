@@ -11,6 +11,7 @@ import { v, type GenericId } from "convex/values";
 import { type PlanId } from "../lib/plans";
 import { cleanCode, cleanLabel, cleanName, cleanPath } from "../lib/sanitize";
 import { FEATURE_FLAGS } from "./security";
+import { billingConfigured } from "./billingConfig";
 
 /** Clean a repo full-name arg, or throw when it's not a valid "owner/name". */
 function cleanRepoArg(raw: string): string {
@@ -735,9 +736,7 @@ export const repoUsage = query({
     }
     // Mirrors billing.ts: billing is "configured" only when keys AND a price
     // exist, so dev mode (keys absent) stays fully unlocked.
-    const configured = !!(
-      process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID
-    );
+    const configured = billingConfigured();
     const billingRow = await ctx.db
       .query("billing")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -937,7 +936,7 @@ export const getBlobUploadChunks = internalQuery({
   args: { uploadId: v.id("blobUploads") },
   handler: async (ctx, args) => {
     const upload = await ctx.db.get(args.uploadId);
-    if (upload === null) return null;
+    if (upload === null || upload.userId !== await getAuthUserId(ctx)) return null;
     const rows = await ctx.db
       .query("blobUploadChunks")
       .withIndex("by_upload", (q) => q.eq("uploadId", args.uploadId))
@@ -962,5 +961,24 @@ export const deleteBlobUpload = internalMutation({
       .collect();
     for (const chunk of chunks) await ctx.db.delete(chunk._id);
     await ctx.db.delete(args.uploadId);
+  },
+});
+
+
+/** Atomic repository admission: reopening the same repo never consumes a second slot. */
+export const admitRepo = internalMutation({
+  args: { repo: v.string(), isPrivate: v.boolean(), enforceLimit: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not signed in.");
+    const existing = await ctx.db.query("connectedRepos").withIndex("by_userRepo", q => q.eq("userId", userId).eq("repo", args.repo)).unique();
+    if (args.isPrivate && args.enforceLimit && !existing?.private) {
+      const billing = await ctx.db.query("billing").withIndex("by_userId", q => q.eq("userId", userId)).unique();
+      const repos = await ctx.db.query("connectedRepos").withIndex("by_userId", q => q.eq("userId", userId)).collect();
+      if ((!billing || billing.plan === "free") && repos.filter(r => r.private).length >= 1)
+        throw new Error("The Free plan includes one private repository. Upgrade to open another.");
+    }
+    if (existing) await ctx.db.patch(existing._id, { private: args.isPrivate, updatedAt: Date.now() });
+    else await ctx.db.insert("connectedRepos", { userId, repo: args.repo, private: args.isPrivate, updatedAt: Date.now() });
   },
 });

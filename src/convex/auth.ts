@@ -5,6 +5,10 @@ import { Anonymous } from "@convex-dev/auth/providers/Anonymous";
 import { emailOtp } from "./auth/emailOtp";
 
 
-export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
+const authImpl = convexAuth({
   providers: [emailOtp, Anonymous],
 });
+
+// Keep the provider-generated actions intact.  Convex Auth's sign-in action
+// carries internal state that must not be reimplemented or wrapped here.
+export const { auth, signIn, signOut, store, isAuthenticated } = authImpl;

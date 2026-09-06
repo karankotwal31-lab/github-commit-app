@@ -16,7 +16,7 @@ import { GITHUB_CALLBACK_PER_MINUTE } from "./security";
  * Add standard security headers to a Response. Applied to all routes via
  * a wrapper so every response carries them — even error pages.
  */
-function withSecurityHeaders(response: Response): Response {
+export function withSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
   // Prevent MIME-type sniffing.
   headers.set("X-Content-Type-Options", "nosniff");
@@ -41,12 +41,10 @@ function withSecurityHeaders(response: Response): Response {
   headers.set(
     "Content-Security-Policy",
     "default-src 'self'; " +
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; " +
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-      "font-src 'self' https://fonts.gstatic.com; " +
-      "img-src 'self' data: blob: https:; " +
-      "connect-src 'self' https://*.convex.cloud https://*.convex.site https://api.github.com https://github.com https://auth.freebuff.app; " +
-      "frame-ancestors 'none';",
+      "script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; " +
+      "img-src 'self' data: blob: https:; worker-src 'self' blob:; " +
+      "connect-src 'self' https://*.convex.cloud wss://*.convex.cloud https://*.convex.site https://api.github.com; " +
+      "frame-src https:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self';",
   );
   // Remove server identification.
   headers.delete("Server");
@@ -58,6 +56,31 @@ function withSecurityHeaders(response: Response): Response {
 }
 
 const http = httpRouter();
+// Wrap registrations, including provider and static-component routes.
+const register = http.route.bind(http);
+type RouteSpec = Parameters<typeof http.route>[0];
+http.route = ((spec: RouteSpec) =>
+  register({
+    ...spec,
+    handler: httpAction(async (_ctx, request) => {
+      try {
+        return withSecurityHeaders(
+          await (
+            spec.handler as unknown as {
+              invokeHttpAction(request: Request): Promise<Response>;
+            }
+          ).invokeHttpAction(request),
+        );
+      } catch {
+        return withSecurityHeaders(
+          Response.json(
+            { error: "Request failed. Please retry." },
+            { status: 500 },
+          ),
+        );
+      }
+    }),
+  })) as typeof http.route;
 
 auth.addHttpRoutes(http);
 
@@ -260,7 +283,7 @@ http.route({
 
 /** One PR, fully loaded for inline diff review (see internal.cli.prDetailByUser). */
 http.route({
-  path: "/api/cli/prs/{owner}/{repo}/{number}",
+  pathPrefix: "/api/cli/prs/",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
     const token = bearerOf(request);
@@ -268,12 +291,11 @@ http.route({
       ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
       : null;
     if (!userId) return unauthorized();
-    const params = (request as unknown as { params: Record<string, string> })
-      .params;
-    const owner = params.owner ?? "";
-    const repo = params.repo ?? "";
-    const number = Number(params.number);
-    if (!owner || !repo || !Number.isInteger(number) || number < 1) {
+    const match = new URL(request.url).pathname.match(/^\/api\/cli\/prs\/([^/]+)\/([^/]+)\/(\d+)$/);
+    const owner = match ? decodeURIComponent(match[1]) : "";
+    const repo = match ? decodeURIComponent(match[2]) : "";
+    const number = match ? Number(match[3]) : NaN;
+    if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo) || !Number.isInteger(number) || number < 1) {
       return Response.json({ error: "Invalid PR reference." }, { status: 400 });
     }
     try {

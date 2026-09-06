@@ -1,10 +1,12 @@
+import { PushActionHandler } from "./PushActionHandler";
 import { useAuth } from "@/hooks/use-auth";
 import { Loader2 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useLayoutEffect, useState, type ReactNode } from "react";
+import { setOfflineAccount } from "@/lib/offlineBuffer";
 import { Navigate, useLocation } from "react-router";
 
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { isLoading, isAuthenticated } = useAuth();
+  const { isLoading, isAuthenticated, user } = useAuth();
   const location = useLocation();
 
   if (isLoading) {
@@ -25,5 +27,15 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     );
   }
 
-  return children;
+  return user ? <OfflineAccount key={user._id} userId={user._id}>{children}</OfflineAccount> : null;
+}
+
+
+function OfflineAccount({ userId, children }: { userId: string; children: ReactNode }) {
+  const [ready, setReady] = useState(false);
+  useLayoutEffect(() => {
+    setOfflineAccount(userId); setReady(true);
+    return () => setOfflineAccount(null);
+  }, [userId]);
+  return ready ? <><PushActionHandler />{children}</> : null;
 }

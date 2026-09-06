@@ -23,28 +23,34 @@ export function PushActionHandler() {
     if (handling.current) return;
     handling.current = true;
     try {
-      const match = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+      const parsed = new URL(url);
+      const match = parsed.protocol === "https:" && parsed.hostname === "github.com"
+        ? parsed.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)$/) : null;
       if (!match) {
         // Not a PR URL (or not github.com) — just open it.
-        window.open(url, "_blank", "noopener");
         return;
       }
       const owner = match[1];
       const repo = match[2];
       const number = Number(match[3]);
       if (action === "approve") {
-        toast.promise(submitReview({ owner, repo, number, event: "approve" }), {
+        if (!window.confirm(`Approve ${owner}/${repo}#${number}? Review the latest changes first.`)) return;
+        const operation = submitReview({ owner, repo, number, event: "approve" });
+        toast.promise(operation, {
           loading: "Approving pull request…",
           success: () => `Approved ${owner}/${repo}#${number} ✅`,
           error: (e) => e instanceof Error ? e.message : "Approval failed.",
         });
+        await operation.catch(() => undefined);
       } else if (action === "merge") {
         if (!window.confirm(`Merge ${owner}/${repo}#${number}?`)) return;
-        toast.promise(mergePullRequest({ owner, repo, number }), {
+        const operation = mergePullRequest({ owner, repo, number });
+        toast.promise(operation, {
           loading: "Merging pull request…",
           success: () => `Merged ${owner}/${repo}#${number} 🔀`,
           error: (e) => e instanceof Error ? e.message : "Merge failed.",
         });
+        await operation.catch(() => undefined);
       } else {
         // comment (or unknown): the human writes the words on GitHub.
         window.open(url, "_blank", "noopener");
@@ -61,9 +67,8 @@ export function PushActionHandler() {
     const url = params.get("ariaUrl");
     if (action && url) {
       // Scrub the params so refresh/re-share doesn't re-fire the action.
-      const next = window.location.pathname + window.location.search
-        .replace(/[?&]ariaAction=[^&]*/, "")
-        .replace(/[?&]ariaUrl=[^&]*/, "");
+      params.delete("ariaAction"); params.delete("ariaUrl");
+      const next = window.location.pathname + (params.size ? `?${params}` : "");
       window.history.replaceState({}, "", next);
       void perform(action, url);
     }
@@ -85,3 +90,4 @@ export function PushActionHandler() {
 
   return null;
 }
+

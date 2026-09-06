@@ -1,3 +1,4 @@
+import { billingConfigured } from "./billingConfig";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import {
   internalMutation,
@@ -15,11 +16,6 @@ import { aiQuotaFor, periodKey, type PlanId } from "../lib/plans";
  * hiding: every Ask Aria call checks the quota before running and increments
  * the counter after a successful reply, so failed calls don't burn quota.
  */
-
-/** Whether billing is configured (keys present) — mirrors billing.ts. */
-function billingConfigured(): boolean {
-  return !!(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID);
-}
 
 /** Count Ask Aria calls used this calendar month. */
 async function countUsed(ctx: QueryCtx, userId: string): Promise<number> {

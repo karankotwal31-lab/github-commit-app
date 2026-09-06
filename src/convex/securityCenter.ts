@@ -180,7 +180,14 @@ export const deleteRule = mutation({
  * only flag it (the caller records an audit entry and continues).
  */
 export const ruleGateForFiles = internalQuery({
-  args: { repo: v.string(), files: v.array(v.string()) },
+  args: {
+    repo: v.string(),
+    files: v.array(v.string()),
+    // Background mission scans have no interactive auth identity; callers
+    // provide the owning user explicitly. Interactive actions still resolve
+    // the identity from the request when this is omitted.
+    userId: v.optional(v.id("users")),
+  },
   handler: async (ctx, args): Promise<
     {
       blocked: Array<{ file: string; title: string; body: string }>;
@@ -189,9 +196,9 @@ export const ruleGateForFiles = internalQuery({
   > => {
     // Rules are few per user; scan + filter is fine and avoids needing a
     // userId in this internal gate (the caller already enforced ownership).
-    const rows = (await ctx.db.query("projectRules").collect()).filter(
-      (r) => r.repo === args.repo,
-    );
+    const userId = args.userId ?? (await currentUserId(ctx));
+    const rows = await ctx.db.query("projectRules")
+      .withIndex("by_userRepo", q => q.eq("userId", userId).eq("repo", args.repo)).collect();
     const blocked: Array<{ file: string; title: string; body: string }> = [];
     const review: Array<{ file: string; title: string; body: string }> = [];
     for (const rule of rows) {

@@ -9,6 +9,7 @@ import { cleanMultiline, cleanPath } from "../lib/sanitize";
 import { fetchWithRetry } from "./net";
 import { captureEvent } from "./analytics";
 import { chatCompletion, hasAnyAiProvider } from "./aiProvider";
+import { billingConfigured } from "./billingConfig";
 import {
   AI_REQUESTS_PER_MINUTE,
   FEATURE_FLAGS,
@@ -502,7 +503,7 @@ export const aiReviewBranch = action({
     await assertAiRateLimit(ctx, userId);
     // Pro+ gate — enforced at the action layer, never by UI hiding. Skipped in
     // dev mode (no Stripe keys) so the app stays fully unlocked until then.
-    if (process.env.STRIPE_SECRET_KEY) {
+    if (billingConfigured()) {
       const billing = await ctx.runQuery(internal.billing.planForUser, {
         userId,
       });
@@ -1092,7 +1093,7 @@ export const aiPlanCrossRepo = action({
     // Team gate (server-side, never UI-hidden). Billing being unconfigured
     // (no Stripe keys yet) keeps development fully unlocked, mirroring the
     // rest of the app.
-    const configured = !!(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID);
+    const configured = billingConfigured();
     if (configured) {
       const billing = await ctx.runQuery(internal.billing.planForUser, { userId });
       const plan = billing?.plan ?? "free";

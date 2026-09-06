@@ -1,3 +1,4 @@
+import { billingConfigured } from "./billingConfig";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import { v } from "convex/values";
@@ -23,27 +24,9 @@ export const planValidator = v.union(
   v.literal("enterprise"),
 );
 
-/** Which env var holds the Stripe price id for a check-out-able tier. */
-const PRICE_ENV: Record<string, string> = {
-  pro: "STRIPE_PRICE_ID_PRO",
-  pro_plus: "STRIPE_PRICE_ID_PRO_PLUS",
-  team: "STRIPE_PRICE_ID_TEAM",
-};
-
 function env(name: string): string | null {
   const value = process.env[name];
   return value && value.trim() ? value : null;
-}
-
-/** Whether billing is configured on the backend (keys + at least one price). */
-function billingConfigured(): boolean {
-  return !!(
-    process.env.STRIPE_SECRET_KEY &&
-    (process.env.STRIPE_PRICE_ID ||
-      process.env.STRIPE_PRICE_ID_PRO ||
-      process.env.STRIPE_PRICE_ID_PRO_PLUS ||
-      process.env.STRIPE_PRICE_ID_TEAM)
-  );
 }
 
 /** Stripe price ids per tier, from env (STRIPE_PRICE_ID is the Pro legacy). */

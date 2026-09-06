@@ -47,6 +47,8 @@ import {
   pendingCommits,
   queueCommit,
   queueDraft,
+  getOfflineAccount,
+  offlineStorageDurable,
 } from "@/lib/offlineBuffer";
 
 // Per-tab device id for live presence. Module-scope so it is generated once
@@ -80,8 +82,15 @@ function Workspace({
     avatar: string | null;
   };
 }) {
-  const { signOut } = useAuth();
+  const { signOut, user } = useAuth();
+  const accountId = user!._id;
   const navigate = useNavigate();
+  useEffect(() => {
+    const warn = () => toast.warning("Browser storage is unavailable. Your offline work is held in this tab only; keep it open until it syncs.", { id: "offline-storage" });
+    window.addEventListener("aria-storage-unavailable", warn);
+    return () => window.removeEventListener("aria-storage-unavailable", warn);
+  }, []);
+
 
   const listRepositories = useAction(api.githubActions.listRepositories);
   const listContents = useAction(api.githubActions.listContents);
@@ -299,7 +308,7 @@ function Workspace({
         cursorLine: draftArgs.cursorLine ?? null,
         cursorColumn: draftArgs.cursorColumn ?? null,
         updatedAt: Date.now(),
-      });
+      }, accountId);
     });
   }, [selectedRepo, currentBranch, openFile, isNewFile, editorContent, saveDraft]);
 
@@ -867,7 +876,7 @@ function Workspace({
             cursorLine: draftArgs.cursorLine ?? null,
             cursorColumn: draftArgs.cursorColumn ?? null,
             updatedAt: Date.now(),
-          });
+          }, accountId);
         });
       }
     }, 600);
@@ -930,7 +939,7 @@ function Workspace({
           cursorLine: draftArgs.cursorLine ?? null,
           cursorColumn: draftArgs.cursorColumn ?? null,
           updatedAt: Date.now(),
-        });
+        }, accountId);
         void saveDraft(draftArgs).catch(() => {
           // The queue above already holds it — replay happens on reconnect.
         });
@@ -1068,6 +1077,7 @@ function Workspace({
         const queued = pendingCommits();
         let replayed = 0;
         for (const c of queued) {
+          if (getOfflineAccount() !== accountId) break;
           try {
             await commitChanges({
               owner: ownerOf(c.repo),
@@ -1078,9 +1088,14 @@ function Workspace({
               files: c.files.map((f) => ({
                 path: f.path,
                 action: f.action,
-                content: f.content ?? "",
+                expectedSha: f.expectedSha,
+                ...(f.content !== undefined ? { content: f.content } : {}),
+                ...(f.contentBase64 !== undefined ? { contentBase64: f.contentBase64 } : {}),
+                ...(f.mode !== undefined ? { mode: f.mode } : {}),
+                ...(f.gitlink !== undefined ? { gitlink: f.gitlink } : {}),
               })),
             });
+            if (getOfflineAccount() !== accountId) break;
             clearPendingCommit(c.id);
             replayed++;
           } catch {
@@ -1617,7 +1632,7 @@ function Workspace({
         setStaged((prev) => prev.filter((f) => f.path !== oldPath));
         setOpenFile({
           content: result.content,
-          sha: result.sha ?? "",
+          sha: result.blobSha ?? "",
           size: 0,
           truncated: false,
           path: clean,
@@ -1696,6 +1711,7 @@ function Workspace({
             path: f.path,
             content: f.content,
             action: f.action,
+            expectedSha: f.action === "create" ? null : f.sha,
           })),
         });
         setStatus({
@@ -1724,7 +1740,7 @@ function Workspace({
             setOpenFile({
               ...openFile,
               content: stagedOpen.content,
-              sha: result.sha ?? openFile.sha,
+              sha: (await getFile({ owner: ownerOf(selectedRepo.fullName), repo: repoNameOf(selectedRepo.fullName), branch: result.sha!, path: openFile.path })).sha,
             });
             setEditorContent(stagedOpen.content);
           }
@@ -1742,8 +1758,8 @@ function Workspace({
           }).catch(() => {});
         }
       } catch (e) {
-        const message = errorMessage(e);
-        const offline = !navigator.onLine || isNetworkError(message);
+        const failureMessage = errorMessage(e);
+        const offline = !navigator.onLine || isNetworkError(failureMessage);
         if (offline) {
           queueCommit({
             repo: selectedRepo.fullName,
@@ -1753,21 +1769,23 @@ function Workspace({
             files: staged.map((f) => ({
               path: f.path,
               action: f.action,
+              expectedSha: f.action === "create" ? null : f.sha,
               content: f.content,
             })),
-          });
+          }, accountId);
           setPendingCommitsVersion((v) => v + 1);
           setStaged([]);
           setStagedDiffOpen(null);
+          setAllowSecrets(false);
           setStatus({
             kind: "ok",
-            text: "Saved offline — will commit when you're back online.",
+            text: offlineStorageDurable() ? "Saved offline — will commit when you are back online." : "Queued in memory only. Keep this tab open until it syncs.",
           });
           toast.warning(
             "Offline — commit queued on this device and will push when you reconnect.",
           );
         } else {
-          setStatus({ kind: "err", text: message });
+          setStatus({ kind: "err", text: errorMessage(e) });
         }
       } finally {
         setCommitting(false);
@@ -1817,14 +1835,14 @@ function Workspace({
         setOpenFile({
           ...openFile,
           content: editorContent,
-          sha: result.sha ?? "",
+          sha: result.blobSha ?? "",
         });
         setIsNewFile(false);
       } else {
         setOpenFile({
           ...openFile,
           content: editorContent,
-          sha: result.sha ?? openFile.sha,
+          sha: result.blobSha ?? openFile.sha,
         });
       }
       setAllowSecrets(false);
@@ -1835,8 +1853,8 @@ function Workspace({
         path: openFile.path,
       }).catch(() => {});
     } catch (e) {
-      const message = errorMessage(e);
-      const offline = !navigator.onLine || isNetworkError(message);
+      const failureMessage = errorMessage(e);
+      const offline = !navigator.onLine || isNetworkError(failureMessage);
       if (offline) {
         queueCommit({
           repo: selectedRepo.fullName,
@@ -1847,20 +1865,22 @@ function Workspace({
             {
               path: openFile.path,
               action: isNewFile ? "create" : "update",
+              expectedSha: isNewFile ? null : openFile.sha,
               content: editorContent,
             },
           ],
-        });
+        }, accountId);
         setPendingCommitsVersion((v) => v + 1);
+        setAllowSecrets(false);
         setStatus({
           kind: "ok",
-          text: "Saved offline — will commit when you're back online.",
+          text: offlineStorageDurable() ? "Saved offline — will commit when you are back online." : "Queued in memory only. Keep this tab open until it syncs.",
         });
         toast.warning(
           "Offline — commit queued on this device and will push when you reconnect.",
         );
       } else {
-        setStatus({ kind: "err", text: message });
+        setStatus({ kind: "err", text: errorMessage(e) });
       }
     } finally {
       setCommitting(false);
@@ -1892,7 +1912,33 @@ function Workspace({
       setStatus({ kind: "ok", text: `Deleted the file.` });
       toast.success("File deleted");
     } catch (e) {
-      setStatus({ kind: "err", text: errorMessage(e) });
+      const failureMessage = errorMessage(e);
+      const offline = !navigator.onLine || isNetworkError(failureMessage);
+      if (offline) {
+        queueCommit({
+          repo: selectedRepo.fullName,
+          branch: currentBranch,
+          message: `Delete ${openFile.path}`,
+          files: [{ path: openFile.path, action: "delete", expectedSha: openFile.sha }],
+        }, accountId);
+        setPendingCommitsVersion((v) => v + 1);
+        const dir = openFile.path.includes("/")
+          ? openFile.path.slice(0, openFile.path.lastIndexOf("/"))
+          : "";
+        setStaged((prev) => prev.filter((f) => f.path !== openFile.path));
+        setOpenFile(null);
+        setIsNewFile(false);
+        setPath(dir);
+        setStatus({
+          kind: "ok",
+          text: offlineStorageDurable()
+            ? "Deletion queued offline — it will be committed when you reconnect."
+            : "Deletion queued in memory only. Keep this tab open until it syncs.",
+        });
+        toast.warning("Offline — deletion queued and will push when you reconnect.");
+      } else {
+        setStatus({ kind: "err", text: failureMessage });
+      }
     } finally {
       setDeleting(false);
       setDeleteOpen(false);
@@ -1925,6 +1971,7 @@ function Workspace({
   };
 
   const handleSignOut = async () => {
+    if (!offlineStorageDurable() && !window.confirm("Some edits are only in memory. Keep this tab open to recover them. Sign out anyway?")) return;
     await signOut();
     navigate("/");
   };

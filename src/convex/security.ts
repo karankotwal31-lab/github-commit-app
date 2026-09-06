@@ -9,21 +9,20 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { type PlanId } from "../lib/plans";
 
 /**
  * Security & reliability core — shared by every Part D feature:
  *
  *  - Rate limits: fixed one-minute window counters in `rateLimits`, keyed by
  *    bucket ("ai:<user>", "github:<user>", "otp:<email>", "ghcallback:<ip>").
- *    Soft enforcement: a limiter hiccup never blocks a request.
+ *    Fail-closed enforcement: a limiter hiccup cannot silently bypass a
+ *    protected budget.
  *  - Feature switches: global kill switches in `featureFlags` (absent row =
  *    enabled). Enforcement is server-side, at the action/mutation/cron layer.
  *  - Error log: server-side failures worth reviewing in `errorLogs`, surfaced
  *    in the admin console. A log entry still needs a human to read it.
  *  - Admin gating: feature switches, health results and error logs are
- *    admin-only (role "admin", or a Team/Enterprise plan — mirroring the
- *    existing admin-console authorization model).
+ *    restricted to users with the explicit server-side admin role.
  */
 
 export const RATE_WINDOW_MS = 60_000;
@@ -89,7 +88,7 @@ export async function checkRateLimit(
     await ctx.db.patch(existing._id, { count: existing.count + 1 });
     return allowed;
   } catch {
-    return true; // a limiter failure must never take the app down
+    return false; // Reject when an authorization budget cannot be checked.
   }
 }
 
@@ -158,12 +157,7 @@ async function isAdminUser(ctx: QueryCtx | MutationCtx): Promise<boolean> {
   if (userId === null) return false;
   const user = await ctx.db.get(userId);
   if (user?.role === "admin") return true;
-  const billingRow = await ctx.db
-    .query("billing")
-    .withIndex("by_userId", (q) => q.eq("userId", userId))
-    .unique();
-  const plan: PlanId = (billingRow?.plan ?? "free") as PlanId;
-  return plan === "team" || plan === "enterprise";
+  return false;
 }
 
 /** Flip a feature switch. Admin-only; takes effect server-side immediately. */

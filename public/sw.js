@@ -59,6 +59,7 @@ self.addEventListener("fetch", (event) => {
       event.respondWith(
         fetch(request)
           .then((response) => {
+            if (!response.ok) return response;
             const copy = response.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put("/index.html", copy));
             return response;
@@ -74,7 +75,8 @@ self.addEventListener("fetch", (event) => {
         caches.match(request).then((cached) => {
           const network = fetch(request)
             .then((response) => {
-              const copy = response.clone();
+              if (!response.ok) return response;
+            const copy = response.clone();
               caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
               return response;
             })
@@ -125,7 +127,13 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const target = event.notification.data?.url || "/";
+  const destination = event.notification.data?.url || "/";
+  const app = new URL("/dashboard", self.location.origin);
+  if (event.action) {
+    app.searchParams.set("ariaAction", event.action);
+    app.searchParams.set("ariaUrl", destination);
+  } else if (destination.startsWith("/")) app.pathname = destination;
+  const target = app.href;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
@@ -138,3 +146,4 @@ self.addEventListener("notificationclick", (event) => {
     }),
   );
 });
+
