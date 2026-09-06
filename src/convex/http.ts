@@ -7,59 +7,29 @@ import { registerStaticRoutes } from "@convex-dev/static-hosting";
 import { stripeWebhook } from "./stripeWebhook";
 import { fetchWithRetry } from "./net";
 import { GITHUB_CALLBACK_PER_MINUTE } from "./security";
+import { withSecurityHeaders } from "./httpSecurity";
 
 // ---------------------------------------------------------------------------
 // Security headers middleware (Part E)
 // ---------------------------------------------------------------------------
 
-/**
- * Add standard security headers to a Response. Applied to all routes via
- * a wrapper so every response carries them — even error pages.
- */
-function withSecurityHeaders(response: Response): Response {
-  const headers = new Headers(response.headers);
-  // Prevent MIME-type sniffing.
-  headers.set("X-Content-Type-Options", "nosniff");
-  // Clickjacking protection.
-  headers.set("X-Frame-Options", "DENY");
-  // XSS filter (legacy browsers).
-  headers.set("X-XSS-Protection", "1; mode=block");
-  // Referrer policy — send origin only on cross-origin.
-  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  // Permissions policy — disable camera, microphone, geolocation by default.
-  headers.set(
-    "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=(), interest-cohort=()",
-  );
-  // Strict Transport Security — 1 year, include subdomains.
-  headers.set(
-    "Strict-Transport-Security",
-    "max-age=31536000; includeSubDomains",
-  );
-  // Content Security Policy — restrict resource origins. Tighten in
-  // production by replacing 'unsafe-inline' with nonce-based CSP.
-  headers.set(
-    "Content-Security-Policy",
-    "default-src 'self'; " +
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; " +
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-      "font-src 'self' https://fonts.gstatic.com; " +
-      "img-src 'self' data: blob: https:; " +
-      "connect-src 'self' https://*.convex.cloud https://*.convex.site https://api.github.com https://github.com https://auth.freebuff.app; " +
-      "frame-ancestors 'none';",
-  );
-  // Remove server identification.
-  headers.delete("Server");
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
 const http = httpRouter();
 
 auth.addHttpRoutes(http);
+
+/**
+ * Wrap a route handler so its response always carries the standard security
+ * headers, regardless of which branch/return inside it fires. Use this in
+ * place of a bare `httpAction(...)` for every route below.
+ */
+function secured(
+  fn: (ctx: Parameters<Parameters<typeof httpAction>[0]>[0], request: Request) => Promise<Response>,
+) {
+  return httpAction(async (ctx, request) => {
+    const response = await fn(ctx, request);
+    return withSecurityHeaders(response);
+  });
+}
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "aria";
@@ -71,7 +41,7 @@ const USER_AGENT = "aria";
 http.route({
   path: "/api/github/callback",
   method: "GET",
-  handler: httpAction(async (ctx, request) => {
+  handler: secured(async (ctx, request) => {
     // The request arrives at the Convex site domain, so its origin IS the
     // site URL — don't depend on env vars that may be unset.
     const siteUrl =
@@ -205,7 +175,7 @@ const unauthorized = () =>
 http.route({
   path: "/api/cli/whoami",
   method: "GET",
-  handler: httpAction(async (ctx, request) => {
+  handler: secured(async (ctx, request) => {
     const token = bearerOf(request);
     const userId = token
       ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
@@ -219,7 +189,7 @@ http.route({
 http.route({
   path: "/api/cli/repos",
   method: "GET",
-  handler: httpAction(async (ctx, request) => {
+  handler: secured(async (ctx, request) => {
     const token = bearerOf(request);
     const userId = token
       ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
@@ -233,7 +203,7 @@ http.route({
 http.route({
   path: "/api/cli/inbox",
   method: "GET",
-  handler: httpAction(async (ctx, request) => {
+  handler: secured(async (ctx, request) => {
     const token = bearerOf(request);
     const userId = token
       ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
@@ -247,7 +217,7 @@ http.route({
 http.route({
   path: "/api/cli/prs",
   method: "GET",
-  handler: httpAction(async (ctx, request) => {
+  handler: secured(async (ctx, request) => {
     const token = bearerOf(request);
     const userId = token
       ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
@@ -262,7 +232,7 @@ http.route({
 http.route({
   path: "/api/cli/prs/{owner}/{repo}/{number}",
   method: "GET",
-  handler: httpAction(async (ctx, request) => {
+  handler: secured(async (ctx, request) => {
     const token = bearerOf(request);
     const userId = token
       ? await ctx.runMutation(internal.cli.verifyCliToken, { token })

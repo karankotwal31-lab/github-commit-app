@@ -680,10 +680,10 @@ export const getCommitDetails = action({
     const token = await getToken(ctx);
     const data = await githubFetch<{
       sha: string;
-      tree?: { sha: string };
       parents?: Array<{ sha: string }>;
       commit: {
         message: string;
+        tree?: { sha: string };
         author: {
           name: string | null;
           email: string | null;
@@ -708,7 +708,10 @@ export const getCommitDetails = action({
     );
     return {
       sha: data.sha,
-      treeSha: data.tree?.sha ?? null,
+      // GitHub nests the git tree under `commit.tree`, not at the response
+      // root — reading `data.tree` here always returned undefined against
+      // the real API, silently breaking clone initialization.
+      treeSha: data.commit.tree?.sha ?? null,
       parents: (data.parents ?? []).map((p) => p.sha),
       message: data.commit.message,
       author: {
@@ -1803,8 +1806,12 @@ export const getBranchChecks = action({
       "cancelled",
       "action_required",
     ]);
+    // GitHub's legacy status API can report "error" (e.g. the check crashed)
+    // distinctly from "failure" (it ran and explicitly failed) — both mean
+    // the branch isn't clean. Previously only "failure" was checked, so an
+    // "error" status silently fell through to overall = "success".
     const anyFailure =
-      statusContexts.some((s) => s.state === "failure") ||
+      statusContexts.some((s) => s.state === "failure" || s.state === "error") ||
       checkRuns.some((c) => c.conclusion !== null && failedConclusions.has(c.conclusion));
     const anyPending =
       statusContexts.some((s) => s.state === "pending") ||
@@ -2111,13 +2118,18 @@ export const submitReview = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    // GitHub's review API requires the event value uppercase (APPROVE /
+    // REQUEST_CHANGES / COMMENT). This previously sent the lowercase literal
+    // straight through, which GitHub rejects — the feature never actually
+    // submitted a review.
+    const githubEvent = args.event === "approve" ? "APPROVE" : "COMMENT";
     const data = await githubFetch<{ id: number; state: string }>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls/${args.number}/reviews`,
       token,
       {
         method: "POST",
         body: JSON.stringify({
-          event: args.event,
+          event: githubEvent,
           body:
             args.body ??
             (args.event === "approve"

@@ -1,5 +1,6 @@
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { withSecurityHeaders } from "./httpSecurity";
 
 /**
  * Stripe webhook route (non-node http action). Signature verification and
@@ -10,7 +11,7 @@ import { internal } from "./_generated/api";
 export const stripeWebhook = httpAction(async (ctx, request) => {
   const signature = request.headers.get("stripe-signature");
   if (!signature) {
-    return new Response("Missing signature", { status: 400 });
+    return withSecurityHeaders(new Response("Missing signature", { status: 400 }));
   }
   const rawBody = await request.text();
 
@@ -19,7 +20,7 @@ export const stripeWebhook = httpAction(async (ctx, request) => {
     { rawBody, signature },
   );
   if (!result.ok) {
-    return new Response(result.error ?? "Invalid webhook", { status: 400 });
+    return withSecurityHeaders(new Response(result.error ?? "Invalid webhook", { status: 400 }));
   }
-  return new Response("ok", { status: 200 });
+  return withSecurityHeaders(new Response("ok", { status: 200 }));
 });

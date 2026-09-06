@@ -9,7 +9,6 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { type PlanId } from "../lib/plans";
 
 /**
  * Security & reliability core — shared by every Part D feature:
@@ -150,20 +149,18 @@ export const getFeatureFlags = query({
 });
 
 /**
- * Admin gate for feature switches: the built-in "admin" role, or a
- * Team/Enterprise plan (the same authorization model as the admin console).
+ * Platform-admin gate for global controls (feature switches affecting every
+ * user, and the shared platform error log). This is intentionally NOT tied
+ * to billing plan: a paying Team/Enterprise customer is not platform staff.
+ * Fixed 2026: previously any Team/Enterprise-plan user passed this check,
+ * which let paying customers flip global feature flags and read every
+ * user's error logs. Subscription tier must never imply platform authority.
  */
 async function isAdminUser(ctx: QueryCtx | MutationCtx): Promise<boolean> {
   const userId = await getAuthUserId(ctx);
   if (userId === null) return false;
   const user = await ctx.db.get(userId);
-  if (user?.role === "admin") return true;
-  const billingRow = await ctx.db
-    .query("billing")
-    .withIndex("by_userId", (q) => q.eq("userId", userId))
-    .unique();
-  const plan: PlanId = (billingRow?.plan ?? "free") as PlanId;
-  return plan === "team" || plan === "enterprise";
+  return user?.role === "admin";
 }
 
 /** Flip a feature switch. Admin-only; takes effect server-side immediately. */
