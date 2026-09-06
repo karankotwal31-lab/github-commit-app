@@ -1,0 +1,48 @@
+name: Production Check
+
+on:
+  push:
+    branches:
+      - production-hardening-gpt
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck and build
+        run: bun run build
+
+      - name: Unit tests
+        run: bun test
+
+      - name: Legacy extension typecheck
+        run: bun run extension:typecheck
+
+      - name: VS Code extension install
+        working-directory: extensions/vscode
+        run: bun install --frozen-lockfile
+
+      - name: VS Code extension tests
+        working-directory: extensions/vscode
+        run: bun test
