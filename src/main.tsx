@@ -12,7 +12,6 @@ import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import "@fontsource-variable/inter";
 import "./index.css";
 
-/** Retry transient lazy-chunk failures before surfacing a route error. */
 async function importWithRetry<T>(loader: () => Promise<T>): Promise<T> {
   const MAX_ATTEMPTS = 3;
   let lastError: unknown;
@@ -60,7 +59,6 @@ class ToolbarErrorBoundary extends React.Component<
   }
 }
 
-/** Runtime guard that never exposes production stack traces to end users. */
 class RootErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; message: string; stack: string }
@@ -110,7 +108,11 @@ function createConvexClient(): ConvexReactClient | null {
   if (!value) return null;
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
+    if (
+      url.protocol !== "https:" &&
+      url.hostname !== "localhost" &&
+      url.hostname !== "127.0.0.1"
+    ) {
       return null;
     }
     return new ConvexReactClient(value);
@@ -174,12 +176,12 @@ function RouteSyncer() {
   return null;
 }
 
-/** Register exactly one service worker on supported, trusted hosts. */
 function ServiceWorkerRegistrar() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
     if (location.hostname.endsWith(".vly.sh")) return;
-    const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    const local =
+      location.hostname === "localhost" || location.hostname === "127.0.0.1";
     if (!window.isSecureContext && !local) return;
 
     const flag = import.meta.env.PROD ? "?cache=1" : "";
@@ -187,7 +189,7 @@ function ServiceWorkerRegistrar() {
     let attempts = 0;
     let retryTimer: number | undefined;
 
-    const register = async () => {
+    const register = async (): Promise<void> => {
       if (cancelled) return;
       attempts += 1;
       try {
@@ -195,7 +197,7 @@ function ServiceWorkerRegistrar() {
         if (!cancelled) void registration.update().catch(() => {});
       } catch (err) {
         if (!cancelled && attempts < 3) {
-          retryTimer = window.setTimeout(register, 1000 * attempts * attempts);
+          retryTimer = window.setTimeout(() => void register(), 1000 * attempts * attempts);
         } else if (!cancelled) {
           console.warn("[PWA] Service worker registration failed:", err);
         }
@@ -207,9 +209,12 @@ function ServiceWorkerRegistrar() {
       void navigator.serviceWorker
         .getRegistration()
         .then((registration) => {
-          if (registration) return registration.update();
+          if (registration) {
+            void registration.update().catch(() => {});
+            return;
+          }
           attempts = 0;
-          return register();
+          void register();
         })
         .catch(() => {});
     };
@@ -232,7 +237,6 @@ function ServiceWorkerRegistrar() {
   return null;
 }
 
-/** Bridge the GitHub OAuth popup only to its same-origin opener. */
 function OAuthPopupBridge() {
   useEffect(() => {
     if (!window.opener) return;
@@ -248,19 +252,27 @@ function OAuthPopupBridge() {
   return null;
 }
 
-const rootElement = document.getElementById("root");
-if (!rootElement) {
-  throw new Error("Aria root element is missing.");
+function shouldRenderBuilderToolbar(): boolean {
+  return (
+    import.meta.env.DEV ||
+    location.hostname.endsWith(".vly.sh") ||
+    location.hostname.includes("daytonaproxy")
+  );
 }
+
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("Aria root element is missing.");
 
 createRoot(rootElement).render(
   <StrictMode>
     <RootErrorBoundary>
       {convex ? (
         <InstrumentationProvider>
-          <ToolbarErrorBoundary>
-            <VlyToolbar />
-          </ToolbarErrorBoundary>
+          {shouldRenderBuilderToolbar() && (
+            <ToolbarErrorBoundary>
+              <VlyToolbar />
+            </ToolbarErrorBoundary>
+          )}
           <ConvexAuthProvider client={convex}>
             <BrowserRouter>
               <ServiceWorkerRegistrar />
