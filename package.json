@@ -6,14 +6,15 @@
   "scripts": {
     "dev": "vite",
     "deploy": "npx @convex-dev/static-hosting deploy",
-    "build": "tsc -b && vite build",
+    "build": "npm run codegen && tsc -b && vite build",
     "lint": "eslint .",
     "test": "bun test",
     "cli": "bun src/cli/aria.ts",
     "format": "prettier --write .",
     "preview": "vite preview",
     "verify": "bunx convex dev --once && bunx tsc -b --noEmit && bun test",
-    "extension:typecheck": "cd extension && bunx tsc -p ./ --noEmit"
+    "extension:typecheck": "cd extension && bunx tsc -p ./ --noEmit",
+    "codegen": "convex codegen"
   },
   "dependencies": {
     "@auth/core": "^0.37.0",
