@@ -16,15 +16,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-/**
- * Boot-time + on-demand self-repair for local state.
- *
- * The app persists small JSON blobs in localStorage under `aria.*` keys
- * (offline draft buffer, PR draft, plugin installs). If any of them is ever
- * written partially (tab killed mid-write, storage driver glitch) the app
- * would re-read corrupt JSON forever. The repair sweep parses every `aria.*`
- * key and drops only the ones that fail to parse — the rest is untouched.
- */
+function isDevelopmentSurface(): boolean {
+  if (import.meta.env.DEV) return true;
+  if (typeof location === "undefined") return false;
+  return (
+    location.hostname.endsWith(".vly.sh") ||
+    location.hostname.includes("daytonaproxy")
+  );
+}
+
 function repairLocalState(): string[] {
   const removed: string[] = [];
   try {
@@ -40,24 +40,18 @@ function repairLocalState(): string[] {
       }
     }
   } catch {
-    // Storage blocked entirely — nothing to repair, nothing lost.
+    // Storage can be blocked by browser policy; local repair is best-effort.
   }
   return removed;
 }
 
-/**
- * User-facing self-repair: drop corrupt local state, unregister any stale
- * service worker, and reload. Repos and data live on GitHub/Convex, so this
- * is always safe — worst case the current unsaved editor buffer is lost,
- * and even that is usually recoverable from the draft vault.
- */
 async function repairAndReload(): Promise<void> {
   repairLocalState();
   try {
     const regs = await navigator.serviceWorker?.getRegistrations();
     await Promise.all((regs ?? []).map((r) => r.unregister()));
   } catch {
-    // Ignore — unregister is best-effort.
+    // Unregister is best-effort.
   }
   window.location.reload();
 }
@@ -78,11 +72,9 @@ function normalizeError(value: unknown): GenericError {
       stack: value.stack || "",
     };
   }
-
   if (typeof value === "string") {
     return { error: value || "Unknown runtime error", stack: "" };
   }
-
   if (value && typeof value === "object") {
     const candidate = value as {
       message?: unknown;
@@ -95,13 +87,11 @@ function normalizeError(value: unknown): GenericError {
         : typeof candidate.error === "string"
           ? candidate.error
           : "";
-
     return {
       error: message || "Unknown runtime error",
       stack: typeof candidate.stack === "string" ? candidate.stack : "",
     };
   }
-
   return {
     error: value == null ? "Unknown runtime error" : String(value),
     stack: "",
@@ -117,22 +107,32 @@ async function reportErrorToVly(errorData: {
 }) {
   const appId = import.meta.env.VITE_VLY_APP_ID;
   const monitoringUrl = import.meta.env.VITE_VLY_MONITORING_URL;
+  if (!appId || !monitoringUrl) return;
 
-  if (!appId || !monitoringUrl) {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(monitoringUrl);
+  } catch {
     return;
   }
+  if (endpoint.protocol !== "https:") return;
 
   try {
-    await fetch(monitoringUrl, {
+    await fetch(endpoint, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...errorData,
-        url: window.location.href,
+        // Never send query strings or fragments; they can contain transient
+        // OAuth/billing state and are not required for crash grouping.
+        url: `${window.location.origin}${window.location.pathname}`,
         projectSemanticIdentifier: appId,
       }),
     });
   } catch (error) {
-    console.error("Failed to report error to Vly:", error);
+    if (isDevelopmentSurface()) {
+      console.error("Failed to report error to Vly:", error);
+    }
   }
 }
 
@@ -143,14 +143,18 @@ function ErrorDialog({
   error: GenericError;
   setError: (error: GenericError | null) => void;
 }) {
-  const technicalDetails = [
-    error.filename &&
-      `Source: ${error.filename}${error.lineno ? `:${error.lineno}` : ""}${error.colno ? `:${error.colno}` : ""}`,
-    error.stack && `Stack trace:\n${error.stack}`,
-    error.componentStack && `Component stack:\n${error.componentStack}`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const devSurface = isDevelopmentSurface();
+  const technicalDetails = devSurface
+    ? [
+        error.filename &&
+          `Source: ${error.filename}${error.lineno ? `:${error.lineno}` : ""}${error.colno ? `:${error.colno}` : ""}`,
+        error.stack && `Stack trace:\n${error.stack}`,
+        error.componentStack && `Component stack:\n${error.componentStack}`,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+    : "";
+  const appId = import.meta.env.VITE_VLY_APP_ID;
 
   return (
     <Dialog
@@ -168,8 +172,9 @@ function ErrorDialog({
             <div>
               <DialogTitle className="text-base">Runtime error</DialogTitle>
               <DialogDescription className="mt-1 text-zinc-400">
-                The preview stopped while rendering. Open the editor to fix the
-                issue, or close this message to keep browsing.
+                {devSurface
+                  ? "The preview stopped while rendering. Repair and reload, or open the editor to inspect it."
+                  : "Aria encountered an unexpected error. You can repair local state and reload safely."}
               </DialogDescription>
             </div>
           </div>
@@ -204,26 +209,30 @@ function ErrorDialog({
         )}
 
         <DialogFooter className="gap-3 sm:items-center">
-          <span className="text-xs text-zinc-500">
-            Your error details are also available in chat.
-          </span>
+          {devSurface && (
+            <span className="text-xs text-zinc-500">
+              Technical details are available only on development surfaces.
+            </span>
+          )}
           <Button
             variant="outline"
             className="border-zinc-700 text-zinc-200 hover:bg-zinc-800"
             onClick={() => void repairAndReload()}
-            title="Clears corrupted local data and reloads — your repositories are safe on GitHub."
+            title="Clears corrupted local data and reloads — repository data stays on GitHub/Convex."
           >
             <RefreshCw className="h-4 w-4" /> Repair & reload
           </Button>
-          <a
-            href={`https://freebuff.com/project/${import.meta.env.VITE_VLY_APP_ID}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <Button className="bg-zinc-100 text-zinc-900 hover:bg-white">
-              <ExternalLink className="h-4 w-4" /> Open editor
-            </Button>
-          </a>
+          {devSurface && appId && (
+            <a
+              href={`https://freebuff.com/project/${encodeURIComponent(appId)}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <Button className="bg-zinc-100 text-zinc-900 hover:bg-white">
+                <ExternalLink className="h-4 w-4" /> Open editor
+              </Button>
+            </a>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -236,9 +245,7 @@ type ErrorBoundaryState = {
 };
 
 class ErrorBoundary extends React.Component<
-  {
-    children: React.ReactNode;
-  },
+  { children: React.ReactNode },
   ErrorBoundaryState
 > {
   constructor(props: { children: React.ReactNode }) {
@@ -247,23 +254,18 @@ class ErrorBoundary extends React.Component<
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return {
-      hasError: true,
-      error: normalizeError(error),
-    };
+    return { hasError: true, error: normalizeError(error) };
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     const normalizedError = normalizeError(error);
     const componentStack = info.componentStack?.trim();
-
-    reportErrorToVly({
+    void reportErrorToVly({
       error: normalizedError.error,
       stackTrace: [normalizedError.stack, componentStack]
         .filter(Boolean)
         .join("\n\n"),
     });
-
     this.setState((state) => ({
       hasError: true,
       error: {
@@ -279,14 +281,11 @@ class ErrorBoundary extends React.Component<
         <ErrorDialog
           error={this.state.error}
           setError={(error) => {
-            if (error === null) {
-              this.setState({ hasError: false, error: null });
-            }
+            if (error === null) this.setState({ hasError: false, error: null });
           }}
         />
       );
     }
-
     return this.props.children;
   }
 }
@@ -299,8 +298,6 @@ export function InstrumentationProvider({
   const [error, setError] = useState<GenericError | null>(null);
 
   useEffect(() => {
-    // Boot-time self-repair: sweep corrupt local state before the app reads
-    // any of it (draft buffers, plugin installs, PR draft).
     repairLocalState();
 
     const handleError = async (event: ErrorEvent) => {
@@ -314,7 +311,6 @@ export function InstrumentationProvider({
           colno: event.colno || undefined,
         };
         setError(capturedError);
-
         await reportErrorToVly({
           error: normalizedError.error,
           stackTrace: normalizedError.stack,
@@ -323,33 +319,36 @@ export function InstrumentationProvider({
           colno: event.colno,
         });
       } catch (error) {
-        console.error("Error in handleError:", error);
+        if (isDevelopmentSurface()) console.error("Error in handleError:", error);
       }
     };
 
     const handleRejection = async (event: PromiseRejectionEvent) => {
       try {
         const normalizedError = normalizeError(event.reason);
-        console.error("[Freebuff runtime error]", normalizedError.error);
+        if (isDevelopmentSurface()) {
+          console.error("[Aria runtime error]", normalizedError.error);
+        }
         setError(normalizedError);
-
         await reportErrorToVly({
           error: normalizedError.error,
           stackTrace: normalizedError.stack,
         });
       } catch (error) {
-        console.error("Error in handleRejection:", error);
+        if (isDevelopmentSurface()) {
+          console.error("Error in handleRejection:", error);
+        }
       }
     };
 
     window.addEventListener("error", handleError);
     window.addEventListener("unhandledrejection", handleRejection);
-
     return () => {
       window.removeEventListener("error", handleError);
       window.removeEventListener("unhandledrejection", handleRejection);
     };
   }, []);
+
   return (
     <>
       <ErrorBoundary>{children}</ErrorBoundary>
