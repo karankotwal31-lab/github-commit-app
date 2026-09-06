@@ -3,20 +3,6 @@ import { internalAction, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { fetchWithRetry } from "./net";
 
-/**
- * Health checks (Part D, step 7): a scheduled background probe that verifies
- * the critical connections — login/auth, GitHub, the AI provider, and the
- * optional integrations (Resend email, Airbrake, PostHog) — and records the
- * result in `healthChecks` so a human can review it in the admin console.
- *
- * What's automatic vs. what still needs a human:
- *   - automatic: the probes run hourly (see crons.ts), results are stored,
- *     and failures are written to the error log (and mirrored to Airbrake
- *     when configured).
- *   - still needs a human: reading the results/error log and acting on them.
- *     The checks never page anyone and never self-heal.
- */
-
 const GITHUB_API = "https://api.github.com";
 
 interface ProbeResult {
@@ -25,14 +11,13 @@ interface ProbeResult {
   detail?: string;
 }
 
-/** Login/auth probe: the deployment's OIDC discovery document must resolve. */
 async function probeAuth(): Promise<ProbeResult> {
   const siteUrl = process.env.CONVEX_SITE_URL;
   if (!siteUrl) {
     return {
       check: "auth",
-      ok: true,
-      detail: "CONVEX_SITE_URL not set here — auth is self-hosted, skipping.",
+      ok: false,
+      detail: "CONVEX_SITE_URL is not configured.",
     };
   }
   try {
@@ -62,15 +47,21 @@ async function probeAuth(): Promise<ProbeResult> {
   }
 }
 
-/** GitHub probe: credentials configured + GitHub API reachable (public call). */
 async function probeGithub(): Promise<ProbeResult> {
-  const hasKeys = !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
+  const hasKeys = !!(
+    process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
+  );
+  if (!hasKeys) {
+    return {
+      check: "github",
+      ok: false,
+      detail: "GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET are not configured.",
+    };
+  }
   try {
-    const res = await fetchWithRetry(
-      `${GITHUB_API}/rate_limit`,
-      undefined,
-      { attempts: 2 },
-    );
+    const res = await fetchWithRetry(`${GITHUB_API}/rate_limit`, undefined, {
+      attempts: 2,
+    });
     if (!res.ok) {
       return {
         check: "github",
@@ -81,7 +72,7 @@ async function probeGithub(): Promise<ProbeResult> {
     return {
       check: "github",
       ok: true,
-      detail: hasKeys ? "GitHub OAuth keys configured; API reachable." : "API reachable; GitHub OAuth keys not configured.",
+      detail: "GitHub OAuth keys configured; API reachable.",
     };
   } catch (e) {
     return {
@@ -92,15 +83,19 @@ async function probeGithub(): Promise<ProbeResult> {
   }
 }
 
-/** AI probe: provider key configured + OpenRouter API reachable. */
 async function probeAi(): Promise<ProbeResult> {
   const hasKey = !!process.env.OPENROUTER_API_KEY;
+  if (!hasKey) {
+    return {
+      check: "ai",
+      ok: true,
+      detail: "OPENROUTER_API_KEY is not configured — Ask Aria is disabled.",
+    };
+  }
   try {
     const res = await fetchWithRetry(
       "https://openrouter.ai/api/v1/models",
-      hasKey
-        ? { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` } }
-        : undefined,
+      { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` } },
       { attempts: 2 },
     );
     if (!res.ok) {
@@ -113,7 +108,7 @@ async function probeAi(): Promise<ProbeResult> {
     return {
       check: "ai",
       ok: true,
-      detail: hasKey ? "AI provider key configured; API reachable." : "AI API reachable; OPENROUTER_API_KEY not configured.",
+      detail: "AI provider key configured; API reachable.",
     };
   } catch (e) {
     return {
@@ -124,14 +119,13 @@ async function probeAi(): Promise<ProbeResult> {
   }
 }
 
-/** Email probe: Resend key configured + API reachable. */
 async function probeEmail(): Promise<ProbeResult> {
   const key = process.env.RESEND_API_KEY;
   if (!key) {
     return {
       check: "email",
       ok: true,
-      detail: "RESEND_API_KEY not configured — skipping.",
+      detail: "RESEND_API_KEY not configured — email notifications disabled.",
     };
   }
   try {
@@ -152,7 +146,6 @@ async function probeEmail(): Promise<ProbeResult> {
   }
 }
 
-/** Airbrake probe: project id + key configured, projects API reachable. */
 async function probeAirbrake(): Promise<ProbeResult> {
   const projectId = process.env.AIRBRAKE_PROJECT_ID;
   const key = process.env.AIRBRAKE_API_KEY;
@@ -160,7 +153,7 @@ async function probeAirbrake(): Promise<ProbeResult> {
     return {
       check: "airbrake",
       ok: true,
-      detail: "AIRBRAKE_PROJECT_ID/API_KEY not configured — skipping.",
+      detail: "Airbrake is not configured — external error mirroring disabled.",
     };
   }
   try {
@@ -181,14 +174,13 @@ async function probeAirbrake(): Promise<ProbeResult> {
   }
 }
 
-/** PostHog probe: key configured + decide endpoint reachable. */
 async function probePosthog(): Promise<ProbeResult> {
   const key = process.env.POSTHOG_API_KEY;
   if (!key) {
     return {
       check: "posthog",
       ok: true,
-      detail: "POSTHOG_API_KEY not configured — skipping.",
+      detail: "POSTHOG_API_KEY not configured — analytics disabled.",
     };
   }
   try {
@@ -214,7 +206,6 @@ async function probePosthog(): Promise<ProbeResult> {
   }
 }
 
-/** Run every probe and record results + failures. Called hourly by the cron. */
 export const runHealthChecks = internalAction({
   args: {},
   handler: async (ctx): Promise<{ results: ProbeResult[] }> => {
@@ -242,28 +233,22 @@ export const runHealthChecks = internalAction({
   },
 });
 
-/**
- * Admin-only: the latest result of each health check plus the most recent
- * run timestamp. Mirrors the admin-console authorization model.
- */
+/** Deployment health is platform-internal, never a paid-plan entitlement. */
 export const recentHealthChecks = query({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
     if (userId === null) return { authorized: false as const };
     const user = await ctx.db.get(userId);
-    const billingRow = await ctx.db
-      .query("billing")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .unique();
-    const plan = (billingRow?.plan ?? "free") as string;
-    if (user?.role !== "admin" && plan !== "team" && plan !== "enterprise") {
-      return { authorized: false as const };
-    }
+    if (user?.role !== "admin") return { authorized: false as const };
+
     const rows = await ctx.db.query("healthChecks").collect();
     const sorted = rows.sort((a, b) => b.checkedAt - a.checkedAt);
     const latestRun = sorted[0]?.checkedAt ?? null;
-    const latest: Record<string, { ok: boolean; detail: string | null; checkedAt: number }> = {};
+    const latest: Record<
+      string,
+      { ok: boolean; detail: string | null; checkedAt: number }
+    > = {};
     for (const row of sorted) {
       if (!(row.check in latest)) {
         latest[row.check] = {
