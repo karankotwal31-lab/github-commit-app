@@ -11,10 +11,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: production-check-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,26 +26,35 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.3.14"
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: bun install --frozen-lockfile
 
       - name: Lint
         run: bun run lint
 
-      - name: Typecheck and build
+      - name: Typecheck and production build
         run: bun run build
 
-      - name: Unit tests
+      - name: Root unit tests
         run: bun test
 
-      - name: Legacy extension typecheck
-        run: bun run extension:typecheck
+      - name: Install legacy extension dependencies
+        working-directory: extension
+        run: bun install --frozen-lockfile
 
-      - name: VS Code extension install
+      - name: Legacy extension typecheck
+        working-directory: extension
+        run: bunx tsc -p ./ --noEmit
+
+      - name: Install VS Code extension dependencies
         working-directory: extensions/vscode
         run: bun install --frozen-lockfile
+
+      - name: VS Code extension typecheck
+        working-directory: extensions/vscode
+        run: bunx tsc -p ./ --noEmit
 
       - name: VS Code extension tests
         working-directory: extensions/vscode
