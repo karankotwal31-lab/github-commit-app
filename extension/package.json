@@ -76,8 +76,8 @@
       "properties": {
         "aria.url": {
           "type": "string",
-          "default": "https://steady-scorpion-839.convex.site",
-          "description": "Aria backend URL"
+          "default": "",
+          "description": "Required: trusted Aria production HTTPS origin. HTTP is accepted only for localhost development."
         }
       }
     }
