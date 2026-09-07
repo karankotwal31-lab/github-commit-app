@@ -61,9 +61,9 @@ export async function checkRateLimit(
     await ctx.db.patch(existing._id, { count: existing.count + 1 });
     return allowed;
   } catch {
-    // Availability is preferred if the limiter store itself is unhealthy.
-    // The failure is transient and other auth/authorization checks still run.
-    return true;
+    // Rate limiting is a security boundary. If its state cannot be read or
+    // written, reject the operation rather than silently disabling the limit.
+    return false;
   }
 }
 
