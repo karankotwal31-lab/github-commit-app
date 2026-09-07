@@ -19,7 +19,7 @@
  *
  * Flags:
  *   --json                  Machine-readable output (one JSON document)
- *   --site <url>            Override the Aria backend URL (env: ARIA_SITE)
+ *   --site <url>            Aria backend URL (env: ARIA_SITE or ARIA_URL)
  *   --token <token>         Token for this call only (env: ARIA_TOKEN)
  *
  * Install:  alias aria="node /path/to/cli/aria.mjs"   (or `npm link` after
@@ -32,7 +32,6 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
 const VERSION = "0.1.0";
-const DEFAULT_SITE = "https://steady-scorpion-839.convex.site";
 const CONFIG_DIR = join(homedir(), ".aria");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 
@@ -46,11 +45,11 @@ export function loadConfig() {
     const raw = readFileSync(CONFIG_PATH, "utf8");
     const parsed = JSON.parse(raw);
     return {
-      site: typeof parsed.site === "string" ? parsed.site : DEFAULT_SITE,
+      site: typeof parsed.site === "string" ? parsed.site : "",
       token: typeof parsed.token === "string" ? parsed.token : "",
     };
   } catch {
-    return { site: DEFAULT_SITE, token: "" };
+    return { site: "", token: "" };
   }
 }
 
@@ -70,10 +69,34 @@ export function saveConfig(config) {
 /** Effective settings for a run: flags/env beat the config file. */
 export function resolveSettings(cli) {
   const config = loadConfig();
-  const site = (cli.site ?? process.env.ARIA_SITE ?? config.site ?? "")
+  const site = (
+    cli.site ?? process.env.ARIA_SITE ?? process.env.ARIA_URL ?? config.site ?? ""
+  )
+    .trim()
     .replace(/\/+$/, "");
   const token = cli.token ?? process.env.ARIA_TOKEN ?? config.token ?? "";
-  return { site: site || DEFAULT_SITE, token };
+  return { site, token };
+}
+
+/** Validate an explicitly configured Aria origin. */
+export function requireSite(site) {
+  const value = String(site ?? "").trim().replace(/\/+$/, "");
+  if (!value) {
+    throw new Error(
+      "Aria backend URL is not configured. Pass --site https://YOUR_PUBLIC_APP_ORIGIN, set ARIA_SITE/ARIA_URL, or save a site during login.",
+    );
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("Aria backend URL is invalid.");
+  }
+  const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  if (parsed.protocol !== "https:" && !local) {
+    throw new Error("Aria backend URL must use HTTPS outside local development.");
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,11 +107,12 @@ export function resolveSettings(cli) {
 export async function fetchJson(base, path, token) {
   if (!token) {
     throw new Error(
-      "No token. Run `aria login <token>` or set ARIA_TOKEN (create a token " +
+      "No token. Run `aria login <token> --site https://YOUR_PUBLIC_APP_ORIGIN` or set ARIA_TOKEN (create a token " +
         "in the app under Platform → CLI & API).",
     );
   }
-  const url = `${base}${path}`;
+  const site = requireSite(base);
+  const url = `${site}${path}`;
   const res = await fetch(
     new Request(url, {
       method: "GET",
@@ -180,14 +204,17 @@ Commands:
   repos           Your connected repositories
   inbox           Your unified inbox (findings, newest first)
   prs             Open pull requests across your repos
-  open            Print the web app URL
+  open            Print the configured web app URL
   help            Show this help
   --version       Print the version
 
 Options:
   --json          Machine-readable output (single JSON document)
-  --site <url>    Aria backend URL (default: ${DEFAULT_SITE}, env: ARIA_SITE)
+  --site <url>    Required Aria backend URL (env: ARIA_SITE or ARIA_URL)
   --token <tok>   Token for this call only (env: ARIA_TOKEN)
+
+Example first-time setup:
+  aria login aria_... --site https://YOUR_PUBLIC_APP_ORIGIN
 
 The token is stored in ~/.aria/config.json with owner-only permissions.
 Revoke it anytime in the app under Platform → CLI & API.`;
@@ -229,21 +256,6 @@ export async function main(argv) {
   const { site, token } = resolveSettings(flags);
 
   try {
-    if (cmd === "login") {
-      const value = (rest[0] ?? "").trim() || (await promptToken());
-      if (!value) throw new Error("No token provided.");
-      saveConfig({ site, token: value });
-      process.stdout.write(
-        "Saved. Tokens are shown once — if you lose it, revoke and create a new one.\n",
-      );
-      return 0;
-    }
-
-    if (cmd === "open") {
-      process.stdout.write(`${site}\n`);
-      return 0;
-    }
-
     if (cmd === "help" || cmd === "--help" || cmd === "-h") {
       process.stdout.write(HELP + "\n");
       return 0;
@@ -251,6 +263,22 @@ export async function main(argv) {
 
     if (cmd === "--version" || cmd === "-v") {
       process.stdout.write(`aria ${VERSION}\n`);
+      return 0;
+    }
+
+    if (cmd === "login") {
+      const configuredSite = requireSite(site);
+      const value = (rest[0] ?? "").trim() || (await promptToken());
+      if (!value) throw new Error("No token provided.");
+      saveConfig({ site: configuredSite, token: value });
+      process.stdout.write(
+        "Saved. Tokens are shown once — if you lose it, revoke and create a new one.\n",
+      );
+      return 0;
+    }
+
+    if (cmd === "open") {
+      process.stdout.write(`${requireSite(site)}\n`);
       return 0;
     }
 
