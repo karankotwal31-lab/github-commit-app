@@ -15,14 +15,28 @@
         color: #e2e8f0;
         font-family: system-ui, sans-serif;
       }
+      main {
+        max-width: 34rem;
+        padding: 2rem;
+        text-align: center;
+      }
+      p {
+        color: #94a3b8;
+        line-height: 1.6;
+      }
+      code {
+        color: #e2e8f0;
+      }
     </style>
   </head>
   <body>
-    <p>Opening Aria…</p>
-    <script>
-      // The shell normally navigates straight to the deployed app. This page
-      // is the offline fallback — redirect in case the shell loads it first.
-      location.replace("https://steady-scorpion-839.convex.site");
-    </script>
+    <main>
+      <h1>Aria desktop is not configured</h1>
+      <p>
+        Set <code>ARIA_URL</code> to the trusted production HTTPS origin before
+        running or packaging the desktop shell. Aria will not guess or reuse an
+        old deployment URL.
+      </p>
+    </main>
   </body>
 </html>
