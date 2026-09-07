@@ -6,7 +6,7 @@
  * with a mocked `fetch` (see api.test.ts).
  */
 
-export const DEFAULT_SITE = "https://steady-scorpion-839.convex.site";
+export const DEFAULT_SITE = "";
 const USER_AGENT = "aria-vscode/0.1.0";
 
 export interface WhoamiData {
@@ -74,10 +74,39 @@ export class AriaApiError extends Error {
 }
 
 export class AriaApi {
-  readonly site: string;
+  site: string;
 
   constructor(site: string) {
-    this.site = site.replace(/\/+$/, "");
+    this.site = "";
+    this.setSite(site);
+  }
+
+  setSite(site: string): void {
+    this.site = site.trim().replace(/\/+$/, "");
+  }
+
+  private baseUrl(): string {
+    if (!this.site) {
+      throw new AriaApiError(
+        "Aria backend URL is not configured. Set aria.siteUrl in VS Code Settings to the trusted production HTTPS origin.",
+      );
+    }
+    try {
+      const parsed = new URL(this.site);
+      const local =
+        parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+      if (parsed.protocol !== "https:" && !local) {
+        throw new AriaApiError(
+          "Aria backend URL must use HTTPS outside local development.",
+        );
+      }
+    } catch (error) {
+      if (error instanceof AriaApiError) throw error;
+      throw new AriaApiError(
+        "Aria backend URL is invalid. Update aria.siteUrl in VS Code Settings.",
+      );
+    }
+    return this.site;
   }
 
   private async get<T>(path: string, token: string): Promise<T> {
@@ -87,8 +116,9 @@ export class AriaApi {
           "web app under Platform → CLI & API).",
       );
     }
+    const baseUrl = this.baseUrl();
     const res = await fetch(
-      new Request(this.site + path, {
+      new Request(baseUrl + path, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${token}`,

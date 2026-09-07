@@ -34,17 +34,20 @@ bunx @vscode/vsce package
 
 ## First-time setup
 
-1. In the Aria web app: **Platform → CLI & API → Create token** (shown once).
-2. In VS Code: run **Aria: Sign in (paste access token)** and paste it.
+1. Set **Aria: URL** (`aria.url`) in VS Code Settings to the trusted production
+   HTTPS origin. There is no built-in production fallback; HTTP is accepted
+   only for localhost development.
+2. In the Aria web app: **Platform → CLI & API → Create token** (shown once).
+3. In VS Code: run **Aria: Sign in (paste access token)** and paste it.
    The token is stored in the OS keychain via VS Code SecretStorage.
-3. The Inbox and Account views populate automatically; refresh with
+4. The Inbox and Account views populate automatically; refresh with
    **Aria: Refresh inbox** or the refresh icon in the view title bar.
 
 ## Configuration
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `aria.url` | `https://steady-scorpion-839.convex.site` | Aria backend URL |
+| `aria.url` | *(required)* | Trusted Aria production HTTPS origin |
 
 ## Honest limits
 

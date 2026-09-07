@@ -7,12 +7,12 @@
  * YOUR account — it is not a GitHub token and cannot read anyone else's.
  *
  * Usage:
- *   bun run cli -- login              print the URL + setup instructions
+ *   bun run cli -- login --url https://… --token aria_…
  *   bun run cli -- whoami             who is this token
  *   bun run cli -- repos              list connected repositories
  *   bun run cli -- inbox              latest engineering-inbox findings
  *   bun run cli -- whoami --token aria_…   (or set ARIA_TOKEN)
- *   bun run cli -- whoami --url https://… (defaults to the deployed site)
+ *   bun run cli -- whoami --url https://…  (or set ARIA_URL)
  *   bun run cli -- repos --json       machine-readable output
  *
  * The token is read from --token, then ARIA_TOKEN, then ~/.aria/config.json
@@ -22,7 +22,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const DEFAULT_URL = "https://steady-scorpion-839.convex.site";
 const CONFIG_DIR = join(homedir(), ".aria");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
@@ -60,7 +59,7 @@ interface Flags {
 function parseArgs(argv: string[]): Flags {
   const flags: Flags = {
     token: null,
-    url: DEFAULT_URL,
+    url: "",
     json: false,
     command: "",
     rest: [],
@@ -71,7 +70,7 @@ function parseArgs(argv: string[]): Flags {
     if (arg === "--json") flags.json = true;
     else if (arg === "--token") flags.token = argv[++i] ?? null;
     else if (arg.startsWith("--token=")) flags.token = arg.slice("--token=".length);
-    else if (arg === "--url") flags.url = argv[++i] ?? DEFAULT_URL;
+    else if (arg === "--url") flags.url = argv[++i] ?? "";
     else if (arg.startsWith("--url=")) flags.url = arg.slice("--url=".length);
     else if (arg === "--help" || arg === "-h") flags.command = "help";
     else positional.push(arg);
@@ -81,17 +80,43 @@ function parseArgs(argv: string[]): Flags {
   return flags;
 }
 
+function requireUrl(raw: string): string {
+  const value = raw.trim().replace(/\/+$/, "");
+  if (!value) {
+    throw new Error(
+      "Aria backend URL is not configured. Pass --url https://YOUR_PUBLIC_APP_ORIGIN, set ARIA_URL/ARIA_SITE, or save the URL during login.",
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("Aria backend URL is invalid.");
+  }
+  const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  if (parsed.protocol !== "https:" && !local) {
+    throw new Error("Aria backend URL must use HTTPS outside local development.");
+  }
+  return value;
+}
+
+function resolveUrl(flags: Flags, config: Config = loadConfig()): string {
+  return requireUrl(
+    flags.url || process.env.ARIA_URL || process.env.ARIA_SITE || config.url || "",
+  );
+}
+
 async function apiCall(
   flags: Flags,
   path: string,
 ): Promise<{ ok: boolean; status: number; body: unknown }> {
   const config = loadConfig();
   const token = flags.token ?? process.env.ARIA_TOKEN ?? config.token;
-  const url = flags.url ?? process.env.ARIA_URL ?? config.url ?? DEFAULT_URL;
+  const url = resolveUrl(flags, config);
   if (!token) {
     console.error(
       "No token found. Create one in the app (Platform → CLI & API), then run:\n" +
-        "  bun run cli -- login --token <paste>\n" +
+        "  bun run cli -- login --url https://YOUR_PUBLIC_APP_ORIGIN --token <paste>\n" +
         "or set ARIA_TOKEN.",
     );
     process.exit(2);
@@ -137,19 +162,20 @@ function printTable(rows: Array<Record<string, string>>) {
 }
 
 async function cmdLogin(flags: Flags) {
+  const config = loadConfig();
+  const url = resolveUrl(flags, config);
   if (flags.token) {
-    const config = loadConfig();
-    saveConfig({ ...config, token: flags.token, url: flags.url });
-    console.log("Token saved to ~/.aria/config.json");
+    saveConfig({ ...config, token: flags.token, url });
+    console.log("Token and Aria URL saved to ~/.aria/config.json");
     return;
   }
   console.log(
     "Aria CLI login\n" +
       "──────────────\n" +
-      `1. Open ${flags.url} and sign in.\n` +
+      `1. Open ${url} and sign in.\n` +
       "2. Open Platform → CLI & API → Create token.\n" +
       "3. Copy the token (shown once) and run:\n" +
-      `     bun run cli -- login --token <paste>\n` +
+      `     bun run cli -- login --url ${url} --token <paste>\n` +
       "The token is stored in ~/.aria/config.json and never printed again.",
   );
 }
@@ -213,7 +239,7 @@ async function cmdPrs(flags: Flags) {
     })),
   );
   console.log(
-    `\n${items.length} open PR${items.length === 1 ? "" : "s"} — review at ${flags.url}/dashboard.`,
+    `\n${items.length} open PR${items.length === 1 ? "" : "s"} — review at ${resolveUrl(flags)}/dashboard.`,
   );
 }
 
@@ -247,7 +273,7 @@ async function cmdInbox(flags: Flags) {
     })),
   );
   console.log(
-    `\n${items.length} finding${items.length === 1 ? "" : "s"} — see ${flags.url}/dashboard for details.`,
+    `\n${items.length} finding${items.length === 1 ? "" : "s"} — see ${resolveUrl(flags)}/dashboard for details.`,
   );
 }
 
@@ -261,7 +287,8 @@ async function cmdHelp() {
       "  inbox      latest engineering-inbox findings\n" +
       "  prs        open pull requests across your repos\n" +
       "Flags: --token <t> | --url <base> | --json\n" +
-      "Env:   ARIA_TOKEN, ARIA_URL",
+      "Env:   ARIA_TOKEN, ARIA_URL (ARIA_SITE is also accepted)\n" +
+      "The Aria URL is required; no historical deployment is used as a fallback.",
   );
 }
 

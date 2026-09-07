@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - production-hardening-gpt
   pull_request:
     branches:
       - main
@@ -24,6 +23,14 @@ jobs:
       - name: Checkout
         # actions/checkout v7.0.1 — pinned to the immutable commit for supply-chain safety.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Reject retired deployment origins
+        run: |
+          retired_origin="$(printf '%s.%s' 'steady-scorpion-839' 'convex.site')"
+          if git grep -nF "$retired_origin" -- .; then
+            echo "Retired Aria deployment origin found in tracked files. Configure deployment targets explicitly instead of hardcoding an old backend."
+            exit 1
+          fi
 
       - name: Setup Bun
         # oven-sh/setup-bun v2.2.0 — Node 24 action, pinned to its release commit.

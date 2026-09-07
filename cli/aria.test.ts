@@ -5,6 +5,7 @@ import {
   formatPrs,
   formatRepos,
   formatWhoami,
+  requireSite,
   resolveSettings,
 } from "./aria.mjs";
 
@@ -38,6 +39,12 @@ describe("fetchJson", () => {
     ).rejects.toThrow(/No token/);
   });
 
+  test("throws a readable error when there is no configured site", async () => {
+    await expect(fetchJson("", "/api/cli/repos", "aria_t")).rejects.toThrow(
+      /not configured/i,
+    );
+  });
+
   test("surfaces the server error message on non-2xx", async () => {
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ error: "Unauthorized — token revoked." }), {
@@ -51,15 +58,9 @@ describe("fetchJson", () => {
 });
 
 describe("resolveSettings", () => {
-  test("falls back to the default site", () => {
-    const saved = process.env.ARIA_SITE;
-    delete process.env.ARIA_SITE;
-    try {
-      const s = resolveSettings({ site: null, token: null });
-      expect(s.site).toContain("convex.site");
-    } finally {
-      if (saved !== undefined) process.env.ARIA_SITE = saved;
-    }
+  test("does not invent a default site when explicitly unconfigured", () => {
+    const s = resolveSettings({ site: "", token: null });
+    expect(s.site).toBe("");
   });
 
   test("flags beat environment variables", () => {
@@ -78,6 +79,22 @@ describe("resolveSettings", () => {
   test("strips trailing slashes from the site", () => {
     const s = resolveSettings({ site: "https://x.example///", token: "t" });
     expect(s.site).toBe("https://x.example");
+  });
+});
+
+describe("requireSite", () => {
+  test("requires an explicit site", () => {
+    expect(() => requireSite("")).toThrow(/not configured/i);
+  });
+
+  test("rejects non-local HTTP", () => {
+    expect(() => requireSite("http://x.example")).toThrow(/must use HTTPS/i);
+  });
+
+  test("allows localhost HTTP for development", () => {
+    expect(requireSite("http://127.0.0.1:3210///")).toBe(
+      "http://127.0.0.1:3210",
+    );
   });
 });
 
