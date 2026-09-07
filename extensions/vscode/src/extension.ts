@@ -150,10 +150,18 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const refreshStatus = async (): Promise<void> => {
+    if (!api.site) {
+      statusItem.text = "$(gear) Aria: configure URL";
+      statusItem.tooltip = "Set aria.siteUrl to the trusted production HTTPS origin";
+      statusItem.command = "workbench.action.openSettings";
+      statusItem.show();
+      return;
+    }
     const token = await tokenProvider.getToken();
     if (!token) {
       statusItem.text = "$(key) Aria: not connected";
       statusItem.tooltip = "Run the “Aria: Sign in” command";
+      statusItem.command = "aria.whoami";
       statusItem.show();
       return;
     }
@@ -162,15 +170,25 @@ export function activate(context: vscode.ExtensionContext): void {
       const login = data.github?.login ?? data.user?.name ?? "connected";
       statusItem.text = `$(check) Aria: ${login}`;
       statusItem.tooltip = "Aria — click for details";
-    } catch {
-      statusItem.text = "$(warning) Aria: re-auth needed";
-      statusItem.tooltip = "Your token may be revoked — run “Aria: Sign in”";
+      statusItem.command = "aria.whoami";
+    } catch (err) {
+      const message = messageOf(err);
+      statusItem.text = /not configured|invalid|must use HTTPS/i.test(message)
+        ? "$(gear) Aria: configure URL"
+        : "$(warning) Aria: re-auth needed";
+      statusItem.tooltip = message;
     }
     statusItem.show();
   };
 
   context.subscriptions.push(
     vscode.commands.registerCommand("aria.login", async () => {
+      if (!api.site) {
+        void vscode.window.showErrorMessage(
+          "Configure aria.siteUrl in VS Code Settings before signing in.",
+        );
+        return;
+      }
       const token = await vscode.window.showInputBox({
         title: "Aria: Sign in",
         prompt: "Paste your Aria personal access token (aria_…)",
@@ -197,6 +215,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand("aria.whoami", async () => {
+      if (!api.site) {
+        void vscode.window.showErrorMessage(
+          "Configure aria.siteUrl in VS Code Settings first.",
+        );
+        return;
+      }
       const token = await tokenProvider.getToken();
       if (!token) {
         void vscode.window.showInformationMessage(
@@ -228,9 +252,25 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand("aria.refresh", () => refreshAll()),
 
-    vscode.commands.registerCommand("aria.openApp", () =>
-      vscode.env.openExternal(vscode.Uri.parse(api.site)),
-    ),
+    vscode.commands.registerCommand("aria.openApp", () => {
+      if (!api.site) {
+        void vscode.window.showErrorMessage(
+          "Configure aria.siteUrl in VS Code Settings first.",
+        );
+        return;
+      }
+      try {
+        const parsed = new URL(api.site);
+        const local =
+          parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+        if (parsed.protocol !== "https:" && !local) {
+          throw new Error("Aria backend URL must use HTTPS outside local development.");
+        }
+        void vscode.env.openExternal(vscode.Uri.parse(api.site));
+      } catch (err) {
+        void vscode.window.showErrorMessage(messageOf(err));
+      }
+    }),
 
     vscode.commands.registerCommand("aria.reviewPr", (repo?: string, number?: number) => {
       if (typeof repo === "string" && typeof number === "number") {
@@ -254,6 +294,18 @@ export function activate(context: vscode.ExtensionContext): void {
       if (url) {
         void vscode.env.openExternal(vscode.Uri.parse(url));
       }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("aria.siteUrl")) return;
+      const nextSite =
+        vscode.workspace
+          .getConfiguration("aria")
+          .get<string>("siteUrl", DEFAULT_SITE) ?? DEFAULT_SITE;
+      api.setSite(nextSite);
+      void refreshAll();
     }),
   );
 
