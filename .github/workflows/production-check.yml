@@ -37,6 +37,9 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Service worker syntax
+        run: node --check public/sw.js
+
       - name: Typecheck and production build
         run: bun run build
 
