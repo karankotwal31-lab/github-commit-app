@@ -34,6 +34,13 @@ jobs:
       - name: Install root dependencies
         run: bun install --frozen-lockfile
 
+      - name: Validate Convex backend locally
+        # In a non-interactive runner with no deploy key, Convex Agent Mode
+        # provisions an isolated local backend. This regenerates the real API
+        # bindings and validates schema/functions/components without touching
+        # any cloud dev or production deployment.
+        run: bunx convex dev --once --typecheck-components
+
       - name: Lint
         run: bun run lint
 
