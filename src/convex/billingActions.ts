@@ -43,6 +43,12 @@ function siteOrigin(): string {
   return url.origin;
 }
 
+function checkoutMetadataTier(value: unknown): Exclude<PlanId, "free" | "enterprise"> | null {
+  return value === "pro" || value === "pro_plus" || value === "team"
+    ? value
+    : null;
+}
+
 /** Create a subscription checkout session for the current user. */
 export const createCheckout = action({
   args: {
@@ -195,7 +201,8 @@ export const handleStripeWebhook = internalAction({
         case "checkout.session.completed": {
           const session = event.data.object as Stripe.Checkout.Session;
           if (!session.client_reference_id) break;
-          let tier: PlanId | null = null;
+
+          let tier: Exclude<PlanId, "free" | "enterprise"> | null = null;
           let seats: number | undefined;
           let periodEnd: number | undefined;
           try {
@@ -203,7 +210,8 @@ export const handleStripeWebhook = internalAction({
               expand: ["line_items"],
             });
             const line = full.line_items?.data[0];
-            tier = tierForPriceId(line?.price?.id ?? null);
+            const priceTier = tierForPriceId(line?.price?.id ?? null);
+            tier = checkoutMetadataTier(priceTier);
             seats = line?.quantity ?? undefined;
             if (session.subscription) {
               const sub = await stripe.subscriptions.retrieve(
@@ -212,11 +220,20 @@ export const handleStripeWebhook = internalAction({
               periodEnd = periodEndMs(sub as { current_period_end?: number });
             }
           } catch {
-            tier = session.metadata?.tier as PlanId | null;
+            // Network/API retrieval can fail transiently. Metadata was written
+            // by our own checkout action and is the only safe fallback.
+            tier = checkoutMetadataTier(session.metadata?.tier);
           }
+
+          // Never grant a paid plan on an unknown price/tier. Returning an
+          // error causes Stripe to retry instead of silently upgrading to Pro.
+          if (!tier) {
+            throw new Error("Unable to resolve the purchased Stripe price to an Aria plan.");
+          }
+
           await setPlan({
             userId: session.client_reference_id,
-            plan: tier && tier !== "free" ? tier : "pro",
+            plan: tier,
             stripeCustomerId: session.customer as string | undefined,
             stripeSubscriptionId: session.subscription as string | undefined,
             currentPeriodEnd: periodEnd,
