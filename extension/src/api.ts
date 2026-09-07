@@ -6,11 +6,34 @@ import * as vscode from "vscode";
 export class AriaApi {
   constructor(private readonly url: string) {}
 
+  private baseUrl(): string {
+    const value = this.url.trim().replace(/\/+$/, "");
+    if (!value) {
+      throw new Error(
+        "Aria backend URL is not configured. Set aria.url in VS Code Settings to the trusted production HTTPS origin.",
+      );
+    }
+    try {
+      const parsed = new URL(value);
+      const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+      if (parsed.protocol !== "https:" && !local) {
+        throw new Error("Aria backend URL must use HTTPS outside local development.");
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Aria backend URL")) {
+        throw error;
+      }
+      throw new Error("Aria backend URL is invalid. Update aria.url in VS Code Settings.");
+    }
+    return value;
+  }
+
   async request<T>(token: string, path: string): Promise<T> {
+    const baseUrl = this.baseUrl();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15_000);
     try {
-      const res = await fetch(`${this.url}${path}`, {
+      const res = await fetch(`${baseUrl}${path}`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
       });
@@ -63,8 +86,7 @@ export async function clearToken(
 }
 
 export function apiFromConfig(): AriaApi {
-  const url = vscode.workspace
-    .getConfiguration("aria")
-    .get<string>("url", "https://steady-scorpion-839.convex.site");
-  return new AriaApi(url.replace(/\/$/, ""));
+  const url =
+    vscode.workspace.getConfiguration("aria").get<string>("url", "") ?? "";
+  return new AriaApi(url.trim().replace(/\/+$/, ""));
 }
