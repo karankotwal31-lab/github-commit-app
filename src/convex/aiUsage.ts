@@ -7,6 +7,7 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import { aiQuotaFor, periodKey, type PlanId } from "../lib/plans";
+import { billingConfigured } from "./billingConfig";
 
 /**
  * AI usage metering — one row per user per calendar month in `aiUsage`.
@@ -15,11 +16,6 @@ import { aiQuotaFor, periodKey, type PlanId } from "../lib/plans";
  * hiding: every Ask Aria call checks the quota before running and increments
  * the counter after a successful reply, so failed calls don't burn quota.
  */
-
-/** Whether billing is configured (keys present) — mirrors billing.ts. */
-function billingConfigured(): boolean {
-  return !!(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID);
-}
 
 /** Count Ask Aria calls used this calendar month. */
 async function countUsed(ctx: QueryCtx, userId: string): Promise<number> {
@@ -102,7 +98,6 @@ export const adminOverview = query({
       return { authorized: false as const };
     }
 
-    // Usage trend: last 6 calendar months.
     const now = new Date();
     const periods: string[] = [];
     for (let i = 5; i >= 0; i--) {
@@ -172,8 +167,6 @@ export const recordAiUse = internalMutation({
   },
 });
 
-// In-flight window: a slot is held for at most this long before it is
-// treated as stale (crashed request) and can be re-acquired.
 const INFLIGHT_TTL_MS = 60_000;
 
 /**
@@ -192,7 +185,7 @@ export const acquireAiInflight = internalMutation({
     const now = Date.now();
     if (existing) {
       if (now - existing.updatedAt < INFLIGHT_TTL_MS) {
-        return false; // a request is already running
+        return false;
       }
       await ctx.db.patch(existing._id, { updatedAt: now });
       return true;
