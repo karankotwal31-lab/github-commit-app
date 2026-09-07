@@ -26,7 +26,8 @@ jobs:
 
       - name: Reject retired deployment origins
         run: |
-          if git grep -nF "steady-scorpion-839.convex.site" -- .; then
+          retired_origin="$(printf '%s.%s' 'steady-scorpion-839' 'convex.site')"
+          if git grep -nF "$retired_origin" -- .; then
             echo "Retired Aria deployment origin found in tracked files. Configure deployment targets explicitly instead of hardcoding an old backend."
             exit 1
           fi
