@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   pendingDrafts,
+  getOfflineAccount,
   clearPendingDraft,
   pendingDraftCount,
   type PendingDraft,
@@ -61,16 +62,19 @@ export function useNetworkReconciliation(options: {
     flushingRef.current = true;
     setSyncing(true);
     try {
+      const accountId = getOfflineAccount();
       const drafts = pendingDrafts();
       let replayed = 0;
       for (const draft of drafts) {
+        if (getOfflineAccount() !== accountId) break;
         if (canSkipRef.current?.(draft)) {
-          clearPendingDraft(draft.repo, draft.branch, draft.path);
+          clearPendingDraft(draft.repo, draft.branch, draft.path, draft.updatedAt);
           continue;
         }
         try {
           await pushRef.current(draft);
-          clearPendingDraft(draft.repo, draft.branch, draft.path);
+          if (getOfflineAccount() !== accountId) break;
+          clearPendingDraft(draft.repo, draft.branch, draft.path, draft.updatedAt);
           replayed++;
         } catch {
           // Keep this draft queued — retry on the next recovery event.
@@ -128,3 +132,4 @@ export function useNetworkReconciliation(options: {
 
   return { online, pendingCount, syncing };
 }
+

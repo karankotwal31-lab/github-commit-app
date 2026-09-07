@@ -17,6 +17,7 @@ try {
 }
 import {
   clearAllPendingCommits,
+  setOfflineAccount,
   clearPendingCommit,
   pendingCommitCount,
   pendingCommits,
@@ -25,6 +26,7 @@ import {
 
 describe("offline commit queue", () => {
   beforeEach(() => {
+    setOfflineAccount("test-user");
     clearAllPendingCommits();
   });
 
@@ -99,3 +101,4 @@ describe("offline commit queue", () => {
     expect(c.files[0].content).toBe("# Hello\n");
   });
 });
+

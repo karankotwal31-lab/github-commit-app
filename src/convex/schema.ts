@@ -613,10 +613,19 @@ const schema = defineSchema(
     // recording that a member with sufficient role approved the action.
     // The count of distinct approvers is what gates sensitive actions —
     // server-authoritative, independent of any UI.
+    orgRepositories: defineTable({ orgId: v.id("organizations"), repo: v.string(), linkedBy: v.id("users") })
+      .index("by_repo", ["repo"]).index("by_org", ["orgId"]),
+    approvalRequests: defineTable({ orgId: v.id("organizations"), repo: v.string(), branch: v.string(),
+      changeKey: v.string(), commit: v.string(), paths: v.array(v.string()), createdAt: v.number(), expiresAt: v.number(),
+    }).index("by_org", ["orgId"]).index("by_change", ["orgId", "repo", "changeKey"]),
     actionApprovals: defineTable({
       orgId: v.id("organizations"),
       action: v.string(), // e.g. "deploy" | "protected_branch" | "dependency_upgrade"
       branch: v.string(),
+      repo: v.optional(v.string()),
+      changeKey: v.optional(v.string()),
+      policyVersion: v.optional(v.string()),
+      expiresAt: v.optional(v.number()),
       approvedBy: v.id("users"),
       approvedAt: v.number(),
     }).index("by_orgAction", ["orgId", "action", "branch"]),
@@ -695,3 +704,4 @@ const schema = defineSchema(
 );
 
 export default schema;
+

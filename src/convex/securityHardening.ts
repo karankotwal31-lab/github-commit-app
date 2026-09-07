@@ -1,3 +1,4 @@
+import { checkRateLimit, OTP_SENDS_PER_5_MINUTES } from "./security";
 /**
  * Security Hardening — Part E.
  *
@@ -7,18 +8,15 @@
  * the UI only mirrors what the backend stores.
  */
 
-import { getAuthUserId } from "@convex-dev/auth/server";
+import { getAuthUserId, getAuthSessionId, invalidateSessions } from "@convex-dev/auth/server";
 import {
+  action,
   internalMutation,
-  internalQuery,
-  mutation,
   query,
   type MutationCtx,
-  type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
 import { cleanText, cleanName } from "../lib/sanitize";
 
 // ---------------------------------------------------------------------------
@@ -266,10 +264,21 @@ export const listLoginHistory = query({
 });
 
 /** Sign out all other sessions (delete all liveSessions except the current device). */
-export const signOutAllSessions = mutation({
+export const signOutAllSessions = action({
   args: { currentDeviceId: v.optional(v.string()) },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{ deleted: number }> => {
     const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not signed in.");
+    const sessionId = await getAuthSessionId(ctx);
+    await invalidateSessions(ctx, { userId, except: sessionId ? [sessionId] : [] });
+    return ctx.runMutation(internal.securityHardening.clearOtherPresence, { ...args, userId });
+  },
+});
+
+export const clearOtherPresence = internalMutation({
+  args: { currentDeviceId: v.optional(v.string()), userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const userId = args.userId;
     if (!userId) throw new Error("Not signed in.");
     const rows = await ctx.db
       .query("liveSessions")
@@ -429,5 +438,31 @@ export const accountDataSummary = query({
         .collect()
     ).length;
     return { loginCount, sessionCount, auditCount, repoCount };
+  },
+});
+
+
+export const reserveOtpSend = internalMutation({
+  args: { email: v.string() },
+  handler: async (ctx, { email }) => {
+    const normalized = email.trim().toLowerCase();
+    if (await isEmailLockedOut(ctx, normalized)) return false;
+    return checkRateLimit(ctx, `otp:${normalized}`, OTP_SENDS_PER_5_MINUTES, 5 * 60 * 1000);
+  },
+});
+export const reserveOtpAttempt = internalMutation({
+  args: { email: v.string() },
+  handler: async (ctx, { email }) => {
+    if (await isEmailLockedOut(ctx, email)) return false;
+    await recordFailedAttempt(ctx, email);
+    return true;
+  },
+});
+export const completeOtpAttempt = internalMutation({
+  args: { email: v.string() },
+  handler: async (ctx, { email }) => {
+    await clearLockout(ctx, email);
+    const user = await ctx.db.query("users").withIndex("email", q => q.eq("email", email.trim().toLowerCase())).first();
+    await ctx.db.insert("loginActivity", { userId: user?._id, email: email.trim().toLowerCase(), result: "success", createdAt: Date.now() });
   },
 });

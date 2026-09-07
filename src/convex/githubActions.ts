@@ -4,6 +4,9 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { action, internalAction, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { billingConfigured } from "./billingConfig";
+import { summarizeChecks } from "../lib/checks";
+import { threeWayMerge } from "../lib/merge3";
 import { createHash } from "crypto";
 import type { Id } from "./_generated/dataModel";
 import { anySecretRisk } from "../lib/secrets";
@@ -44,14 +47,6 @@ interface GitHubFile {
   truncated: boolean;
 }
 
-interface GitHubCommitResponse {
-  commit?: {
-    sha?: string;
-    message?: string;
-    html_url?: string;
-  };
-}
-
 interface GitHubBranch {
   name: string;
   commit: { sha: string };
@@ -79,12 +74,6 @@ interface GitHubTreeEntry {
   sha?: string | null;
 }
 
-interface CompareFile {
-  filename: string;
-  previous_filename?: string;
-  status: string;
-}
-
 interface GitHubPullRequest {
   number: number;
   title: string;
@@ -92,7 +81,7 @@ interface GitHubPullRequest {
   user?: { login: string } | null;
   created_at?: string | null;
   draft?: boolean;
-  head?: { ref: string } | null;
+  head?: { ref: string; sha?: string } | null;
   base?: { ref: string } | null;
   mergeable?: boolean | null;
   mergeable_state?: string;
@@ -135,6 +124,7 @@ interface GitHubIssue {
 
 export interface CommitResult {
   sha: string | null;
+  blobSha?: string;
   message: string;
   htmlUrl: string | null;
 }
@@ -180,6 +170,13 @@ function cleanFilePath(raw: string): string {
   const path = cleanPath(raw);
   if (!path) throw new Error("That path isn't valid.");
   return path;
+}
+
+function validateRepoPart(value: string, label: "owner" | "repository"): string {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$/.test(value)) {
+    throw new Error(`That GitHub ${label} name isn't valid.`);
+  }
+  return value;
 }
 
 async function githubFetch<T>(
@@ -255,42 +252,12 @@ async function ensureRepoAccess(
 ): Promise<void> {
   const userId = await getAuthUserId(ctx);
   if (userId === null) throw new Error("You are not signed in.");
+  validateRepoPart(owner, "owner");
+  validateRepoPart(repo, "repository");
   const full = `${owner}/${repo}`;
-  // Dev mode: no billing keys → fully unlocked (mirrors billing.ts).
-  const configured = !!(
-    process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID
-  );
-  if (!configured) {
-    await ctx.runMutation(internal.github.trackRepo, {
-      repo: full,
-      isPrivate: true,
-    }).catch(() => undefined);
-    return;
-  }
-  const meta = await githubFetch<{ private: boolean }>(
-    `${GITHUB_API}/repos/${owner}/${repo}`,
-    token,
-  );
-  if (!meta.private) return; // public repos are free for everyone
-  const billing = await ctx.runQuery(internal.billing.planForUser, { userId });
-  if (billing.plan !== "free") {
-    await ctx.runMutation(internal.github.trackRepo, {
-      repo: full,
-      isPrivate: true,
-    });
-    return;
-  }
-  const privateCount = await ctx.runQuery(internal.github.countPrivateRepos, {
-    userId,
-  });
-  if (privateCount >= 1) {
-    throw new Error(
-      "The Free plan includes 1 private repository — upgrade to Pro for unlimited private repos.",
-    );
-  }
-  await ctx.runMutation(internal.github.trackRepo, {
-    repo: full,
-    isPrivate: true,
+  const meta = await githubFetch<{ private: boolean }>(`${GITHUB_API}/repos/${owner}/${repo}`, token);
+  await ctx.runMutation(internal.github.admitRepo, {
+    repo: full, isPrivate: meta.private, enforceLimit: billingConfigured(),
   });
 }
 
@@ -360,8 +327,9 @@ export const listContents = action({
     const token = await getToken(ctx);
     // Free-tier gate: opening a repo is the choke point for repo access.
     await ensureRepoAccess(ctx, args.owner, args.repo, token);
+    const path = args.path ? cleanFilePath(args.path) : "";
     const url = `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
-      args.path,
+      path,
     )}?ref=${encodeURIComponent(args.branch)}`;
     const data = await githubFetch<GitHubContentItem[] | GitHubContentItem>(
       url,
@@ -386,14 +354,16 @@ export const getFile = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
+    const path = cleanFilePath(args.path);
     const url = `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
-      args.path,
+      path,
     )}?ref=${encodeURIComponent(args.branch)}`;
     const data = await githubFetch<GitHubFile>(url, token);
     if (data.type !== "file") {
       throw new Error("That path is not a file.");
     }
-    if (data.encoding !== "base64" || !data.content) {
+    if (data.encoding !== "base64" || typeof data.content !== "string") {
       throw new Error("This file isn't text and can't be edited in the browser.");
     }
     if (data.size > 1_000_000) {
@@ -422,34 +392,13 @@ export const commitFile = action({
   },
   handler: async (ctx, args) => {
     const path = cleanFilePath(args.path);
-    const message = cleanCommitMessage(args.message);
     const risk = anySecretRisk([{ path, content: args.content }]);
     if (risk.risky && !args.allowSecrets) {
       throw new Error(
         `Aria refuses to commit ${risk.files.join(", ")} — it looks like it contains secrets. Confirm “commit anyway” to override.`,
       );
     }
-    const token = await getToken(ctx);
-    const body: Record<string, unknown> = {
-      message,
-      content: Buffer.from(args.content, "utf8").toString("base64"),
-      branch: args.branch,
-    };
-    if (args.sha) body.sha = args.sha;
-    const data = await githubFetch<GitHubCommitResponse>(
-      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(path)}`,
-      token,
-      {
-        method: "PUT",
-        body: JSON.stringify(body),
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-    return {
-      sha: data.commit?.sha ?? null,
-      message: data.commit?.message ?? args.message,
-      htmlUrl: data.commit?.html_url ?? null,
-    };
+    return commitBatch(ctx, { ...args, files: [{ path, action: "update", content: args.content, expectedSha: args.sha }] });
   },
 });
 
@@ -466,32 +415,13 @@ export const createFile = action({
   },
   handler: async (ctx, args) => {
     const path = cleanFilePath(args.path);
-    const message = cleanCommitMessage(args.message);
     const risk = anySecretRisk([{ path, content: args.content }]);
     if (risk.risky && !args.allowSecrets) {
       throw new Error(
         `Aria refuses to create ${risk.files.join(", ")} — it looks like it contains secrets. Confirm “commit anyway” to override.`,
       );
     }
-    const token = await getToken(ctx);
-    const data = await githubFetch<GitHubCommitResponse>(
-      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(path)}`,
-      token,
-      {
-        method: "PUT",
-        body: JSON.stringify({
-          message,
-          content: Buffer.from(args.content, "utf8").toString("base64"),
-          branch: args.branch,
-        }),
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-    return {
-      sha: data.commit?.sha ?? null,
-      message: data.commit?.message ?? args.message,
-      htmlUrl: data.commit?.html_url ?? null,
-    } as CommitResult;
+    return commitBatch(ctx, { ...args, files: [{ path, action: "create", content: args.content, expectedSha: null }] });
   },
 });
 
@@ -507,26 +437,7 @@ export const deleteFile = action({
   },
   handler: async (ctx, args) => {
     const path = cleanFilePath(args.path);
-    const message = cleanCommitMessage(args.message);
-    const token = await getToken(ctx);
-    const data = await githubFetch<GitHubCommitResponse>(
-      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(path)}`,
-      token,
-      {
-        method: "DELETE",
-        body: JSON.stringify({
-          message,
-          sha: args.sha,
-          branch: args.branch,
-        }),
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-    return {
-      sha: data.commit?.sha ?? null,
-      message: data.commit?.message ?? args.message,
-      htmlUrl: data.commit?.html_url ?? null,
-    } as CommitResult;
+    return commitBatch(ctx, { ...args, files: [{ path, action: "delete", expectedSha: args.sha }] });
   },
 });
 
@@ -547,63 +458,25 @@ export const renameFile = action({
   handler: async (ctx, args) => {
     const oldPath = cleanFilePath(args.oldPath);
     const newPath = cleanFilePath(args.newPath);
-    const message = cleanCommitMessage(args.message);
     if (oldPath === newPath) {
       throw new Error("New path is the same as the current path.");
     }
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const oldData = await githubFetch<GitHubFile>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
         oldPath,
       )}?ref=${encodeURIComponent(args.branch)}`,
       token,
     );
-    if (oldData.type !== "file" || oldData.encoding !== "base64" || !oldData.content) {
-      throw new Error("That path isn't a readable text file — can't rename it.");
+    if (oldData.type !== "file" || oldData.encoding !== "base64" || typeof oldData.content !== "string") {
+      throw new Error("This file cannot be renamed through the contents API.");
     }
-    const content = Buffer.from(oldData.content, "base64").toString("utf8");
-    const created = await githubFetch<GitHubCommitResponse>(
-      `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
-        newPath,
-      )}`,
-      token,
-      {
-        method: "PUT",
-        body: JSON.stringify({
-          message,
-          content: Buffer.from(content, "utf8").toString("base64"),
-          branch: args.branch,
-        }),
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-    try {
-      await githubFetch<GitHubCommitResponse>(
-        `${GITHUB_API}/repos/${args.owner}/${args.repo}/contents/${encodePath(
-          oldPath,
-        )}`,
-        token,
-        {
-          method: "DELETE",
-          body: JSON.stringify({
-            message,
-            sha: oldData.sha,
-            branch: args.branch,
-          }),
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    } catch {
-      throw new Error(
-        "The file was created at the new path, but removing the old one failed — check the repo for duplicates.",
-      );
-    }
-    return {
-      sha: created.commit?.sha ?? null,
-      message: args.message,
-      htmlUrl: created.commit?.html_url ?? null,
-      content,
-    } as CommitResult & { content: string };
+    const result = await commitBatch(ctx, { ...args, files: [
+      { path: oldPath, action: "delete", expectedSha: oldData.sha },
+      { path: newPath, action: "create", expectedSha: null, contentBase64: oldData.content },
+    ], preserveModeFrom: oldPath });
+    return { ...result, content: Buffer.from(oldData.content, "base64").toString("utf8") };
   },
 });
 
@@ -619,14 +492,20 @@ export const listTreeFiles = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
     const ref = await githubFetch<GitHubRef>(
       `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
       token,
     );
+    const commit = await githubFetch<{ tree?: { sha?: string } }>(
+      `${repoUrl}/git/commits/${encodeURIComponent(ref.object.sha)}`,
+      token,
+    );
+    if (!commit.tree?.sha) throw new Error("GitHub did not return the branch tree. Retry the operation.");
     const tree = await githubFetch<{
       tree: Array<{ path: string; type: string; size?: number }>;
-    }>(`${repoUrl}/git/trees/${ref.object.sha}?recursive=1`, token);
+    }>(`${repoUrl}/git/trees/${encodeURIComponent(commit.tree.sha)}?recursive=1`, token);
     return tree.tree
       .filter((entry) => entry.type === "blob")
       .map((entry) => ({ path: entry.path, size: entry.size ?? 0 }))
@@ -647,6 +526,7 @@ export const getCommitHistory = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const perPage = Math.min(Math.max(args.perPage ?? 50, 1), 100);
     const page = Math.max(args.page ?? 1, 1);
     const data = await githubFetch<GitHubCommitItem[]>(
@@ -678,11 +558,13 @@ export const getCommitDetails = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const data = await githubFetch<{
       sha: string;
       tree?: { sha: string };
       parents?: Array<{ sha: string }>;
       commit: {
+        tree?: { sha: string };
         message: string;
         author: {
           name: string | null;
@@ -708,7 +590,7 @@ export const getCommitDetails = action({
     );
     return {
       sha: data.sha,
-      treeSha: data.tree?.sha ?? null,
+      treeSha: data.commit.tree?.sha ?? null,
       parents: (data.parents ?? []).map((p) => p.sha),
       message: data.commit.message,
       author: {
@@ -745,6 +627,7 @@ export const getTree = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
 
     const fetchNested = async (
@@ -820,6 +703,7 @@ export const getBlob = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const data = await githubFetch<{ content: string; size: number }>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/git/blobs/${encodeURIComponent(
         args.sha,
@@ -848,6 +732,7 @@ export const getBlobs = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
     const blobs: Array<{ sha: string; content: string; size: number }> = [];
     let total = 0;
@@ -883,160 +768,49 @@ export const revertCommit = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
 
-    // 1. The commit being reverted, its message, and its parent.
-    const commit = await githubFetch<GitHubCommitItem>(
-      `${repoUrl}/commits/${args.commitSha}`,
-      token,
-    );
-    const parents = commit.parents ?? [];
-    if (parents.length === 0) {
-      throw new Error(
-        "This is the repository's first commit — it can't be reverted.",
-      );
-    }
-    if (parents.length > 1) {
-      throw new Error(
-        "Merge commits can't be reverted from Aria — revert each branch's changes separately.",
-      );
-    }
-    const parentSha = parents[0].sha;
-
-    // 2. The current branch tip.
-    const ref = await githubFetch<GitHubRef>(
-      `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
-      token,
-    );
-    const headSha = ref.object.sha;
-
-    // 3. Which files the target commit touched.
-    const compare = await githubFetch<{ files?: CompareFile[] }>(
-      `${repoUrl}/compare/${parentSha}...${args.commitSha}`,
-      token,
-    );
-    const files = compare.files ?? [];
-    if (files.length === 0) {
-      throw new Error(
-        "That commit didn't change any files — nothing to revert.",
-      );
-    }
-
-    // 4. The parent tree holds the original blob sha + mode for every path,
-    //    so restoring a file needs no content round-trips.
-    const parentTree = await githubFetch<{ tree: GitHubTreeEntry[] }>(
-      `${repoUrl}/git/trees/${parentSha}?recursive=1`,
-      token,
-    );
-    const parentBlobByPath = new Map<string, { sha: string; mode: string }>();
-    for (const entry of parentTree.tree) {
-      if (entry.type === "blob" && entry.sha) {
-        parentBlobByPath.set(entry.path, {
-          sha: entry.sha,
-          mode: entry.mode ?? "100644",
-        });
-      }
-    }
-
-    // 5. The head commit's tree is the base the reversed changes build on.
-    const headCommit = await githubFetch<GitHubCommitItem>(
-      `${repoUrl}/git/commits/${headSha}`,
-      token,
-    );
-    if (!headCommit.tree?.sha) {
-      throw new Error("Couldn't resolve the current branch tree.");
-    }
-
-    // 6. Build the reverse patch as tree entries:
-    //    - added/copied → delete the file that appeared
-    //    - modified/removed → restore the original content
-    //    - renamed → restore the old path, delete the new one
-    const entries: Array<{
-      path: string;
-      mode: string;
-      type: "blob";
-      sha: string | null;
-    }> = [];
-    const touched = new Set<string>();
-    for (const file of files) {
-      const status = file.status;
-      const newPath = file.filename;
-      const oldPath = file.previous_filename ?? file.filename;
-      if (status === "added" || status === "copied") {
-        if (!touched.has(newPath)) {
-          entries.push({ path: newPath, mode: "100644", type: "blob", sha: null });
-          touched.add(newPath);
-        }
-      } else if (status === "changed") {
-        throw new Error(
-          `${newPath} is a submodule change — Aria can't revert that.`,
-        );
+    const target = await githubFetch<GitHubCommitItem>(`${repoUrl}/commits/${args.commitSha}`, token);
+    if (target.parents?.length !== 1) throw new Error("Root and merge commits require an explicit revert strategy.");
+    const ref = await githubFetch<GitHubRef>(`${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`, token);
+    const [before, after, current] = await Promise.all([
+      fetchCommitTree(repoUrl, target.parents[0].sha, token),
+      fetchCommitTree(repoUrl, args.commitSha, token),
+      fetchCommitTree(repoUrl, ref.object.sha, token),
+    ]);
+    const map = (rows: GitHubTreeEntry[]) => new Map(rows.filter(e => e.type !== "tree").map(e => [e.path, e]));
+    const old = map(before), changed = map(after), head = map(current);
+    const same = (a?: GitHubTreeEntry, b?: GitHubTreeEntry) => a?.sha === b?.sha && a?.mode === b?.mode;
+    const files: PushFile[] = [];
+    const read = async (entry: GitHubTreeEntry) => {
+      const blob = await githubFetch<{ content: string; size: number }>(`${repoUrl}/git/blobs/${entry.sha}`, token);
+      if (blob.size > 700_000) throw new Error(`Revert ${entry.path} locally: file exceeds the online merge limit.`);
+      return Buffer.from(blob.content, "base64");
+    };
+    for (const path of new Set([...old.keys(), ...changed.keys()])) {
+      const prior = old.get(path), targetEntry = changed.get(path), now = head.get(path);
+      if (same(prior, targetEntry) || same(prior, now)) continue;
+      if (same(now, targetEntry)) {
+        if (!prior) files.push({ path, action: "delete", expectedSha: now!.sha });
+        else if (prior.type === "commit") files.push({ path, action: now ? "update" : "create", expectedSha: now?.sha ?? null, gitlink: prior.sha! });
+        else files.push({ path, action: now ? "update" : "create", expectedSha: now?.sha ?? null,
+          mode: prior.mode as PushFile["mode"], contentBase64: (await read(prior)).toString("base64") });
       } else {
-        // modified / removed / renamed → restore the original path.
-        const restorePath = status === "renamed" ? oldPath : newPath;
-        const original = parentBlobByPath.get(restorePath);
-        if (!original) {
-          throw new Error(
-            `Couldn't find the original version of ${restorePath} to restore.`,
-          );
-        }
-        if (!touched.has(restorePath)) {
-          entries.push({
-            path: restorePath,
-            mode: original.mode,
-            type: "blob",
-            sha: original.sha,
-          });
-          touched.add(restorePath);
-        }
-        if (status === "renamed" && !touched.has(newPath)) {
-          entries.push({ path: newPath, mode: "100644", type: "blob", sha: null });
-          touched.add(newPath);
-        }
+        if (!prior || !targetEntry || !now || [prior, targetEntry, now].some(e => e.type !== "blob"))
+          throw new Error(`Revert conflict in ${path}. Later changes must be reconciled first.`);
+        const [base, ours, theirs] = await Promise.all([read(targetEntry), read(now), read(prior)]);
+        if ([base, ours, theirs].some(b => b.includes(0) || !Buffer.from(b.toString("utf8")).equals(b)))
+          throw new Error(`Binary revert conflict in ${path}. Resolve it locally.`);
+        const result = threeWayMerge(base.toString("utf8"), ours.toString("utf8"), theirs.toString("utf8"));
+        if (!result.clean) throw new Error(`Revert conflict in ${path}. Later edits were preserved; resolve the conflict first.`);
+        const mode = prior.mode === targetEntry.mode ? now.mode : now.mode === targetEntry.mode ? prior.mode : null;
+        if (!mode) throw new Error(`Revert mode conflict in ${path}.`);
+        files.push({ path, action: "update", expectedSha: now.sha, mode: mode as PushFile["mode"], content: result.result.join("\n") });
       }
     }
-
-    // 7. New tree on top of the current tip.
-    const newTree = await githubFetch<{ sha: string }>(
-      `${repoUrl}/git/trees`,
-      token,
-      {
-        method: "POST",
-        body: JSON.stringify({ base_tree: headCommit.tree.sha, tree: entries }),
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-
-    // 8. The revert commit, then fast-forward the branch ref.
-    const message = `Revert "${commit.commit.message.split("\n")[0]}"\n\nThis reverts commit ${args.commitSha}.`;
-    const newCommit = await githubFetch<GitHubCommitItem>(
-      `${repoUrl}/git/commits`,
-      token,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          message,
-          tree: newTree.sha,
-          parents: [headSha],
-        }),
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-    await githubFetch<GitHubRef>(
-      `${repoUrl}/git/refs/heads/${encodeURIComponent(args.branch)}`,
-      token,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ sha: newCommit.sha, force: false }),
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-
-    return {
-      sha: newCommit.sha,
-      message,
-      htmlUrl: newCommit.html_url,
-    } as CommitResult;
+    if (!files.length) throw new Error("This change is already reverted or has no remaining file changes.");
+    return commitBatch(ctx, { ...args, message: `Revert "${target.commit.message.split("\n")[0]}"\n\nThis reverts commit ${args.commitSha}.`, files });
   },
 });
 
@@ -1047,6 +821,8 @@ export const revertCommit = action({
  */
 const pushFileValidator = v.object({
   path: v.string(),
+  expectedSha: v.optional(v.union(v.string(), v.null())),
+  mode: v.optional(v.union(v.literal("100644"), v.literal("100755"), v.literal("120000"))),
   action: v.union(
     v.literal("update"),
     v.literal("create"),
@@ -1061,26 +837,14 @@ const pushFileValidator = v.object({
 });
 type PushFile = {
   path: string;
+  expectedSha?: string | null;
+  mode?: "100644" | "100755" | "120000";
   action: "update" | "create" | "delete";
   content?: string;
   contentBase64?: string;
   uploadId?: Id<"blobUploads">;
   gitlink?: string;
 };
-
-/** A small utf-8 sample of a file's content for the secret-risk check. */
-function riskSample(file: PushFile): string {
-  if (file.content !== undefined) return file.content.slice(0, 65536);
-  if (file.contentBase64 !== undefined) {
-    // Decode a ~64 KB window so binary-safe base64 content is still scanned.
-    return Buffer.from(file.contentBase64.slice(0, 87_381), "base64")
-      .toString("utf8")
-      .slice(0, 65536);
-  }
-  // Chunked uploads were gated client-side before the local commit was
-  // created; re-scanning would require reassembling the whole payload here.
-  return "";
-}
 
 /** Resolve a file to its base64 payload (null for deletes). */
 async function filePayloadBase64(
@@ -1143,14 +907,24 @@ async function createGitHubCommit(
     committer?: GitCommitPerson;
   },
 ): Promise<{ sha: string; message: string; htmlUrl: string | null }> {
-  if (!args.message.trim()) throw new Error("A commit message is required.");    if (args.files.length === 0) throw new Error("Nothing to commit.");
+  if (!args.message.trim()) throw new Error("A commit message is required.");
+  if (args.files.length === 0) throw new Error("Nothing to commit.");
   const message = cleanCommitMessage(args.message);
+  // Keep the normalized message on the shared args object so all callers
+  // (including local pushes) use the same bounded value.
+  args.message = message;
   const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
 
-  const textFiles = args.files.filter((f) => f.action !== "delete");
-  const risk = anySecretRisk(
-    textFiles.map((f) => ({ path: f.path, content: riskSample(f) })),
-  );
+  if (!args.branch) throw new Error("A target branch is required.");
+  const payloads = new Map<string, string | null>();
+  for (const file of args.files) {
+    if (cleanFilePath(file.path) !== file.path) throw new Error("Invalid file path.");
+    payloads.set(file.path, await filePayloadBase64(ctx, file));
+  }
+  const textFiles = args.files.filter(f => f.action !== "delete");
+  const risk = anySecretRisk(textFiles.map(f => ({ path: f.path,
+    content: Buffer.from(payloads.get(f.path) ?? "", "base64").toString("utf8"),
+  })));
   if (risk.risky && !args.allowSecrets) {
     throw new Error(
       `Aria refuses to commit ${risk.files.join(", ")} — ${risk.files.length > 1 ? "they look" : "it looks"} like ${risk.files.length > 1 ? "they contain" : "it contains"} secrets. Confirm “commit anyway” to override.`,
@@ -1162,9 +936,11 @@ async function createGitHubCommit(
 
   // Project constitution (Phase 3): "block" rules refuse the commit
   // server-side; "require_review" rules are recorded in the audit trail.
+  const commitUserId = await getAuthUserId(ctx);
   const gate = (await ctx.runQuery(internal.securityCenter.ruleGateForFiles, {
     repo: `${args.owner}/${args.repo}`,
-    files: textFiles.map((f) => f.path),
+    files: args.files.map((f) => f.path),
+    userId: commitUserId ?? undefined,
   })) as { blocked: Array<{ file: string; title: string; body: string }>; review: Array<{ file: string; title: string; body: string }> };
   if (gate.blocked.length > 0) {
     const first = gate.blocked[0];
@@ -1185,37 +961,6 @@ async function createGitHubCommit(
       })
       .catch(() => {});
   }
-  // Approval policies (Phase 4 C): when the actor belongs to an org whose
-  // protected-branch policy matches this commit, the action is blocked
-  // server-side until the policy is satisfied (role + approval count).
-  const commitUserId = await getAuthUserId(ctx);
-  if (commitUserId !== null) {
-    const policyGate = await ctx
-      .runQuery(internal.organizations.internalCommitGate, {
-        userId: commitUserId,
-        branch: args.branch ?? "",
-        paths: textFiles.map((f) => f.path),
-      })
-      .catch(() => null);
-    if (policyGate && !policyGate.satisfied) {
-      throw new Error(
-        `Aria refuses this commit: your organization “${policyGate.orgName}” requires the ${policyGate.minRole} role (or higher) and ${policyGate.minApprovers} approval(s) for changes to ${args.branch || "this branch"} (${policyGate.approvalCount} recorded so far). Approve it in the Release center, or work on a non-protected branch.`,
-      );
-    }
-    if (policyGate && policyGate.satisfied) {
-      await ctx
-        .runMutation(internal.securityCenter.audit, {
-          userId: commitUserId,
-          action: "commit.approval_gate",
-          repo: `${args.owner}/${args.repo}`,
-          branch: args.branch,
-          result: "approved",
-          approval: true,
-          detail: `Protected-branch policy satisfied (${policyGate.minRole}+, ${policyGate.approvalCount}/${policyGate.minApprovers} approvals)`,
-        })
-        .catch(() => {});
-    }
-  }
   // Secret override: record that an override happened WITHOUT recording the
   // secret itself (Phase 3 flight/audit requirement).
   if (risk.risky && args.allowSecrets) {
@@ -1230,13 +975,6 @@ async function createGitHubCommit(
       .catch(() => {});
   }
 
-  // Resolve payloads first so chunked uploads can be cleaned up reliably.
-  const payloads = new Map<string, string | null>();
-  const uploadIds = new Set<Id<"blobUploads">>();
-  for (const file of args.files) {
-    if (file.uploadId) uploadIds.add(file.uploadId);
-    payloads.set(file.path, await filePayloadBase64(ctx, file));
-  }
   try {
     // Create a blob for every changed file. Deletes and submodule pins need
     // no blob — gitlinks (mode 160000) carry a commit SHA directly.
@@ -1274,6 +1012,7 @@ async function createGitHubCommit(
       }>;
     }>(`${repoUrl}/git/trees/${encodeURIComponent(args.baseTreeSha)}?recursive=1`, args.token);
 
+    baseTree.tree = await fetchCompleteTree(repoUrl, args.baseTreeSha, args.token);
     const deleted = new Set(
       args.files.filter((f) => f.action === "delete").map((f) => f.path),
     );
@@ -1308,7 +1047,8 @@ async function createGitHubCommit(
       }
       const sha = blobShas.get(file.path);
       if (sha) {
-        tree.push({ path: file.path, mode: "100644", type: "blob" as const, sha });
+        const original = baseTree.tree.find(e => e.path === file.path);
+        tree.push({ path: file.path, mode: file.mode ?? original?.mode ?? "100644", type: "blob" as const, sha });
       }
     }
     for (const path of deleted) {
@@ -1363,69 +1103,134 @@ async function createGitHubCommit(
       headers: { "Content-Type": "application/json" },
     });
 
+  // Approval policies (Phase 4 C): when the actor belongs to an org whose
+  // protected-branch policy matches this commit, the action is blocked
+  // server-side until the policy is satisfied (role + approval count).
+  if (commitUserId !== null) {
+    const policyGate = await ctx
+      .runMutation(internal.organizations.internalCommitGate, {
+        userId: commitUserId,
+        repo: `${args.owner}/${args.repo}`,
+        branch: args.branch,
+        proposedCommit: commit.sha,
+        changeKey: createHash("sha256").update(JSON.stringify({ base: args.baseTreeSha,
+          parents: args.parents, author: args.author, committer: args.committer, message: args.message, files: args.files.map(f => ({ path: f.path,
+            action: f.action, mode: f.mode, gitlink: f.gitlink, payload: payloads.get(f.path) })).sort((a,b) => a.path.localeCompare(b.path)) })).digest("hex"),
+        paths: args.files.map((f) => f.path),
+      });
+    if (policyGate && !policyGate.satisfied) {
+      throw new Error(
+        `Aria refuses this commit: your organization “${policyGate.orgName}” requires the ${policyGate.minRole} role (or higher) and ${policyGate.minApprovers} approval(s) for changes to ${args.branch || "this branch"} (${policyGate.approvalCount} recorded so far). Approve it in the Release center, or work on a non-protected branch.`,
+      );
+    }
+    if (policyGate && policyGate.satisfied) {
+      await ctx
+        .runMutation(internal.securityCenter.audit, {
+          userId: commitUserId,
+          action: "commit.approval_gate",
+          repo: `${args.owner}/${args.repo}`,
+          branch: args.branch,
+          result: "approved",
+          approval: true,
+          detail: `Protected-branch policy satisfied (${policyGate.minRole}+, ${policyGate.approvalCount}/${policyGate.minApprovers} approvals)`,
+        })
+        .catch(() => {});
+    }
+  }
     return {
       sha: commit.sha,
       message: commit.message ?? args.message,
       htmlUrl: commit.html_url ?? null,
     };
   } finally {
-    // Free chunked uploads whether we succeeded or not.
-    for (const uploadId of uploadIds) {
-      await ctx
-        .runMutation(internal.github.deleteBlobUpload, { uploadId })
-        .catch(() => {});
+    // Uploads remain available for a retry if the ref lease changes. New
+    // uploads prune abandoned rows, and successful batch commits remove theirs.
+  }
+}
+
+async function commitBatch(ctx: ActionCtx, args: {
+  owner: string; repo: string; branch: string; message: string; allowSecrets?: boolean;
+  files: PushFile[]; preserveModeFrom?: string;
+}): Promise<CommitResult> {
+  const token = await getToken(ctx);
+  await ensureRepoAccess(ctx, args.owner, args.repo, token);
+  const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
+  const ref = await githubFetch<GitHubRef>(`${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`, token);
+  const headSha = ref.object.sha;
+  const headCommit = await githubFetch<{ tree?: { sha?: string } }>(
+    `${repoUrl}/git/commits/${encodeURIComponent(headSha)}`,
+    token,
+  );
+  const baseTreeSha = headCommit.tree?.sha;
+  if (!baseTreeSha) throw new Error("GitHub did not return the branch tree. Retry the operation.");
+  const tree = await fetchCompleteTree(repoUrl, baseTreeSha, token);
+  for (const f of args.files) {
+    const current = tree.find(e => e.path === f.path);
+    if (f.action === "create") {
+      if (current) throw new Error(`Conflict: ${f.path} already exists. Reload before committing.`);
+    } else if (!f.expectedSha || current?.sha !== f.expectedSha) {
+      throw new Error(`Conflict: ${f.path} changed since it was opened. Reload and merge your edits before committing.`);
     }
+  }
+  const files = args.files.map(f => ({ ...f, mode: f.mode ?? (args.preserveModeFrom
+    ? tree.find(e => e.path === args.preserveModeFrom)?.mode as PushFile["mode"] : undefined) }));
+  const created = await createGitHubCommit(ctx, { token, ...args, files, parents: [headSha], baseTreeSha });
+  // A branch can move while blobs and the commit are being created. Refuse
+  // to overwrite that newer tip instead of relying on a potentially stale
+  // read from the beginning of the action.
+  const latestRef = await githubFetch<GitHubRef>(
+    `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
+    token,
+  );
+  if (latestRef.object.sha !== headSha) {
+    throw new Error("Conflict: the branch changed while this commit was being prepared. Reload and retry.");
+  }
+  await githubFetch<GitHubRef>(`${repoUrl}/git/refs/heads/${encodeURIComponent(args.branch)}`, token, {
+    method: "PATCH", body: JSON.stringify({ sha: created.sha, force: false }), headers: { "Content-Type": "application/json" },
+  });
+  const writes = files.filter(f => f.action !== "delete");
+  const lastWrite = writes.length > 0 ? writes[writes.length - 1] : undefined;
+  const file = lastWrite ? await githubFetch<GitHubFile>(`${repoUrl}/contents/${encodePath(lastWrite.path)}?ref=${created.sha}`, token) : null;
+  await cleanupBlobUploads(ctx, files);
+  return { ...created, ...(file ? { blobSha: file.sha } : {}) };
+}
+
+async function fetchCommitTree(repoUrl: string, commitSha: string, token: string): Promise<GitHubTreeEntry[]> {
+  const commit = await githubFetch<{ tree?: { sha?: string } }>(
+    `${repoUrl}/git/commits/${encodeURIComponent(commitSha)}`,
+    token,
+  );
+  if (!commit.tree?.sha) throw new Error(`GitHub did not return the tree for commit ${commitSha.slice(0, 7)}.`);
+  return fetchCompleteTree(repoUrl, commit.tree.sha, token);
+}
+
+async function fetchCompleteTree(repoUrl: string, treeSha: string, token: string): Promise<GitHubTreeEntry[]> {
+  const recursive = await githubFetch<{ tree: GitHubTreeEntry[]; truncated?: boolean }>(`${repoUrl}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`, token);
+  if (!recursive.truncated) return recursive.tree;
+  const out: GitHubTreeEntry[] = [];
+  const queue = [{ sha: treeSha, prefix: "" }];
+  while (queue.length) {
+    const next = queue.shift()!;
+    const t = await githubFetch<{ tree: GitHubTreeEntry[] }>(`${repoUrl}/git/trees/${next.sha}`, token);
+    for (const e of t.tree) {
+      const path = next.prefix + e.path;
+      if (e.type === "tree" && e.sha) queue.push({ sha: e.sha, prefix: path + "/" });
+      else out.push({ ...e, path });
+    }
+  }
+  return out;
+}
+
+async function cleanupBlobUploads(ctx: ActionCtx, files: PushFile[]) {
+  for (const uploadId of new Set(files.flatMap((file) => file.uploadId ? [file.uploadId] : []))) {
+    await ctx.runMutation(internal.github.deleteBlobUpload, { uploadId }).catch(() => {});
   }
 }
 
 export const commitChanges = action({
-  args: {
-    owner: v.string(),
-    repo: v.string(),
-    branch: v.string(),
-    message: v.string(),
-    allowSecrets: v.optional(v.boolean()),
-    files: v.array(pushFileValidator),
-  },
-  handler: async (ctx, args) => {
-    const token = await getToken(ctx);
-    const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
-
-    // Resolve the current branch tip.
-    const ref = await githubFetch<GitHubRef>(
-      `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
-      token,
-    );
-    const headSha = ref.object.sha;
-
-    const created = await createGitHubCommit(ctx, {
-      token,
-      owner: args.owner,
-      repo: args.repo,
-      message: args.message,
-      parents: [headSha],
-      baseTreeSha: headSha,
-      files: args.files,
-      allowSecrets: args.allowSecrets,
-    });
-
-    // Fast-forward the branch ref to the new commit.
-    await githubFetch<GitHubRef>(
-      `${repoUrl}/git/refs/heads/${encodeURIComponent(args.branch)}`,
-      token,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ sha: created.sha, force: false }),
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-
-    return {
-      sha: created.sha,
-      message: created.message,
-      htmlUrl: created.htmlUrl,
-    } as CommitResult;
-  },
+  args: { owner: v.string(), repo: v.string(), branch: v.string(), message: v.string(),
+    allowSecrets: v.optional(v.boolean()), files: v.array(pushFileValidator) },
+  handler: commitBatch,
 });
 
 /**
@@ -1440,6 +1245,8 @@ export const pushCommits = action({
     branch: v.string(),
     moveRef: v.boolean(),
     force: v.boolean(),
+    expectedHead: v.optional(v.string()),
+    allowSecrets: v.optional(v.boolean()),
     commit: v.object({
       message: v.string(),
       parents: v.array(v.string()),
@@ -1456,10 +1263,26 @@ export const pushCommits = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
     const commit = args.commit;
     if (commit.parents.length === 0) {
       throw new Error("Can't push a root commit — create the first commit on GitHub first.");
+    }
+
+    const branchRef = await githubFetch<GitHubRef>(
+      `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
+      token,
+    );
+    const leaseHead = branchRef.object.sha;
+    if (args.expectedHead && args.expectedHead !== leaseHead) {
+      throw new Error("Conflict: the remote branch changed before this push started. Fetch and retry.");
+    }
+    if (args.moveRef && !args.force && commit.parents[0] !== leaseHead) {
+      throw new Error("Conflict: this push is not a fast-forward of the remote branch. Fetch and merge first.");
+    }
+    if (args.moveRef && args.force && !args.expectedHead) {
+      throw new Error("A force push requires the remote tip as an explicit lease.");
     }
 
     // The first parent must exist on GitHub already; its tree is the base
@@ -1479,6 +1302,8 @@ export const pushCommits = action({
       token,
       owner: args.owner,
       repo: args.repo,
+      branch: args.branch,
+      allowSecrets: args.allowSecrets,
       message: commit.message,
       parents: commit.parents,
       baseTreeSha,
@@ -1502,6 +1327,16 @@ export const pushCommits = action({
     });
 
     if (args.moveRef) {
+      // Re-check the lease immediately before moving the ref. GitHub's REST
+      // endpoint does not expose a native force-with-lease parameter, so this
+      // check is the safest available guard against a stale rewrite.
+      const latestRef = await githubFetch<GitHubRef>(
+        `${repoUrl}/git/ref/heads/${encodeURIComponent(args.branch)}`,
+        token,
+      );
+      if (latestRef.object.sha !== leaseHead) {
+        throw new Error("Conflict: the remote branch changed while this push was being prepared. Nothing was overwritten.");
+      }
       await githubFetch<GitHubRef>(
         `${repoUrl}/git/refs/heads/${encodeURIComponent(args.branch)}`,
         token,
@@ -1512,6 +1347,8 @@ export const pushCommits = action({
         },
       );
     }
+
+    await cleanupBlobUploads(ctx, commit.files);
 
     return {
       sha: created.sha,
@@ -1528,6 +1365,7 @@ export const listBranches = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const data = await githubFetch<GitHubBranch[]>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/branches?per_page=100`,
       token,
@@ -1552,6 +1390,7 @@ export const createBranch = action({
     const base = cleanName(args.base, 200);
     if (!name || !base) throw new Error("That branch name isn't valid.");
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const ref = await githubFetch<GitHubRef>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/git/ref/heads/${encodeURIComponent(
         base,
@@ -1606,6 +1445,7 @@ export const createPullRequest = action({
       );
     }
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const data = await githubFetch<GitHubPullRequest>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls`,
       token,
@@ -1646,6 +1486,7 @@ export const listPullRequests = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const data = await githubFetch<GitHubPullRequest[]>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls?state=open&sort=updated&direction=desc&per_page=50`,
       token,
@@ -1679,6 +1520,7 @@ export const mergePullRequest = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const pr = await githubFetch<GitHubPullRequest>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls/${args.number}`,
       token,
@@ -1696,12 +1538,15 @@ export const mergePullRequest = action({
     if (pr.draft) {
       throw new Error("Draft pull requests can't be merged — mark it ready first.");
     }
+    if (!pr.head?.sha) {
+      throw new Error("GitHub did not return the pull request head SHA. Refresh and try again.");
+    }
     const data = await githubFetch<GitHubMergeResponse>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls/${args.number}/merge`,
       token,
       {
         method: "PUT",
-        body: JSON.stringify({ merge_method: "squash" }),
+        body: JSON.stringify({ merge_method: "squash", sha: pr.head?.sha }),
         headers: { "Content-Type": "application/json" },
       },
     );
@@ -1744,6 +1589,7 @@ export const getBranchChecks = action({
     }>;
   }> => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const repoUrl = `${GITHUB_API}/repos/${args.owner}/${args.repo}`;
 
     // Branch tip commit.
@@ -1772,7 +1618,7 @@ export const getBranchChecks = action({
         detailsUrl: c.details_url ?? null,
       }));
     } catch {
-      // Some repos have no checks — that's fine.
+      checkRuns.push({ name: "Checks unavailable", status: "unknown", conclusion: null, detailsUrl: null });
     }
 
     // Legacy commit status contexts.
@@ -1794,32 +1640,10 @@ export const getBranchChecks = action({
         targetUrl: s.target_url ?? null,
       }));
     } catch {
-      // No status contexts either.
+      statusContexts.push({ context: "Statuses unavailable", state: "pending", description: null, targetUrl: null });
     }
 
-    const failedConclusions = new Set([
-      "failure",
-      "timed_out",
-      "cancelled",
-      "action_required",
-    ]);
-    const anyFailure =
-      statusContexts.some((s) => s.state === "failure") ||
-      checkRuns.some((c) => c.conclusion !== null && failedConclusions.has(c.conclusion));
-    const anyPending =
-      statusContexts.some((s) => s.state === "pending") ||
-      checkRuns.some((c) => c.status === "in_progress" || c.status === "queued");
-
-    let overall: "none" | "pending" | "failure" | "success";
-    if (statusContexts.length === 0 && checkRuns.length === 0) {
-      overall = "none";
-    } else if (anyFailure) {
-      overall = "failure";
-    } else if (anyPending) {
-      overall = "pending";
-    } else {
-      overall = "success";
-    }
+    const overall = summarizeChecks(checkRuns, statusContexts);
 
     return { sha, overall, checkRuns, statusContexts };
   },
@@ -1834,6 +1658,7 @@ export const getPullRequestFiles = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const data = await githubFetch<
       Array<{
         filename: string;
@@ -1865,6 +1690,7 @@ export const searchCode = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const q = `${cleanSearchQuery(args.query)} repo:${args.owner}/${args.repo}`;
     const data = await githubFetch<{
       items: Array<{ path: string; name: string; html_url: string }>;
@@ -1888,6 +1714,7 @@ export const listIssues = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const data = await githubFetch<GitHubIssue[]>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/issues?state=open&sort=updated&direction=desc&per_page=50`,
       token,
@@ -1935,6 +1762,7 @@ export const createIssue = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const title = args.title.trim();
     if (!title) throw new Error("Issue title can't be empty.");
     const data = await githubFetch<{
@@ -2002,7 +1830,7 @@ export const getInboxForUser = internalAction({
     const userId = args.userId;
     // Pro gate — enforced at the action layer, never by UI hiding. Skipped in
     // dev mode (no Stripe keys) so the app stays fully unlocked until then.
-    if (process.env.STRIPE_SECRET_KEY) {
+    if (billingConfigured()) {
       const billing = await ctx.runQuery(internal.billing.planForUser, {
         userId,
       });
@@ -2111,13 +1939,14 @@ export const submitReview = action({
   },
   handler: async (ctx, args) => {
     const token = await getToken(ctx);
+    await ensureRepoAccess(ctx, args.owner, args.repo, token);
     const data = await githubFetch<{ id: number; state: string }>(
       `${GITHUB_API}/repos/${args.owner}/${args.repo}/pulls/${args.number}/reviews`,
       token,
       {
         method: "POST",
         body: JSON.stringify({
-          event: args.event,
+          event: args.event.toUpperCase(),
           body:
             args.body ??
             (args.event === "approve"
@@ -2128,5 +1957,19 @@ export const submitReview = action({
       },
     );
     return { id: data.id, state: data.state };
+  },
+});
+
+
+/** Binding policies requires both organization administration and GitHub repo administration. */
+export const linkOrganizationRepository = action({
+  args: { orgId: v.id("organizations"), owner: v.string(), repo: v.string() },
+  handler: async (ctx, args) => {
+    validateRepoPart(args.owner, "owner");
+    validateRepoPart(args.repo, "repository");
+    const token = await getToken(ctx);
+    const meta = await githubFetch<{ permissions?: { admin?: boolean } }>(`${GITHUB_API}/repos/${args.owner}/${args.repo}`, token);
+    if (!meta.permissions?.admin) throw new Error("GitHub repository admin permission is required.");
+    await ctx.runMutation(internal.organizations.linkRepository, { orgId: args.orgId, repo: `${args.owner}/${args.repo}`, userId: (await getAuthUserId(ctx))! });
   },
 });

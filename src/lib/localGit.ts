@@ -89,6 +89,8 @@ export interface GitBackend {
     branch: string;
     moveRef: boolean;
     force: boolean;
+    expectedHead?: string;
+    allowSecrets?: boolean;
     commit: {
       message: string;
       parents: string[];
@@ -115,6 +117,7 @@ export interface GitBackend {
 
 export interface PushFile {
   path: string;
+  mode?: "100644" | "100755" | "120000";
   action: "update" | "create" | "delete";
   content?: string;
   contentBase64?: string;
@@ -1121,12 +1124,13 @@ export async function pushLocal(
       }
       if (bytes.length > DIRECT_BASE64_BYTES) {
         const uploadId = await uploadLargeBlob(backend, info.oid, bytes);
-        files.push({ path: change.path, action: change.action, uploadId });
+        files.push({ path: change.path, action: change.action, uploadId, mode: String(info.mode) as PushFile["mode"] });
       } else {
         files.push({
           path: change.path,
           action: change.action,
           contentBase64: bytesToBase64(bytes),
+          mode: String(info.mode) as PushFile["mode"],
         });
       }
     }
@@ -1145,6 +1149,8 @@ export async function pushLocal(
       branch,
       moveRef: isLast,
       force: isLast && plan.needsForce,
+      expectedHead: remoteTip,
+      allowSecrets: args.allowSecrets,
       commit: {
         message: commit.message,
         parents,
@@ -2114,3 +2120,4 @@ export async function checkoutRef(
   const branch = (await git.currentBranch({ fs, dir, gitdir, fullname: false })) || null;
   return { detached: branch === null, branch };
 }
+

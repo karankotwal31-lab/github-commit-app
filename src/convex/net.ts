@@ -35,15 +35,16 @@ export async function fetchWithRetry(
   init?: RequestInit,
   options?: FetchRetryOptions,
 ): Promise<Response> {
-  const attempts = Math.max(1, options?.attempts ?? 3);
+  const safe = ["GET", "HEAD", "OPTIONS"].includes((init?.method ?? "GET").toUpperCase());
+  const attempts = safe ? Math.max(1, options?.attempts ?? 3) : 1;
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const res = await fetch(url, init);
+      const res = await fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(20_000) });
       if (res.status === 429 && attempt < attempts) {
         const retryAfter = res.headers.get("retry-after");
         const delayMs = retryAfter ? Number(retryAfter) * 1000 : backoffMs(attempt);
-        await sleep(Number.isFinite(delayMs) ? delayMs : backoffMs(attempt));
+        await sleep(Number.isFinite(delayMs) ? Math.min(3000, Math.max(0, delayMs)) : backoffMs(attempt));
         continue;
       }
       if (res.status >= 500 && res.status < 600 && attempt < attempts) {
@@ -62,3 +63,4 @@ export async function fetchWithRetry(
   }
   throw lastError;
 }
+

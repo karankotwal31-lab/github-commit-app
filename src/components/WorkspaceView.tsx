@@ -17,7 +17,6 @@ import { StressTestDialog } from "@/components/StressTestDialog";
 import { CreateIssueDialog } from "@/components/CreateIssueDialog";
 import { WhyChangedDialog } from "@/components/WhyChangedDialog";
 import { CrossRepoDialog } from "@/components/CrossRepoDialog";
-import { PushActionHandler } from "@/components/PushActionHandler";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ShareWorkspaceDialog } from "@/components/ShareWorkspaceDialog";
 import { InputDialog } from "@/components/workspace-shared";
@@ -208,7 +207,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       <AiReviewDialog open={reviewOpen} onOpenChange={setReviewOpen} owner={owner} repo={repo} branch={branch} />
       <AdminDialog open={adminOpen} onOpenChange={setAdminOpen} />
       <SecurityCenterDialog open={securityOpen} onOpenChange={setSecurityOpen} owner={owner} repo={repo} branch={branch} />
-      <PlatformDialog open={platformOpen} onOpenChange={setPlatformOpen} owner={owner} repo={repo} branch={branch} />
+      <PlatformDialog open={platformOpen} onOpenChange={setPlatformOpen} owner={owner} repo={repo} branch={branch} commit={lastCommit?.sha ?? null} />
 
       {selectedRepo && !securityOpen && (
         <button type="button" onClick={() => setSecurityOpen(true)} className="fixed bottom-16 right-4 z-40 flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-600 shadow-sm transition-colors hover:bg-neutral-50" title="Security command center">
@@ -225,7 +224,6 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       <CreateIssueDialog open={issueOpen} onOpenChange={setIssueOpen} owner={owner} repo={repo} />
       <WhyChangedDialog open={whyOpen} onOpenChange={setWhyOpen} owner={owner} repo={repo} branch={branch} path={openFile?.path ?? ""} line={null} />
       <CrossRepoDialog open={crossRepoOpen} onOpenChange={setCrossRepoOpen} repos={filteredRepos.map((r) => ({ fullName: r.fullName, defaultBranch: r.defaultBranch }))} isTeam={crossRepoAllowed} />
-      <PushActionHandler />
       <CommandPalette onInbox={() => setInboxOpen(true)} onReview={() => setReviewOpen(true)} onIssue={() => setIssueOpen(true)} onAi={() => setAiOpen(true)} onBilling={() => setBillingOpen(true)} onAdmin={() => setAdminOpen(true)} onStress={() => setStressOpen(true)} onVault={() => setVaultOpen(true)} onPrs={() => setPrsOpen(true)} onHistory={() => setHistoryOpen(true)} onCodeSearch={() => setCodeSearchOpen(true)} />
       <ShareWorkspaceDialog open={shareOpen} onOpenChange={setShareOpen} repo={selectedRepo?.fullName ?? null} branch={currentBranch} onJoin={props.handleJoinWorkspace} myShared={props.mySharedWorkspaces} createSharedWorkspace={props.createSharedWorkspace} />
 
