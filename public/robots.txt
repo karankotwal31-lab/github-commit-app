@@ -3,5 +3,4 @@ Allow: /
 Disallow: /dashboard
 Disallow: /auth
 
-# Uncomment and update once you have a real domain + sitemap:
-# Sitemap: https://steady-scorpion-839.convex.site/sitemap.xml
+# Add a Sitemap directive only after the canonical production origin is final.
