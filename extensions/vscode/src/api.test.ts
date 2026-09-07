@@ -30,13 +30,40 @@ describe("AriaApi", () => {
       });
     }) as typeof fetch;
 
-    const api = new AriaApi("https://steady-scorpion-839.convex.site/");
+    const api = new AriaApi("https://aria.example.com/");
     await api.whoami("aria_abc");
 
-    expect(seen?.url).toBe(
-      "https://steady-scorpion-839.convex.site/api/cli/whoami",
-    );
+    expect(seen?.url).toBe("https://aria.example.com/api/cli/whoami");
     expect(seen?.headers.get("authorization")).toBe("Bearer aria_abc");
+  });
+
+  test("fails visibly when the backend URL is not configured", async () => {
+    const api = new AriaApi("");
+    await expect(api.whoami("aria_abc")).rejects.toThrow(/not configured/i);
+  });
+
+  test("rejects insecure non-local backend URLs", async () => {
+    const api = new AriaApi("http://aria.example.com");
+    await expect(api.whoami("aria_abc")).rejects.toThrow(/must use HTTPS/i);
+  });
+
+  test("allows localhost HTTP for development", async () => {
+    let seen: Request | null = null;
+    globalThis.fetch = (async (input: any) => {
+      seen = input;
+      return new Response(JSON.stringify({ user: null, github: null }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+    const api = new AriaApi("http://127.0.0.1:3210/");
+    await api.whoami("aria_abc");
+    expect(seen?.url).toBe("http://127.0.0.1:3210/api/cli/whoami");
+  });
+
+  test("updates the configured site without replacing the API object", () => {
+    const api = new AriaApi("https://one.example.com/");
+    api.setSite("https://two.example.com///");
+    expect(api.site).toBe("https://two.example.com");
   });
 
   test("parses repos", async () => {
@@ -44,7 +71,7 @@ describe("AriaApi", () => {
       { repo: "ada/notes", private: true },
       { repo: "ada/engine", private: false },
     ]);
-    const rows = await new AriaApi("https://x").repos("aria_t");
+    const rows = await new AriaApi("https://x.example").repos("aria_t");
     expect(rows).toHaveLength(2);
     expect(rows[0]).toEqual({ repo: "ada/notes", private: true });
   });
@@ -62,7 +89,7 @@ describe("AriaApi", () => {
         createdAt: 1700000000000,
       },
     ]);
-    const rows = await new AriaApi("https://x").inbox("aria_t");
+    const rows = await new AriaApi("https://x.example").inbox("aria_t");
     expect(rows[0]?.title).toContain("lodash");
     expect(rows[0]?.read).toBe(false);
   });
@@ -78,14 +105,14 @@ describe("AriaApi", () => {
         updatedAt: "2026-01-01T00:00:00Z",
       },
     ]);
-    const rows = await new AriaApi("https://x").prs("aria_t");
+    const rows = await new AriaApi("https://x.example").prs("aria_t");
     expect(rows[0]?.number).toBe(42);
     expect(rows[0]?.draft).toBe(true);
   });
 
   test("throws a readable AriaApiError on 401 with a server message", async () => {
     mockFetch(401, { error: "Unauthorized — token revoked." });
-    const api = new AriaApi("https://x");
+    const api = new AriaApi("https://x.example");
     try {
       await api.whoami("aria_bad");
       expect.unreachable();
@@ -97,7 +124,7 @@ describe("AriaApi", () => {
   });
 
   test("throws a readable error when no token is passed", async () => {
-    const api = new AriaApi("https://x");
+    const api = new AriaApi("https://x.example");
     try {
       await api.whoami("");
       expect.unreachable();
@@ -137,11 +164,11 @@ describe("AriaApi", () => {
       );
     }) as typeof fetch;
 
-    const api = new AriaApi("https://steady-scorpion-839.convex.site");
+    const api = new AriaApi("https://aria.example.com");
     const detail = await api.prDetail("ada/engine", 42, "aria_t");
 
     expect(seen?.url).toBe(
-      "https://steady-scorpion-839.convex.site/api/cli/prs/ada/engine/42",
+      "https://aria.example.com/api/cli/prs/ada/engine/42",
     );
     expect(detail.files).toHaveLength(1);
     expect(detail.files[0]?.oldContent).toBe("old\n");
@@ -159,8 +186,8 @@ describe("AriaApi", () => {
       );
     }) as typeof fetch;
 
-    await new AriaApi("https://x").prDetail("ada/engine", 7, "aria_t");
-    expect(seen?.url).toBe("https://x/api/cli/prs/ada/engine/7");
+    await new AriaApi("https://x.example").prDetail("ada/engine", 7, "aria_t");
+    expect(seen?.url).toBe("https://x.example/api/cli/prs/ada/engine/7");
   });
 
   test("trims trailing slashes from the site", () => {
