@@ -271,9 +271,15 @@ http.route({
   }),
 });
 
+// In CI the committed Convex API binding intentionally uses the generic
+// AnyComponents fallback because codegen requires a live Convex deployment.
+// At deploy time Convex codegen narrows this reference to the static-hosting
+// component API. The runtime reference is the same proxy in both cases, so the
+// double assertion bridges only that build-time type gap without altering
+// routing or component behavior.
 registerStaticRoutes(
   http,
-  components.staticHosting as Parameters<typeof registerStaticRoutes>[1],
+  components.staticHosting as unknown as Parameters<typeof registerStaticRoutes>[1],
 );
 
 export default http;
