@@ -6,6 +6,7 @@ import { internal } from "./_generated/api";
 import { v, type GenericId } from "convex/values";
 import webpush from "web-push";
 import { emailConfigured } from "./email";
+import { notificationDelivered } from "../lib/notificationDelivery";
 
 /**
  * Web push delivery — self-hosted over the standard Web Push protocol
@@ -104,6 +105,7 @@ export const checkForUser = internalAction({
     const hasPush = pushConfigured();
     const hasEmail = emailConfigured();
     if (!hasPush && !hasEmail) return { sent: 0 };
+
     // Phase 4 G: honor per-user notification preferences. Absent prefs =
     // everything on (backwards compatible).
     const prefs = await ctx
@@ -111,10 +113,11 @@ export const checkForUser = internalAction({
       .catch(() => null);
     const emailOn = prefs?.email ?? true;
     const pushOn = prefs?.push ?? true;
-    const cats = prefs?.categories ?? []; // empty = all categories
+    const cats = prefs?.categories ?? [];
     const categoryOn = (kind: string) =>
       cats.length === 0 || cats.includes(kind);
     if (!pushOn && !emailOn) return { sent: 0 };
+
     const subs =
       hasPush && pushOn
         ? await ctx.runQuery(internal.pushSubscriptions.subsForUser, { userId })
@@ -172,60 +175,119 @@ export const checkForUser = internalAction({
       });
     }
 
-    let sent = 0;
-    const emailItems: Array<{ title: string; body: string; url: string }> = [];
+    type PendingDelivery = {
+      key: string;
+      pushDelivered: boolean;
+      emailItem: { title: string; body: string; url: string };
+    };
+
+    const pending: PendingDelivery[] = [];
     for (const item of items) {
-      // Phase 4 G: skip categories the user turned off.
       if (!categoryOn(item.kind)) continue;
-      // Dedup: only notify each item once (forever) per user.
+
       const seen = await ctx.runQuery(internal.pushSubscriptions.wasSent, {
         userId,
         key: item.key,
       });
       if (seen) continue;
-      if (subs.length > 0 && pushOn) {
-        await ctx.runAction(internal.notifications.sendPushToUser, {
-          userId,
-          title: item.title.slice(0, 80),
-          body: item.body.slice(0, 140),
-          url: item.url,
-          tag: item.key,
-          kind: item.kind,
-        });
-      }
-      emailItems.push({
-        title: item.title.slice(0, 120),
-        body: item.body.slice(0, 160),
-        url: item.url.slice(0, 200),
-      });
-      await ctx.runMutation(internal.pushSubscriptions.markSent, {
-        userId,
-        key: item.key,
-      });
-      sent += 1;
-    }
 
-    // One digest email per check for every new item (fail-open — a mail
-    // failure must never affect push or the check itself).
-    if (emailItems.length > 0 && emailOn) {
-      await ctx
-        .runAction(internal.email.sendInboxDigest, {
-          userId,
-          items: emailItems,
-        })
-        .catch((e) =>
-          ctx
+      let pushDelivered = false;
+      if (subs.length > 0 && pushOn) {
+        try {
+          const result = await ctx.runAction(
+            internal.notifications.sendPushToUser,
+            {
+              userId,
+              title: item.title.slice(0, 80),
+              body: item.body.slice(0, 140),
+              url: item.url,
+              tag: item.key,
+              kind: item.kind,
+            },
+          );
+          pushDelivered = result.sent > 0;
+        } catch (e) {
+          await ctx
             .runMutation(internal.security.logError, {
-              source: "email",
+              source: "push",
               message:
                 e instanceof Error
                   ? e.message.slice(0, 300)
-                  : "email digest failed",
+                  : "push delivery failed",
               userId,
             })
-            .catch(() => {}),
-        );
+            .catch(() => {});
+        }
+      }
+
+      pending.push({
+        key: item.key,
+        pushDelivered,
+        emailItem: {
+          title: item.title.slice(0, 120),
+          body: item.body.slice(0, 160),
+          url: item.url.slice(0, 200),
+        },
+      });
     }
+
+    let emailDelivered = false;
+    if (pending.length > 0 && hasEmail && emailOn) {
+      try {
+        const result = await ctx.runAction(internal.email.sendInboxDigest, {
+          userId,
+          items: pending.map((item) => item.emailItem),
+        });
+        emailDelivered = result.sent;
+        if (!result.sent && result.reason) {
+          await ctx
+            .runMutation(internal.security.logError, {
+              source: "email",
+              message: `email digest not delivered: ${result.reason}`.slice(0, 300),
+              userId,
+            })
+            .catch(() => {});
+        }
+      } catch (e) {
+        await ctx
+          .runMutation(internal.security.logError, {
+            source: "email",
+            message:
+              e instanceof Error
+                ? e.message.slice(0, 300)
+                : "email digest failed",
+            userId,
+          })
+          .catch(() => {});
+      }
+    }
+
+    let sent = 0;
+    for (const item of pending) {
+      if (!notificationDelivered(item.pushDelivered, emailDelivered)) continue;
+      try {
+        await ctx.runMutation(internal.pushSubscriptions.markSent, {
+          userId,
+          key: item.key,
+        });
+        sent += 1;
+      } catch (e) {
+        // Delivery happened, but dedupe acknowledgement failed. Leave the item
+        // retryable rather than claiming success; a duplicate is safer than a
+        // permanently lost notification.
+        await ctx
+          .runMutation(internal.security.logError, {
+            source: "notification-dedupe",
+            message:
+              e instanceof Error
+                ? e.message.slice(0, 300)
+                : "notification acknowledgement failed",
+            userId,
+          })
+          .catch(() => {});
+      }
+    }
+
     return { sent };
   },
 });
@@ -271,8 +333,6 @@ export const checkAllPush = internalAction({
         await ctx.runAction(internal.notifications.checkForUser, { userId });
         checked += 1;
       } catch (e) {
-        // One user's failure must not block the rest — but it should leave
-        // an error-log entry for a human to review (Part D).
         await ctx
           .runMutation(internal.security.logError, {
             source: "push",
