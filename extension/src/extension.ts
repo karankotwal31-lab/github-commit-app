@@ -13,7 +13,7 @@ import { AccountProvider } from "./accountProvider";
 let statusBar: vscode.StatusBarItem;
 
 export async function activate(context: vscode.ExtensionContext) {
-  const api = apiFromConfig();
+  let api = apiFromConfig();
   const inboxProvider = new InboxProvider();
   const accountProvider = new AccountProvider();
 
@@ -60,7 +60,9 @@ export async function activate(context: vscode.ExtensionContext) {
       accountProvider.refresh(whoami, true);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      statusBar.text = "$(warning) Aria";
+      statusBar.text = /not configured|invalid/i.test(message)
+        ? "$(gear) Aria: configure URL"
+        : "$(warning) Aria";
       statusBar.tooltip = message;
       if (/sign in again/i.test(message)) {
         await clearToken(context);
@@ -93,9 +95,30 @@ export async function activate(context: vscode.ExtensionContext) {
       const repo = vscode.workspace
         .getConfiguration("aria")
         .get<string>("repo", "");
-      const url = vscode.workspace
-        .getConfiguration("aria")
-        .get<string>("url", "https://steady-scorpion-839.convex.site");
+      const rawUrl =
+        vscode.workspace.getConfiguration("aria").get<string>("url", "") ?? "";
+      const url = rawUrl.trim().replace(/\/+$/, "");
+      if (!url) {
+        void vscode.window.showErrorMessage(
+          "Aria backend URL is not configured. Set aria.url in VS Code Settings first.",
+        );
+        return;
+      }
+      try {
+        const parsed = new URL(url);
+        const local =
+          parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+        if (parsed.protocol !== "https:" && !local) {
+          throw new Error("Aria backend URL must use HTTPS outside local development.");
+        }
+      } catch (error) {
+        void vscode.window.showErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Aria backend URL is invalid. Update aria.url in VS Code Settings.",
+        );
+        return;
+      }
       const params = new URLSearchParams();
       if (repo) params.set("repo", repo);
       if (file && file.scheme === "file") {
@@ -103,7 +126,7 @@ export async function activate(context: vscode.ExtensionContext) {
         if (rel && !rel.startsWith("..")) params.set("path", rel);
       }
       await vscode.env.openExternal(
-        vscode.Uri.parse(`${url.replace(/\/$/, "")}/dashboard?${params.toString()}`),
+        vscode.Uri.parse(`${url}/dashboard?${params.toString()}`),
       );
     }),
   );
@@ -115,7 +138,10 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     new vscode.Disposable(() => clearInterval(timer)),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("aria.url")) void refresh();
+      if (e.affectsConfiguration("aria.url")) {
+        api = apiFromConfig();
+        void refresh();
+      }
     }),
   );
 }
