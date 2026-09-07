@@ -9,15 +9,6 @@ import Stripe from "stripe";
 import { priceIds, tierForPriceId } from "./billing";
 import { type PlanId } from "../lib/plans";
 
-/**
- * Stripe actions (Node runtime — the Stripe SDK needs it). Only actions can
- * live in a "use node" file, so the queries/mutations stay in billing.ts.
- *
- * Price ids come from env: STRIPE_PRICE_ID (legacy Pro) / STRIPE_PRICE_ID_PRO
- * / STRIPE_PRICE_ID_PRO_PLUS / STRIPE_PRICE_ID_TEAM. The webhook maps the
- * purchased price back to a tier, so one code path serves every plan.
- */
-
 /** Lazy Stripe client — only constructed when keys exist. */
 function stripeClient(): Stripe | null {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -29,9 +20,36 @@ const TEAM_DEFAULT_SEATS = 5;
 const TEAM_MAX_SEATS = 100;
 
 /**
- * Create a subscription checkout session for the current user at a given
- * tier. Returns the hosted Checkout URL; the client navigates to it directly.
+ * Billing redirects must never silently fall back to localhost in a deployed
+ * app. SITE_URL is an explicit deployment contract for Stripe actions.
  */
+function siteOrigin(): string {
+  const raw = process.env.SITE_URL?.trim();
+  if (!raw) {
+    throw new Error(
+      "Billing is configured but SITE_URL is missing. Set SITE_URL to the public Aria origin.",
+    );
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("SITE_URL must be an absolute URL.");
+  }
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !local) {
+    throw new Error("SITE_URL must use HTTPS outside local development.");
+  }
+  return url.origin;
+}
+
+function checkoutMetadataTier(value: unknown): Exclude<PlanId, "free" | "enterprise"> | null {
+  return value === "pro" || value === "pro_plus" || value === "team"
+    ? value
+    : null;
+}
+
+/** Create a subscription checkout session for the current user. */
 export const createCheckout = action({
   args: {
     tier: v.union(
@@ -39,7 +57,6 @@ export const createCheckout = action({
       v.literal("pro_plus"),
       v.literal("team"),
     ),
-    // Team tier: how many seats to buy up front (prorated add/remove after).
     seats: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<{ url: string }> => {
@@ -59,15 +76,16 @@ export const createCheckout = action({
             TEAM_MAX_SEATS,
           )
         : 1;
-    const origin = process.env.SITE_URL || "http://localhost:5173";
+    const origin = siteOrigin();
+    const metadata = { userId, tier: args.tier };
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: priceId, quantity }],
-      // client_reference_id ties the completed checkout back to this user,
-      // and subscription_data.metadata lets later subscription events (which
-      // don't carry client_reference_id) resolve the same user.
       client_reference_id: userId,
-      subscription_data: { metadata: { userId, tier: args.tier } },
+      // Store the tier on both the Checkout Session and Subscription. The
+      // session copy is the reliable fallback if line-item expansion fails.
+      metadata,
+      subscription_data: { metadata },
       success_url: `${origin}/dashboard?billing=success`,
       cancel_url: `${origin}/dashboard?billing=cancelled`,
       allow_promotion_codes: true,
@@ -85,16 +103,14 @@ export const createPortal = action({
     const userId = await getAuthUserId(ctx);
     if (userId === null) throw new Error("You are not signed in.");
     const stripe = stripeClient();
-    if (!stripe) {
-      throw new Error("Billing isn't configured yet.");
-    }
+    if (!stripe) throw new Error("Billing isn't configured yet.");
     const customerId = await ctx.runQuery(internal.billing.billingForUser, {
       userId,
     });
     if (!customerId) {
       throw new Error("No subscription found for this account.");
     }
-    const origin = process.env.SITE_URL || "http://localhost:5173";
+    const origin = siteOrigin();
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
       return_url: `${origin}/dashboard?billing=success`,
@@ -103,11 +119,7 @@ export const createPortal = action({
   },
 });
 
-/**
- * Team tier: change the seat count on the existing subscription. Stripe
- * prorates automatically — adding seats bills the difference for the rest of
- * the period, removing seats credits it.
- */
+/** Team tier seat-count update; Stripe handles proration. */
 export const updateTeamSeats = action({
   args: { seats: v.number() },
   handler: async (ctx, args): Promise<{ seats: number }> => {
@@ -136,19 +148,13 @@ export const updateTeamSeats = action({
   },
 });
 
-// Stripe v22's Subscription type no longer exposes current_period_end even
-// though the API returns it — read it via a narrow structural cast.
 function periodEndMs(sub: {
   current_period_end?: number;
 } | null | undefined): number | undefined {
   return sub?.current_period_end ? sub.current_period_end * 1000 : undefined;
 }
 
-/**
- * Verify a webhook signature with the Stripe SDK and sync the stored plan.
- * The purchased price id is mapped back to a tier, so any plan's checkout /
- * update / cancel flows through the same code.
- */
+/** Verify a Stripe webhook and synchronize stored plan state. */
 export const handleStripeWebhook = internalAction({
   args: { rawBody: v.string(), signature: v.string() },
   handler: async (ctx, args): Promise<{ ok: boolean; error?: string }> => {
@@ -165,19 +171,13 @@ export const handleStripeWebhook = internalAction({
       return { ok: false, error: "Invalid signature" };
     }
 
-    // Idempotency (Phase 4 L): Stripe retries deliveries of the same event
-    // (and replays from the dashboard). Each event is processed at most once
-    // — a replay returns success without touching the plan again, so a
-    // duplicate webhook can never double-apply a plan change.
     const alreadyProcessed = await ctx
       .runQuery(internal.stripeEvents.wasProcessed, {
         provider: "stripe",
         eventId: event.id,
       })
       .catch(() => false);
-    if (alreadyProcessed) {
-      return { ok: true };
-    }
+    if (alreadyProcessed) return { ok: true };
 
     const setPlan = (planArgs: {
       userId: string;
@@ -196,77 +196,84 @@ export const handleStripeWebhook = internalAction({
         seats: planArgs.seats,
       });
 
-    // Failures inside the switch are logged (errorLogs → Airbrake mirror)
-    // and returned to Stripe as an error so it retries the delivery.
     try {
       switch (event.type) {
-      case "checkout.session.completed": {
-        const session = event.data.object as Stripe.Checkout.Session;
-        if (!session.client_reference_id) break;
-        // Resolve the purchased price → tier (line items aren't on the
-        // session object unless expanded).
-        let tier: PlanId | null = null;
-        let seats: number | undefined;
-        let periodEnd: number | undefined;
-        try {
-          const full = await stripe.checkout.sessions.retrieve(session.id, {
-            expand: ["line_items"],
-          });
-          const line = full.line_items?.data[0];
-          tier = tierForPriceId(line?.price?.id ?? null);
-          seats = line?.quantity ?? undefined;
-          if (session.subscription) {
-            const sub = await stripe.subscriptions.retrieve(
-              session.subscription as string,
-            );
-            periodEnd = periodEndMs(sub as { current_period_end?: number });
+        case "checkout.session.completed": {
+          const session = event.data.object as Stripe.Checkout.Session;
+          if (!session.client_reference_id) break;
+
+          let tier: Exclude<PlanId, "free" | "enterprise"> | null = null;
+          let seats: number | undefined;
+          let periodEnd: number | undefined;
+          try {
+            const full = await stripe.checkout.sessions.retrieve(session.id, {
+              expand: ["line_items"],
+            });
+            const line = full.line_items?.data[0];
+            const priceTier = tierForPriceId(line?.price?.id ?? null);
+            tier = checkoutMetadataTier(priceTier);
+            seats = line?.quantity ?? undefined;
+            if (session.subscription) {
+              const sub = await stripe.subscriptions.retrieve(
+                session.subscription as string,
+              );
+              periodEnd = periodEndMs(sub as { current_period_end?: number });
+            }
+          } catch {
+            // Network/API retrieval can fail transiently. Metadata was written
+            // by our own checkout action and is the only safe fallback.
+            tier = checkoutMetadataTier(session.metadata?.tier);
           }
-        } catch {
-          // Fall back to the tier tagged at checkout creation.
-          tier = session.metadata?.tier as PlanId | null;
+
+          // Never grant a paid plan on an unknown price/tier. Returning an
+          // error causes Stripe to retry instead of silently upgrading to Pro.
+          if (!tier) {
+            throw new Error("Unable to resolve the purchased Stripe price to an Aria plan.");
+          }
+
+          await setPlan({
+            userId: session.client_reference_id,
+            plan: tier,
+            stripeCustomerId: session.customer as string | undefined,
+            stripeSubscriptionId: session.subscription as string | undefined,
+            currentPeriodEnd: periodEnd,
+            seats: tier === "team" ? seats : undefined,
+          });
+          break;
         }
-        await setPlan({
-          userId: session.client_reference_id,
-          plan: tier && tier !== "free" ? tier : "pro",
-          stripeCustomerId: session.customer as string | undefined,
-          stripeSubscriptionId: session.subscription as string | undefined,
-          currentPeriodEnd: periodEnd,
-          seats: tier === "team" ? seats : undefined,
-        });
-        break;
-      }
-      case "customer.subscription.updated": {
-        const sub = event.data.object as Stripe.Subscription;
-        const userId = sub.metadata?.userId;
-        if (!userId) break;
-        const active = sub.status === "active" || sub.status === "trialing";
-        const line = sub.items.data[0];
-        const tier = tierForPriceId(line?.price?.id ?? null);
-        await setPlan({
-          userId,
-          plan: active && tier ? tier : "free",
-          stripeCustomerId: sub.customer as string,
-          stripeSubscriptionId: sub.id,
-          currentPeriodEnd: periodEndMs(sub as { current_period_end?: number }),
-          seats: active && tier === "team" ? line?.quantity ?? undefined : undefined,
-        });
-        break;
-      }
-      case "customer.subscription.deleted": {
-        const sub = event.data.object as Stripe.Subscription;
-        const userId = sub.metadata?.userId;
-        if (!userId) break;
-        await setPlan({
-          userId,
-          plan: "free",
-          stripeCustomerId: sub.customer as string,
-          stripeSubscriptionId: sub.id,
-          currentPeriodEnd: undefined,
-        });
-        break;
-      }
-      default:
-        break;
+        case "customer.subscription.updated": {
+          const sub = event.data.object as Stripe.Subscription;
+          const userId = sub.metadata?.userId;
+          if (!userId) break;
+          const active = sub.status === "active" || sub.status === "trialing";
+          const line = sub.items.data[0];
+          const tier = tierForPriceId(line?.price?.id ?? null);
+          await setPlan({
+            userId,
+            plan: active && tier ? tier : "free",
+            stripeCustomerId: sub.customer as string,
+            stripeSubscriptionId: sub.id,
+            currentPeriodEnd: periodEndMs(sub as { current_period_end?: number }),
+            seats:
+              active && tier === "team" ? line?.quantity ?? undefined : undefined,
+          });
+          break;
+        }
+        case "customer.subscription.deleted": {
+          const sub = event.data.object as Stripe.Subscription;
+          const userId = sub.metadata?.userId;
+          if (!userId) break;
+          await setPlan({
+            userId,
+            plan: "free",
+            stripeCustomerId: sub.customer as string,
+            stripeSubscriptionId: sub.id,
+            currentPeriodEnd: undefined,
+          });
+          break;
+        }
+        default:
+          break;
       }
     } catch (e) {
       await ctx
@@ -291,8 +298,6 @@ export const handleStripeWebhook = internalAction({
         eventId: event.id,
       });
     } catch (e) {
-      // The dedup row is best-effort; a failure here must not break the plan
-      // update that already happened — log it for review instead.
       await ctx
         .runMutation(internal.security.logError, {
           source: "stripe",

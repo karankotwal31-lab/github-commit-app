@@ -1,4 +1,16 @@
-.env.local
+# Local environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Package/build output
 node_modules
 dist
 
+# Convex local runtime state. Generated API bindings are intentionally
+# committed so clean CI/production builds do not depend on cloud codegen.
+.convex
+
+# Logs / editor noise
+*.log
+.DS_Store

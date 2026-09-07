@@ -94,5 +94,3 @@
     export const httpAction = httpActionGeneric;
 
 export const env = process.env;
-
-    

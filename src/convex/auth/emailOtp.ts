@@ -14,11 +14,33 @@ type VerificationRequest = {
   request: Request;
   theme: unknown;
 };
+// Sending is throttled atomically by reserveOtpSend before calling the relay.
+const DEFAULT_OTP_RELAY_URL = "https://auth.freebuff.app/send_otp";
+
+function otpRelayConfig(): { url: string; apiKey: string } {
+  const apiKey = (process.env.FREEBUFF_EMAIL_API_KEY || process.env.OTP_EMAIL_API_KEY)?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "Email sign-in is not configured. Set FREEBUFF_EMAIL_API_KEY in the Convex deployment environment.",
+    );
+  }
+
+  const rawUrl = process.env.FREEBUFF_EMAIL_API_URL?.trim() || DEFAULT_OTP_RELAY_URL;
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error("Email sign-in relay URL is invalid.");
+  }
+  if (url.protocol !== "https:") {
+    throw new Error("Email sign-in relay URL must use HTTPS.");
+  }
+  return { url: url.toString(), apiKey };
+}
 
 export const emailOtp = Email({
   id: "email-otp",
   maxAge: 60 * 15, // 15 minutes
-  // This function can be asynchronous
   async generateVerificationToken() {
     const random: RandomReader = {
       read(bytes: Uint8Array) {
@@ -35,24 +57,27 @@ export const emailOtp = Email({
     { identifier: email, token }: VerificationRequest,
     ctx?: GenericActionCtxWithAuthConfig<DataModel>,
   ) {
-    const key = process.env.OTP_EMAIL_API_KEY;
-    if (!key) throw new Error("Email sign-in is not configured. Contact the administrator.");
     if (ctx) {
       const allowed = await ctx.runMutation(internal.securityHardening.reserveOtpSend, { email });
       if (!allowed) throw new Error("Too many sign-in requests. Please wait before trying again.");
     }
+
+    const relay = otpRelayConfig();
     try {
       await axios.post(
-        "https://auth.freebuff.app/send_otp",
+        relay.url,
         {
           to: email,
           otp: token,
-          appName: process.env.VLY_APP_NAME || "a freebuff.com application",
+          appName: process.env.VLY_APP_NAME || "Aria",
         },
         {
           headers: {
-            "x-api-key": key,
+            "x-api-key": relay.apiKey,
+            "Content-Type": "application/json",
           },
+          timeout: 10_000,
+          maxRedirects: 0,
         },
       );
     } catch {

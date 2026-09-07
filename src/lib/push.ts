@@ -1,68 +1,92 @@
+/** Client-side Web Push helpers. */
+
 /**
- * Client-side web push helpers.
- *
- * The VAPID public key is public by design (it's sent to the browser push
- * service); the matching private key lives server-side as VAPID_PRIVATE_KEY
- * in project keys. If the keys were rotated, replace both here and in keys.
+ * VAPID public keys are public, but they must still be deployment-specific.
+ * Keeping the value in a Vite public env var prevents a stale/placeholder key
+ * from being silently baked into every production bundle.
  */
 export const VAPID_PUBLIC_KEY =
-  "BFTP0x0D0Y0EM96riQiggeKoYOURWclFvuzR9FRk4KJbols-6sfSUTk2j5xwJW9lR40931DSbUWAgZHRLmPFECM";
+  (import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined)?.trim() ?? "";
 
-function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const base64Url = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const raw = atob(base64Url);
-  const buffer = new ArrayBuffer(raw.length);
-  const array = new Uint8Array(buffer);
-  for (let i = 0; i < raw.length; i++) array[i] = raw.charCodeAt(i);
-  return array;
+function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> | null {
+  if (!base64 || !/^[A-Za-z0-9_-]+$/.test(base64)) return null;
+  try {
+    const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+    const base64Url = (base64 + padding)
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+    const raw = atob(base64Url);
+    const buffer = new ArrayBuffer(raw.length);
+    const array = new Uint8Array(buffer);
+    for (let i = 0; i < raw.length; i++) array[i] = raw.charCodeAt(i);
+    return array;
+  } catch {
+    return null;
+  }
 }
 
-/** True when the browser supports push and a service worker is registered. */
+/** Browser capability + deployment configuration check. */
 export async function pushSupported(): Promise<boolean> {
+  const local =
+    typeof location !== "undefined" &&
+    (location.hostname === "localhost" || location.hostname === "127.0.0.1");
   return (
     typeof window !== "undefined" &&
     "serviceWorker" in navigator &&
     "PushManager" in window &&
-    (await navigator.serviceWorker.getRegistration()) !== undefined
+    "Notification" in window &&
+    (window.isSecureContext || local) &&
+    urlBase64ToUint8Array(VAPID_PUBLIC_KEY) !== null
   );
 }
 
-/** Subscribe this device and return the endpoint, or null if denied. */
+/** Subscribe this device and return the endpoint, or null if unavailable/denied. */
 export async function subscribeToPush(): Promise<{
   endpoint: string;
   keys: { p256dh: string; auth: string };
 } | null> {
-  const supported = await pushSupported();
-  if (!supported) return null;
+  if (!(await pushSupported())) return null;
+
+  const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
+  if (!applicationServerKey) return null;
+
   const permission = await Notification.requestPermission();
   if (permission !== "granted") return null;
-  const registration = await navigator.serviceWorker.ready;
+
+  const registration = await navigator.serviceWorker.getRegistration();
+  if (!registration) return null;
+
   const existing = await registration.pushManager.getSubscription();
   const subscription =
     existing ??
     (await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      applicationServerKey,
     }));
+
+  const p256dh = subscription.getKey("p256dh");
+  const auth = subscription.getKey("auth");
+  if (!p256dh || !auth) {
+    await subscription.unsubscribe().catch(() => false);
+    return null;
+  }
+
   return {
     endpoint: subscription.endpoint,
     keys: {
-      p256dh: btoa(
-        String.fromCharCode(...new Uint8Array(subscription.getKey("p256dh")!)),
-      ),
-      auth: btoa(
-        String.fromCharCode(...new Uint8Array(subscription.getKey("auth")!)),
-      ),
+      p256dh: btoa(String.fromCharCode(...new Uint8Array(p256dh))),
+      auth: btoa(String.fromCharCode(...new Uint8Array(auth))),
     },
   };
 }
 
-/** Unsubscribe this device (returns the endpoint so the server row drops). */
+/** Unsubscribe this device (returns the endpoint so the server row can drop). */
 export async function unsubscribeFromPush(): Promise<string | null> {
-  const supported = await pushSupported();
-  if (!supported) return null;
-  const registration = await navigator.serviceWorker.ready;
+  if (typeof window === "undefined" || !("serviceWorker" in navigator)) {
+    return null;
+  }
+  const registration = await navigator.serviceWorker.getRegistration();
+  if (!registration) return null;
   const subscription = await registration.pushManager.getSubscription();
   if (!subscription) return null;
   const endpoint = subscription.endpoint;
