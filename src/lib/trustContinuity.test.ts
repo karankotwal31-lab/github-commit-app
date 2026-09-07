@@ -40,12 +40,13 @@ describe("approval firewall", () => {
     expect(result.requiresIndependentApproval).toBe(true);
   });
 
-  test("credential-shaped content is critical", () => {
+  test("credential-shaped content is elevated before the server secret gate", () => {
     const result = approvalFirewall({
       files: [{ path: "src/config.ts", content: "const apiKey = 'abcdefghijklmnop';" }],
       operation: "commit",
     });
-    expect(result.level).toBe("critical");
+    expect(result.level).toBe("high");
+    expect(result.requiresHumanApproval).toBe(true);
     expect(result.sensitiveAreas).toContain("secrets");
   });
 });
