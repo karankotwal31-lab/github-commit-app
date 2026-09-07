@@ -1,17 +1,13 @@
 /* Aria — service worker.
  *
- * Three jobs:
- *  1. PWA installability (a registered SW with a fetch handler is required).
- *  2. Web push: receives push events from the browser push service and turns
- *     them into notifications; clicking one focuses the app (or opens it).
- *  3. App-shell caching (production only): the static shell (index.html,
- *     hashed JS/CSS assets, fonts, manifest) is cached so the app opens
- *     instantly on repeat visits, even on slow connections. Git operations
- *     still need the network — this only makes the app itself load fast.
+ * Responsibilities:
+ *  1. PWA installability.
+ *  2. Web Push delivery and safe notification navigation.
+ *  3. Production app-shell caching for repeat/offline launches.
  *
  * Caching is enabled by registering with `?cache=1` (main.tsx does this only
- * in production builds). In development the SW stays network-only, so the
- * dev server can never be shadowed by a stale cache.
+ * in production builds). Development stays network-only so stale caches cannot
+ * shadow the dev server.
  */
 
 const CACHE_NAME = "aria-shell-v1";
@@ -36,7 +32,6 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       if (CACHE_ENABLED) {
-        // Drop caches from older versions of the app shell.
         const keys = await caches.keys();
         await Promise.all(
           keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
@@ -54,43 +49,62 @@ self.addEventListener("fetch", (event) => {
   if (CACHE_ENABLED && new URL(request.url).origin === self.location.origin) {
     const url = new URL(request.url);
     if (request.mode === "navigate") {
-      // App shell: network first (fresh deploy wins), fall back to the
-      // cached shell when offline so the app still opens.
       event.respondWith(
         fetch(request)
           .then((response) => {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put("/index.html", copy));
+            if (response.ok) {
+              const copy = response.clone();
+              void caches
+                .open(CACHE_NAME)
+                .then((cache) => cache.put("/index.html", copy));
+            }
             return response;
           })
-          .catch(() => caches.match("/index.html")),
+          .catch(async () => (await caches.match("/index.html")) ?? Response.error()),
       );
       return;
     }
     if (url.pathname.startsWith("/assets/")) {
-      // Hashed static assets: cache-first with background refresh. The hash
-      // in the file name means a stale entry can never serve wrong code.
       event.respondWith(
         caches.match(request).then((cached) => {
           const network = fetch(request)
             .then((response) => {
-              const copy = response.clone();
-              caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+              if (response.ok) {
+                const copy = response.clone();
+                void caches
+                  .open(CACHE_NAME)
+                  .then((cache) => cache.put(request, copy));
+              }
               return response;
             })
-            .catch(() => cached);
-          return cached || network;
+            .catch(() => cached ?? Response.error());
+          return cached ?? network;
         }),
       );
       return;
     }
   }
 
-  // Everything else (Convex, GitHub, dev assets): network-only pass-through.
+  // Convex, GitHub, and other non-shell requests remain network-only.
 });
 
+function safeNotificationUrl(value) {
+  if (typeof value !== "string" || value.length > 4096) return "/";
+  try {
+    const url = new URL(value, self.location.origin);
+    // Same-origin navigation is allowed. External links must be HTTPS. This
+    // preserves GitHub deep links while rejecting javascript:/data:/file: etc.
+    if (url.origin !== self.location.origin && url.protocol !== "https:") {
+      return "/";
+    }
+    return url.href;
+  } catch {
+    return "/";
+  }
+}
+
 self.addEventListener("push", (event) => {
-  let payload = { title: "Aria", body: "", url: "/", tag: "aria", kind: "assign" };
+  let payload = { title: "Aria", body: "", url: "/", tag: "aria" };
   try {
     if (event.data) {
       const parsed = JSON.parse(event.data.text());
@@ -99,42 +113,43 @@ self.addEventListener("push", (event) => {
       }
     }
   } catch {
-    // Non-JSON payload — fall back to the defaults.
+    // Non-JSON payload — fall back to safe defaults.
   }
-  const title = typeof payload.title === "string" ? payload.title : "Aria";
+
+  const title = typeof payload.title === "string" ? payload.title.slice(0, 160) : "Aria";
   const options = {
-    body: typeof payload.body === "string" ? payload.body : "",
+    body: typeof payload.body === "string" ? payload.body.slice(0, 500) : "",
     icon: "/logo.svg",
     badge: "/logo.svg",
-    tag: typeof payload.tag === "string" ? payload.tag : "aria",
-    data: {
-      url: typeof payload.url === "string" ? payload.url : "/",
-      kind: payload.kind === "review" ? "review" : "assign",
-    },
+    tag: typeof payload.tag === "string" ? payload.tag.slice(0, 120) : "aria",
+    data: { url: safeNotificationUrl(payload.url) },
   };
-  // PR-review notifications carry Approve / Comment / Merge actions.
-  if (options.data.kind === "review") {
-    options.actions = [
-      { action: "approve", title: "✓ Approve" },
-      { action: "comment", title: "💬 Comment" },
-      { action: "merge", title: "🔀 Merge" },
-    ];
-  }
+
+  // Notification action buttons previously advertised approve/comment/merge
+  // but only navigated to the PR. Do not present controls that imply a write
+  // occurred; opening the real review surface is the complete supported path.
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const target = event.notification.data?.url || "/";
+  const target = safeNotificationUrl(event.notification.data?.url);
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
-      for (const client of clients) {
-        if ("focus" in client) {
-          client.navigate(target);
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then(async (clients) => {
+        for (const client of clients) {
+          if (!("focus" in client)) continue;
+          try {
+            if ("navigate" in client) await client.navigate(target);
+          } catch {
+            // If an existing window cannot navigate, opening a new safe window
+            // below is preferable to failing the click entirely.
+          }
           return client.focus();
         }
-      }
-      if (self.clients.openWindow) return self.clients.openWindow(target);
-    }),
+        if (self.clients.openWindow) return self.clients.openWindow(target);
+        return undefined;
+      }),
   );
 });

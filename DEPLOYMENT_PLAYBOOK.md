@@ -1,145 +1,172 @@
 # Aria — Deployment & Integration Playbook
 
-This playbook is the single source of truth for shipping changes to the deployed
-app **without repeating the errors we have already hit**. It has three parts:
+This file is the operational source of truth for changing and releasing this repository. It describes the workflow that is actually implemented in `package.json` and `.github/workflows/production-check.yml`; it does not depend on a particular preview provider or an old deployment URL.
 
-1. **The error catalog** — every error class encountered while building and
-   deploying this app, with the root cause and the rule that prevents it.
-2. **The golden checklist** — the exact order of operations for any change,
-   from edit to verified live deployment.
-3. **The never-do list** — hard rules that exist because each one caused a real
-   incident once.
+## Non-negotiable release rules
 
-The single command that gates every change is:
+1. Preserve Aria's product architecture and feature semantics unless a deliberate product change is separately approved.
+2. Use Bun and the committed `bun.lock`; do not introduce a second package-manager lockfile.
+3. Never commit production secrets.
+4. Never hand-edit `src/convex/_generated/*` to make a type error disappear. Regenerate from a configured Convex deployment when codegen is required.
+5. Never claim an external integration works solely because TypeScript/build/tests pass.
+6. Never merge a release candidate with a failing `Production Check`.
+7. Keep global platform administration separate from paid-plan permissions. Team/Enterprise billing must not imply platform-admin access.
+
+## Change workflow
+
+### 1. Install exactly the locked dependency graph
 
 ```bash
-bun run verify   # convex codegen + push → typecheck → full test suite
+bun install --frozen-lockfile
 ```
 
----
+### 2. Make the smallest correction that solves the verified problem
 
-## Part 1 — Error catalog (what went wrong, and the rule that stops it)
+For backend changes, retain Convex's runtime split: Node-only dependencies belong only in `"use node"` actions. Database access from actions/HTTP handlers goes through generated query/mutation/action calls rather than pretending an action context has direct database access.
 
-| # | Error / symptom | Root cause | Prevention rule |
-|---|---|---|---|
-| 1 | `FATAL ERROR: Reached heap limit` / `Killed` during install/build | Heavy install/build in the memory-constrained sandbox. **Measured:** the container has a hard **2 GB cgroup memory cap** with ~475 MB already reserved by the managed dev processes, and this app's production build (Monaco graph) peaks above that — verified twice (cgroup SIGKILL at default heap; node OOM at `--max-old-space-size=1400`) | Use **Bun** for everything. Never run `vite build` in the sandbox — `bun run verify` (codegen + `tsc -b --noEmit` + tests) is the gate. The frontend **cannot be built in this sandbox at all**; production builds must happen on the Freebuff platform's own infra via the publish flow |
-| 1b | `bun run deploy` (`@convex-dev/static-hosting deploy`) targets the wrong deployment | The local CLI is linked to the **dev** deployment (e.g. `fearless-starling-421.convex.site`), not the public URL (e.g. `steady-scorpion-839.convex.site`) which the platform publishes. Running it locally would deploy to dev even if the build succeeded | The public URL is published **only** through the Freebuff project UI (publish action / `freebuff.com/project/<name>?publish=true`). The platform builds on its own infra and ships frontend + functions to the public URL atomically. Never use a local deploy to "fix" the public URL — it can't reach it |
-| 2 | `[CONVEX A(auth:signIn)] … Server Error` — "Failed to sign in as guest" | Auth provider keys missing/mismatched on the deployment, or the GitHub OAuth callback URL didn't match the registered one | Set **all** keys in the project's Keys/API-keys UI **before** the first sign-in attempt. The callback URL must match the OAuth app exactly: `https://<project>.convex.site/api/github/callback`. Check the Convex dashboard logs when auth errors appear |
-| 3 | Private key pasted into chat with line-break corruption | Secrets were pasted into the conversation; line breaks and formatting mangled them, and the key was exposed to the session | **Never paste keys or secrets into chat — ever.** Paste into the project Keys UI only. Anything that was pasted in chat is considered compromised: rotate it immediately. Use least-privilege tokens for external integrations |
-| 4 | "Blocked: the Convex files you just changed do not compile yet" (edit tool refused writes) | Platform safety gate: after any edit under `src/convex/`, other file edits are held until `convex dev --once` + `tsc` pass, so generated types can't go stale mid-edit | After touching any file under `src/convex/`, run `bunx convex dev --once` **immediately** and fix what it reports before editing anything else. Don't fight the gate with file moves |
-| 5 | `convex dev --once` auth failure / `DaytonaError: Request failed with status code 502` | Transient platform/network failure during codegen; occasionally a stale CLI auth token | Treat as transient: retry after a few seconds. **Never hand-edit `src/convex/_generated/*`** to "fix" types. If auth genuinely fails, stop and report — never claim verification passed |
-| 6 | `Could not resolve "node:crypto"` in `src/convex/cli.ts` | Convex's default (V8) runtime doesn't bundle Node built-ins; only files marked `"use node"` get them | Before importing any Node built-in, check what the project already does (e.g. `stripeWebhook.ts` uses `"use node"`). In default-runtime files use web APIs (`crypto.subtle`, `crypto.getRandomValues`) or a dependency-free implementation (`src/convex/sha256.ts`) |
-| 7 | HTTP actions: `ctx.db` does not exist on `GenericActionCtx` | In the installed Convex version, `httpAction` context has no direct DB access | Route all DB work from HTTP handlers through `ctx.runQuery` / `ctx.runMutation` to internal functions — the verified pattern in `src/convex/http.ts` + `src/convex/cli.ts` |
-| 8 | Web push silently never fired; `serviceWorker.ready` hung | `public/sw.js` existed but nothing ever registered it | When adding PWA/background features, verify the **wiring**, not just the file: registration in `main.tsx`, correct scope, and a smoke test in the built app |
-| 9 | Font didn't apply after adding `@import "@fontsource-variable/inter"` in CSS | Tailwind v4's pipeline doesn't reliably inline CSS `@import` of a package | Import packages through the **bundler** in `main.tsx` (`import "@fontsource-variable/inter"`), keep `index.css` `@import`s to CSS files, then verify the woff2 files exist in the build |
-| 10 | New routes returned 404 on the public URL while working in the preview | `convex dev --once` pushes to the **dev** deployment; the public URL serves the last **published** bundle | After adding HTTP routes or client code, the platform **publish** step must run. Verify against the public URL with `curl` after publishing; don't conclude success or failure before that |
-| 11 | `str_replace` "old string not found" right after a successful edit to the same file | Edit-tool snapshot lag on large files after many sequential edits | Batch edits to a large file into one patch; if a replacement fails right after an edit, **re-read the region first**, then retry with the exact on-disk text |
-| 12 | Type errors for APIs that don't exist in the installed Convex (e.g. `"skip"` revalidation, `ctx.runMutation` naming) | Code written against newer Convex docs than the installed version (1.30) | Check the installed version's types in `node_modules` before using a new API; compile after every backend change. `bun run verify` catches this at the earliest safe point |
-| 13 | Sign-in loop: `RequireAuth` bounced back to `/auth` forever | Auth config drifted from the deployment's token format (e.g. switching a provider to `customJwt` breaks `kid`-less self-issued tokens) | Keep `src/convex/auth.config.ts` compatible with the deployment's token format — the file's comments document the exact constraints. Test sign-in end-to-end after any auth change |
-| 14 | Stale app shell after an update (SW served old assets) | Service worker cached the shell; cache name never versioned | Cache only in production (`?cache=1`), dev stays network-only so the preview can never be shadowed; bump the cache name when the shell changes; hard-refresh (Ctrl/Cmd+Shift+R) after font/asset changes |
-| 15 | In-app AI/CI features calling a hard-coded provider key | A backend file bypassed the shared provider abstraction with its own fetch + env name | All AI calls go through the shared abstraction (`chatCompletion()` in `src/convex/aiProvider.ts`). `bun run verify` plus a stale-reference grep keeps new call sites honest |
+### 3. Run the local gate
 
----
+```bash
+bun run verify
+```
 
-## Part 2 — The golden checklist (any change, in order)
+`verify` executes:
 
-### Phase 0 — Before touching code
-- [ ] Confirm you are at the project root (paths are relative to it).
-- [ ] Confirm the package manager is **Bun** and the Convex project is linked.
-- [ ] Read `LAUNCH.md` / `README.md` for any platform-specific commands.
+- lint;
+- root unit tests;
+- VS Code extension typecheck + tests;
+- legacy extension typecheck;
+- TypeScript project build;
+- production Vite bundle.
 
-### Phase 1 — While editing
-- [ ] **Convex backend edits** (`src/convex/**`): run `bunx convex dev --once` right
-      after the edit, fix reported errors, then continue. Never leave unverified
-      Convex edits behind.
-- [ ] **Frontend edits**: `bunx tsc -b --noEmit` after risky refactors or new APIs.
-- [ ] **Large files**: batch edits into single patches; re-read before retrying a
-      failed replacement.
-- [ ] **Node built-ins**: only in `"use node"` files; everything else uses web APIs.
-- [ ] **New API surface**: check the installed package version's types before using it.
+For a quicker non-build pass during development:
 
-### Phase 2 — The verification gate (before any deploy)
-- [ ] `bun run verify` → must exit 0: Convex codegen + push, `tsc -b --noEmit`, full test suite.
-- [ ] Grep for stale references if anything provider-related changed
-      (`grep -rn "OPENROUTER_API\b\|DEFAULT_MODEL" src`).
-- [ ] `node --check public/sw.js` if the service worker changed.
-- [ ] Confirm no `.env` edits, no `vite.config.ts` HMR changes, no
-      `src/convex/_generated/*` hand-edits.
+```bash
+bun run preflight
+```
 
-### Phase 3 — Keys & integrations (do these in the Keys UI, never in chat)
-- [ ] **GitHub OAuth** — register an OAuth app at `github.com/settings/developers` with
-      callback URL `https://<project>.convex.site/api/github/callback`; set
-      `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET` in the project Keys.
-- [ ] **Stripe** — webhook secret + endpoint URL; the backend already dedupes events.
-- [ ] **AI providers** — `OPENROUTER_API_KEY` (+ `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
-      as fallbacks) in the project Keys; the keys never leave the server.
-- [ ] **Convex auth** — `CONVEX_SITE_URL` is deployment-managed; the auth config ships
-      with the code, so it deploys together with the functions.
+### 4. Push through CI
 
-### Phase 4 — Publish & verify the live URL
-- [ ] Trigger the platform **publish/deploy** (this is the step that makes the
-      public URL serve the new bundle).
-- [ ] After publishing, smoke-test the public URL with `curl`:
-      root page, any new `/api/...` routes, `/manifest.webmanifest`, `/sw.js`.
-- [ ] In the browser, hard-refresh (Ctrl/Cmd+Shift+R) so a cached stylesheet or
-      old service worker can't mask the change.
-- [ ] Check the browser console for service-worker or runtime errors.
+`Production Check` runs on pull requests targeting `main` and on pushes to `main`. The hardening branch is also covered while this production-readiness pass is active.
 
-### Phase 5 — Post-deploy health
-- [ ] Sign in end-to-end (email OTP or GitHub OAuth) and reach the dashboard.
-- [ ] Run the in-app diagnostics (Platform → Runtime / health checks).
-- [ ] Review `errorLogs` for anything the health checks don't surface.
+CI uses:
 
----
+- a pinned Bun version matching `package.json`;
+- frozen dependency installs;
+- pinned GitHub Action commits;
+- read-only repository permissions;
+- cancellation of superseded runs on the same ref.
 
-## Part 3 — The never-do list
+A warning is not automatically a release blocker, but TypeScript errors, build failures, test failures, extension compilation failures, and ESLint errors are blockers.
 
-1. **Never paste a secret or key into chat.** Rotate anything that was ever pasted.
-2. **Never hand-edit `src/convex/_generated/*`.** Regenerate with `bunx convex dev --once`.
-3. **Never run interactive `convex dev` without `--once`** — it hangs in non-interactive terminals.
-4. **Never edit `.env` files** — secrets belong in the project Keys UI.
-5. **Never modify `vite.config.ts` HMR settings** (`server.hmr: false` must stay).
-6. **Never run `vite build` / full production builds in the sandbox** — `bun run verify` is the gate.
-7. **Never start, stop, or kill dev/preview servers** — the platform manages them.
-8. **Never claim a deploy is live until the publish step ran and curl confirmed it.**
-9. **Never add a Node built-in to a default-runtime Convex file.**
-10. **Never leave a Convex edit unverified** — codegen before moving on.
+## Convex generated types
 
----
+Convex component bindings become fully specific after codegen against a configured deployment. Repository CI intentionally does not require a production Convex deployment secret. The committed generated API therefore permits offline compilation, while the static-hosting component reference in `http.ts` uses a narrow type-only bridge for CI. Runtime routing still uses the official `components.staticHosting` component proxy.
 
-## Full-audit findings (commercial-readiness pass)
+When working in an authenticated Convex development environment, regenerate normally with the Convex CLI rather than editing generated files.
 
-From the deep diagnostic (all fixed + verified, `bun run verify` green):
+## Environment ownership
 
-1. **`InstrumentationProvider` was never mounted** — the runtime error dialog,
-   window error capture, and Vly error reporting were dead code since the
-   template shipped. Fixed in `main.tsx` (wraps the app inside the root
-   boundary). Lesson: an exported provider is not an active one — grep the
-   render tree.
-2. **`listRepositories` fetched one page of 100** — accounts with >100 repos
-   were silently truncated. Now follows GitHub's `Link` header (up to 500,
-   best-effort per page; partial results beat total failure).
-3. **Drafts had no per-user cap** — heavy editors could accumulate thousands of
-   rows. Now pruned to 250/user on insert (oldest dropped).
-4. **No self-repair layer** — added: boot-time corrupt-`aria.*`-key sweep,
-   "Repair & reload" in the runtime-error dialog (clears corrupt local state +
-   unregisters stale service worker), and SW self-heal (retry with backoff ×3,
-   update/re-register on visibility return).
-5. **Permissions audit (all ~210 exports)**: every public query/mutation/action
-   verifies the caller; internal fns are internal-only; webhook/HTTP routes
-   verify signatures or bearer tokens; no unauthenticated data exposure found.
-6. **Rate limits**: OTP sends, AI calls, GitHub actions, login lockout — all
-   present and server-enforced. AI in-flight locks self-expire after 60s.
-7. **Hardcoded relay key** (`fb_email_…` in `auth/emailOtp.ts`): works, but it's
-   a committed secret. Move it to a `FREEBUFF_EMAIL_API_KEY` project key and
-   remove the literal before going to market.
+### Client build variables
 
----
+Only intentionally public values use `VITE_`:
 
-## What is automatic vs. what still needs a human
+```text
+VITE_CONVEX_URL
+VITE_VAPID_PUBLIC_KEY
+```
 
-- **Automatic:** codegen, typecheck, tests, the secret-scan gate, Stripe webhook
-  dedup, error logging, rate limits, AI in-flight guards.
-- **Still human:** reading `errorLogs` and acting on them; rotating exposed keys;
-  pressing publish and confirming the public URL; deciding policy in the release
-  center. No amount of automation replaces the Phase 4 publish step.
+### Server variables
+
+Secrets and server configuration belong in the target Convex deployment. The complete contract is in `.env.example`. High-value production variables include:
+
+```text
+SITE_URL
+GITHUB_CLIENT_ID
+GITHUB_CLIENT_SECRET
+FREEBUFF_EMAIL_API_KEY
+OPENROUTER_API_KEY
+STRIPE_SECRET_KEY
+STRIPE_WEBHOOK_SECRET
+STRIPE_PRICE_ID_PRO
+STRIPE_PRICE_ID_PRO_PLUS
+STRIPE_PRICE_ID_TEAM
+VAPID_PUBLIC_KEY
+VAPID_PRIVATE_KEY
+```
+
+Do not put server credentials in `VITE_*` variables.
+
+## Security-specific release checks
+
+### GitHub OAuth
+
+- State token is one-time and user-bound.
+- Callback traffic is rate limited.
+- Token exchange/profile fetch failures are rejected.
+- Return origin must match the callback/configured trusted application origins.
+- Access token is stored/used backend-side and is not returned by the public connection-status query.
+
+### Stripe
+
+- Webhook signature verification is mandatory.
+- Event ids are deduplicated.
+- Checkout/portal return URLs come from configured trusted `SITE_URL`.
+- Price ids are mapped server-side to application tiers.
+
+### Email OTP
+
+- OTP sends are rate-limited and account lockout remains server-enforced.
+- Relay credential comes only from `FREEBUFF_EMAIL_API_KEY`.
+- Relay URL must use HTTPS.
+- Axios errors must never be stringified with request configuration because headers may contain the relay key.
+- Any relay credential previously present in Git history must be rotated before production use.
+
+### Platform administration
+
+Global feature flags, operational error logs, and global health data require the explicit platform `admin` role. A paid subscription is not an administrative authorization mechanism.
+
+### Browser/runtime
+
+- `VITE_CONVEX_URL` is validated before the client starts.
+- Production root-error UI does not render stack traces.
+- Builder-only toolbar is not rendered on ordinary production hosts.
+- iframe message handling is origin/source checked.
+- service-worker registration is limited to valid secure contexts (or local development).
+- Web Push requires a valid deployment-specific VAPID public key.
+
+## Production deployment
+
+Authenticate the Convex CLI to the intended production project and confirm the target before executing:
+
+```bash
+bun install --frozen-lockfile
+bun run deploy
+```
+
+The deploy script runs the preflight gate and then invokes Convex static hosting with `bun run build` as the production build command.
+
+Do not copy an old development deployment name from documentation and assume it is production. The target must be confirmed from the authenticated Convex project/session at deployment time.
+
+## Post-deploy verification
+
+After deployment, perform the smoke checks in `LAUNCH.md`. At minimum verify:
+
+- app shell + direct routes;
+- sign-in;
+- GitHub OAuth and a read operation;
+- safe test-repository edit/commit/PR flow;
+- AI when configured;
+- Stripe test-mode lifecycle when enabled;
+- email OTP when enabled;
+- Web Push when enabled;
+- CLI/extension auth surfaces;
+- rejection of global admin surfaces for ordinary users.
+
+## Rollback
+
+Record the released Git commit SHA. If a production smoke test fails, fix or revert in source control, obtain a green `Production Check`, and redeploy. Do not make an untracked one-off production patch.
+
+## Known build characteristic
+
+Monaco and its language workers are intentionally substantial assets. The production build currently completes successfully in CI. Large editor/worker chunks are a performance optimization opportunity, not evidence of a failed build; changes to Monaco loading should be treated as product-sensitive because they can alter editor capabilities.

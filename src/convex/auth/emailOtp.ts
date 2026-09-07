@@ -13,15 +13,36 @@ import {
 import type { MutationCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 
-// Max OTP emails per address per window (Part D). Kept deliberately small:
-// the verification side already locks out after too many failed attempts
-// (Convex Auth's built-in authRateLimits), so this throttles the send side.
+// Max OTP emails per address per window. Kept deliberately small: the
+// verification side already locks out after repeated failures, so this
+// throttles the send side as well.
 const OTP_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_OTP_RELAY_URL = "https://auth.freebuff.app/send_otp";
+
+function otpRelayConfig(): { url: string; apiKey: string } {
+  const apiKey = process.env.FREEBUFF_EMAIL_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "Email sign-in is not configured. Set FREEBUFF_EMAIL_API_KEY in the Convex deployment environment.",
+    );
+  }
+
+  const rawUrl = process.env.FREEBUFF_EMAIL_API_URL?.trim() || DEFAULT_OTP_RELAY_URL;
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error("Email sign-in relay URL is invalid.");
+  }
+  if (url.protocol !== "https:") {
+    throw new Error("Email sign-in relay URL must use HTTPS.");
+  }
+  return { url: url.toString(), apiKey };
+}
 
 export const emailOtp = Email({
   id: "email-otp",
   maxAge: 60 * 15, // 15 minutes
-  // This function can be asynchronous
   async generateVerificationToken() {
     const random: RandomReader = {
       read(bytes: Uint8Array) {
@@ -31,9 +52,8 @@ export const emailOtp = Email({
     const alphabet = "0123456789";
     return generateRandomString(random, alphabet, 6);
   },
-  // The Convex Auth runtime passes the mutation context as the second
-  // argument (see signInViaProvider) — used here to throttle OTP sends.
-  // Part E: also checks account lockout and records login activity.
+  // Convex Auth passes the mutation context as the second argument. Use it to
+  // enforce the same lockout/rate-limit policy before an email is sent.
   async sendVerificationRequest(
     { identifier: email, token }: { identifier: string; token: string },
     ctx?: { db: unknown },
@@ -41,11 +61,9 @@ export const emailOtp = Email({
     if (ctx && typeof ctx.db === "object" && ctx.db !== null) {
       const mCtx = ctx as unknown as MutationCtx;
 
-      // Part E: check account lockout before sending.
       try {
         const locked = await isEmailLockedOut(mCtx, email);
         if (locked) {
-          // Record the locked-out attempt.
           await mCtx.runMutation(
             internal.securityHardening.recordLoginAttempt,
             {
@@ -65,10 +83,9 @@ export const emailOtp = Email({
         ) {
           throw e;
         }
-        // A lockout check failure must never block sign-in.
+        // A lockout-store failure must not turn into an auth outage.
       }
 
-      // Part D: rate limit OTP sends.
       try {
         const allowed = await checkRateLimit(
           mCtx,
@@ -77,7 +94,6 @@ export const emailOtp = Email({
           OTP_WINDOW_MS,
         );
         if (!allowed) {
-          // Part E: record rate-limited attempt.
           await mCtx.runMutation(
             internal.securityHardening.recordLoginAttempt,
             {
@@ -98,38 +114,42 @@ export const emailOtp = Email({
         ) {
           throw e;
         }
-        // A limiter failure must never block sign-in.
+        // A limiter-store failure must not turn into an auth outage.
       }
     }
+
+    const relay = otpRelayConfig();
     try {
       await axios.post(
-        "https://auth.freebuff.app/send_otp",
+        relay.url,
         {
           to: email,
           otp: token,
-          appName: process.env.VLY_APP_NAME || "a freebuff.com application",
+          appName: process.env.VLY_APP_NAME || "Aria",
         },
         {
           headers: {
-            "x-api-key": "fb_email_2crN1hqIArZP2bEfvjp5Qik4",
+            "x-api-key": relay.apiKey,
+            "Content-Type": "application/json",
           },
+          timeout: 10_000,
+          maxRedirects: 0,
         },
       );
     } catch (error) {
-      throw new Error(JSON.stringify(error));
+      // Never stringify Axios errors: their request config may contain the API
+      // key. Return a stable user-safe message and keep secrets out of logs/UI.
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      throw new Error(
+        status
+          ? `Unable to send the sign-in code (email service returned ${status}).`
+          : "Unable to send the sign-in code. Please try again.",
+      );
     }
   },
 });
 
-// ---------------------------------------------------------------------------
-// Post-verification hooks
-// ---------------------------------------------------------------------------
-
-/**
- * Called after a successful OTP verification to clear lockout state and
- * record the successful login. Exported as a named const so the auth
- * flow can call it, or it can be wired via the Convex Auth callback.
- */
+/** Clear lockout state and record a successful OTP verification. */
 export async function onOtpVerified(
   ctx: MutationCtx,
   email: string,
@@ -147,10 +167,7 @@ export async function onOtpVerified(
   });
 }
 
-/**
- * Called after a failed OTP verification to record the failure and
- * increment the lockout counter.
- */
+/** Record a failed OTP verification and increment the lockout counter. */
 export async function onOtpFailed(
   ctx: MutationCtx,
   email: string,
@@ -168,9 +185,7 @@ export async function onOtpFailed(
       : `${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`,
   });
   if (locked) {
-    // Record a security event notification for the user (best-effort).
     try {
-      // Look up user by email to record the event.
       const user = await ctx.db
         .query("users")
         .withIndex("email", (q) => q.eq("email", email))
@@ -188,7 +203,7 @@ export async function onOtpFailed(
         );
       }
     } catch {
-      // best effort
+      // Security-event recording is best-effort and must not affect auth.
     }
   }
 }

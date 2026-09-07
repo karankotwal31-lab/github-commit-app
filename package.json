@@ -3,17 +3,22 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "dev": "vite",
-    "deploy": "npx @convex-dev/static-hosting deploy",
+    "preflight": "bun run lint && bun test && bun run extension:typecheck && bun run extension:test && bun run extension:legacy:typecheck",
+    "deploy": "bun run preflight && bunx @convex-dev/static-hosting deploy --build-command \"bun run build\"",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
     "test": "bun test",
     "cli": "bun src/cli/aria.ts",
     "format": "prettier --write .",
     "preview": "vite preview",
-    "verify": "bunx convex dev --once && bunx tsc -b --noEmit && bun test",
-    "extension:typecheck": "cd extension && bunx tsc -p ./ --noEmit"
+    "extension:typecheck": "cd extensions/vscode && bunx tsc -p ./ --noEmit",
+    "extension:test": "cd extensions/vscode && bun test",
+    "extension:legacy:typecheck": "cd extension && bunx tsc -p ./ --noEmit",
+    "verify": "bun run preflight && bun run build"
   },
   "dependencies": {
     "@auth/core": "^0.37.0",

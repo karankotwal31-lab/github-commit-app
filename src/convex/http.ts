@@ -8,47 +8,18 @@ import { stripeWebhook } from "./stripeWebhook";
 import { fetchWithRetry } from "./net";
 import { GITHUB_CALLBACK_PER_MINUTE } from "./security";
 
-// ---------------------------------------------------------------------------
-// Security headers middleware (Part E)
-// ---------------------------------------------------------------------------
-
-/**
- * Add standard security headers to a Response. Applied to all routes via
- * a wrapper so every response carries them — even error pages.
- */
+/** Security headers for app-owned HTTP API responses. */
 function withSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
-  // Prevent MIME-type sniffing.
   headers.set("X-Content-Type-Options", "nosniff");
-  // Clickjacking protection.
   headers.set("X-Frame-Options", "DENY");
-  // XSS filter (legacy browsers).
-  headers.set("X-XSS-Protection", "1; mode=block");
-  // Referrer policy — send origin only on cross-origin.
   headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  // Permissions policy — disable camera, microphone, geolocation by default.
   headers.set(
     "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
   );
-  // Strict Transport Security — 1 year, include subdomains.
-  headers.set(
-    "Strict-Transport-Security",
-    "max-age=31536000; includeSubDomains",
-  );
-  // Content Security Policy — restrict resource origins. Tighten in
-  // production by replacing 'unsafe-inline' with nonce-based CSP.
-  headers.set(
-    "Content-Security-Policy",
-    "default-src 'self'; " +
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; " +
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-      "font-src 'self' https://fonts.gstatic.com; " +
-      "img-src 'self' data: blob: https:; " +
-      "connect-src 'self' https://*.convex.cloud https://*.convex.site https://api.github.com https://github.com https://auth.freebuff.app; " +
-      "frame-ancestors 'none';",
-  );
-  // Remove server identification.
+  headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  headers.set("Cache-Control", headers.get("Cache-Control") ?? "no-store");
   headers.delete("Server");
   return new Response(response.body, {
     status: response.status,
@@ -57,71 +28,83 @@ function withSecurityHeaders(response: Response): Response {
   });
 }
 
-const http = httpRouter();
+function secureJson(data: unknown, init?: ResponseInit): Response {
+  return withSecurityHeaders(Response.json(data, init));
+}
 
+function secureRedirect(url: string): Response {
+  return withSecurityHeaders(Response.redirect(url));
+}
+
+function normalizedOrigin(value: string | undefined | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    if (url.protocol !== "https:" && !local) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * OAuth state carries a return origin supplied by the signed-in client. Never
+ * redirect to it unless it exactly matches a configured app origin.
+ */
+function trustedReturnOrigin(candidate: string | null, callbackOrigin: string): string {
+  const allowed = new Set<string>([callbackOrigin]);
+  const site = normalizedOrigin(process.env.SITE_URL);
+  const convexSite = normalizedOrigin(process.env.CONVEX_SITE_URL);
+  if (site) allowed.add(site);
+  if (convexSite) allowed.add(convexSite);
+  const requested = normalizedOrigin(candidate);
+  return requested && allowed.has(requested) ? requested : callbackOrigin;
+}
+
+const http = httpRouter();
 auth.addHttpRoutes(http);
 
 const GITHUB_API = "https://api.github.com";
 const USER_AGENT = "aria";
 
-/**
- * GitHub redirects here after the user authorizes. Exchanges the code for an
- * access token, stores the connection, and sends the user back to the app.
- */
 http.route({
   path: "/api/github/callback",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
-    // The request arrives at the Convex site domain, so its origin IS the
-    // site URL — don't depend on env vars that may be unset.
-    const siteUrl =
-      new URL(request.url).origin ||
-      process.env.CONVEX_SITE_URL ||
-      process.env.SITE_URL ||
-      "";
-    const url = new URL(request.url);
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state");
+    const requestUrl = new URL(request.url);
+    const callbackOrigin = requestUrl.origin;
+    const code = requestUrl.searchParams.get("code");
+    const state = requestUrl.searchParams.get("state");
 
-    const fail = (origin: string | null, reason: string) =>
-      Response.redirect(`${origin ?? siteUrl}/dashboard?github=${reason}`);
+    const fail = (origin: string | null, reason: string) => {
+      const target = trustedReturnOrigin(origin, callbackOrigin);
+      return secureRedirect(`${target}/dashboard?github=${reason}`);
+    };
 
-    if (!code || !state) {
-      return fail(null, "error");
-    }
+    if (!code || !state) return fail(null, "error");
 
     let stateDoc: { userId: GenericId<"users">; origin: string | null };
     try {
-      stateDoc = await ctx.runMutation(internal.github.consumeOAuthState, {
-        state,
-      });
+      stateDoc = await ctx.runMutation(internal.github.consumeOAuthState, { state });
     } catch {
       return fail(null, "error");
     }
 
     const clientId = process.env.GITHUB_CLIENT_ID;
     const clientSecret = process.env.GITHUB_CLIENT_SECRET;
-    if (!clientId || !clientSecret) {
-      return fail(stateDoc.origin, "config");
-    }
+    if (!clientId || !clientSecret) return fail(stateDoc.origin, "config");
 
-    // Rate limit the callback per source IP (Part D): this is the only
-    // unauthenticated entry into GitHub OAuth, so it's the one endpoint that
-    // deserves an IP-keyed throttle against token-exchange abuse.
     const clientIp =
-      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
       request.headers.get("cf-connecting-ip")?.trim() ??
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
       "unknown";
     const ipAllowed = await ctx.runMutation(internal.security.bumpRateLimit, {
       bucket: `ghcallback:${clientIp}`,
       limit: GITHUB_CALLBACK_PER_MINUTE,
     });
-    if (!ipAllowed) {
-      return fail(stateDoc.origin, "error");
-    }
+    if (!ipAllowed) return fail(stateDoc.origin, "error");
 
-    // Exchange the authorization code for an access token (retried
-    // automatically — Part D — since this is a network call to GitHub).
     const tokenRes = await fetchWithRetry(
       "https://github.com/login/oauth/access_token",
       {
@@ -135,19 +118,21 @@ http.route({
           client_id: clientId,
           client_secret: clientSecret,
           code,
-          redirect_uri: `${siteUrl}/api/github/callback`,
+          redirect_uri: `${callbackOrigin}/api/github/callback`,
         }),
       },
     );
-    const tokenData = (await tokenRes.json()) as {
-      access_token?: string;
-    };
-    const accessToken = tokenData.access_token;
-    if (!accessToken) {
+    if (!tokenRes.ok) return fail(stateDoc.origin, "error");
+
+    let tokenData: { access_token?: string; error?: string };
+    try {
+      tokenData = (await tokenRes.json()) as { access_token?: string; error?: string };
+    } catch {
       return fail(stateDoc.origin, "error");
     }
+    const accessToken = tokenData.access_token;
+    if (!accessToken) return fail(stateDoc.origin, "error");
 
-    // Fetch the profile so the app can show who is connected.
     const profileRes = await fetchWithRetry(`${GITHUB_API}/user`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -156,14 +141,14 @@ http.route({
         "User-Agent": USER_AGENT,
       },
     });
-    if (!profileRes.ok) {
-      return fail(stateDoc.origin, "error");
-    }
+    if (!profileRes.ok) return fail(stateDoc.origin, "error");
+
     const profile = (await profileRes.json()) as {
-      login: string;
+      login?: string;
       name?: string | null;
       avatar_url?: string | null;
     };
+    if (!profile.login) return fail(stateDoc.origin, "error");
 
     await ctx.runMutation(internal.github.saveConnection, {
       userId: stateDoc.userId,
@@ -173,31 +158,27 @@ http.route({
       avatar: profile.avatar_url ?? undefined,
     });
 
-    return Response.redirect(`${stateDoc.origin ?? siteUrl}/dashboard?github=connected`);
+    const target = trustedReturnOrigin(stateDoc.origin, callbackOrigin);
+    return secureRedirect(`${target}/dashboard?github=connected`);
   }),
 });
 
-/**
- * Stripe webhook — implemented in src/convex/stripeWebhook.ts (it needs the
- * node runtime to import the Stripe SDK); mounted here as a plain route.
- */
 http.route({
   path: "/api/stripe/webhook",
   method: "POST",
   handler: stripeWebhook,
 });
 
-// ---------------------------------------------------------------------------
-// Aria CLI — read-only endpoints authenticated with personal access tokens
-// (created in the app under Platform → CLI & API). The CLI never sees the
-// GitHub OAuth token; it only gets the user's own data, scoped to them.
-// ---------------------------------------------------------------------------
-
-const bearerOf = (request: Request): string | null =>
-  request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? null;
+const bearerOf = (request: Request): string | null => {
+  const header = request.headers.get("authorization")?.trim();
+  if (!header) return null;
+  const match = /^Bearer\s+([^\s].*)$/i.exec(header);
+  const token = match?.[1]?.trim();
+  return token || null;
+};
 
 const unauthorized = () =>
-  Response.json(
+  secureJson(
     { error: "Unauthorized — set ARIA_TOKEN or pass --token." },
     { status: 401 },
   );
@@ -212,7 +193,7 @@ http.route({
       : null;
     if (!userId) return unauthorized();
     const data = await ctx.runQuery(internal.cli.whoamiByUser, { userId });
-    return Response.json(data);
+    return secureJson(data);
   }),
 });
 
@@ -226,7 +207,7 @@ http.route({
       : null;
     if (!userId) return unauthorized();
     const data = await ctx.runQuery(internal.cli.reposByUser, { userId });
-    return Response.json(data);
+    return secureJson(data);
   }),
 });
 
@@ -240,7 +221,7 @@ http.route({
       : null;
     if (!userId) return unauthorized();
     const data = await ctx.runQuery(internal.cli.inboxByUser, { userId });
-    return Response.json(data);
+    return secureJson(data);
   }),
 });
 
@@ -254,11 +235,10 @@ http.route({
       : null;
     if (!userId) return unauthorized();
     const data = await ctx.runAction(internal.cli.prsByUser, { userId });
-    return Response.json(data);
+    return secureJson(data);
   }),
 });
 
-/** One PR, fully loaded for inline diff review (see internal.cli.prDetailByUser). */
 http.route({
   path: "/api/cli/prs/{owner}/{repo}/{number}",
   method: "GET",
@@ -268,13 +248,13 @@ http.route({
       ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
       : null;
     if (!userId) return unauthorized();
-    const params = (request as unknown as { params: Record<string, string> })
-      .params;
+
+    const params = (request as unknown as { params: Record<string, string> }).params;
     const owner = params.owner ?? "";
     const repo = params.repo ?? "";
     const number = Number(params.number);
     if (!owner || !repo || !Number.isInteger(number) || number < 1) {
-      return Response.json({ error: "Invalid PR reference." }, { status: 400 });
+      return secureJson({ error: "Invalid PR reference." }, { status: 400 });
     }
     try {
       const data = await ctx.runAction(internal.cli.prDetailByUser, {
@@ -282,18 +262,24 @@ http.route({
         repo: `${owner}/${repo}`,
         number,
       });
-      return Response.json(data);
+      return secureJson(data);
     } catch (e) {
       const message =
         e instanceof Error ? e.message : "Couldn't load this pull request.";
-      return Response.json({ error: message }, { status: 404 });
+      return secureJson({ error: message }, { status: 404 });
     }
   }),
 });
 
-// Serve the built frontend (dist/) from the deployment root with SPA
-// fallback to index.html. Exact routes registered above always win over
-// this static catch-all.
-registerStaticRoutes(http, components.staticHosting);
+// In CI the committed Convex API binding intentionally uses the generic
+// AnyComponents fallback because codegen requires a live Convex deployment.
+// At deploy time Convex codegen narrows this reference to the static-hosting
+// component API. The runtime reference is the same proxy in both cases, so the
+// double assertion bridges only that build-time type gap without altering
+// routing or component behavior.
+registerStaticRoutes(
+  http,
+  components.staticHosting as unknown as Parameters<typeof registerStaticRoutes>[1],
+);
 
 export default http;
