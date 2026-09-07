@@ -175,6 +175,7 @@ export const healthRecord = internalMutation({
   args: {
     check: v.union(
       v.literal("auth"),
+      v.literal("otp"),
       v.literal("github"),
       v.literal("ai"),
       v.literal("email"),
