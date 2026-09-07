@@ -2,6 +2,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { internalMutation, internalQuery, query } from "./_generated/server";
 import { v } from "convex/values";
 import { type PlanId } from "../lib/plans";
+import { billingConfigured, legacyProPriceId } from "./billingConfig";
 
 /**
  * Billing state for the plan ladder (free → pro → pro_plus → team →
@@ -23,33 +24,15 @@ export const planValidator = v.union(
   v.literal("enterprise"),
 );
 
-/** Which env var holds the Stripe price id for a check-out-able tier. */
-const PRICE_ENV: Record<string, string> = {
-  pro: "STRIPE_PRICE_ID_PRO",
-  pro_plus: "STRIPE_PRICE_ID_PRO_PLUS",
-  team: "STRIPE_PRICE_ID_TEAM",
-};
-
 function env(name: string): string | null {
   const value = process.env[name];
-  return value && value.trim() ? value : null;
-}
-
-/** Whether billing is configured on the backend (keys + at least one price). */
-function billingConfigured(): boolean {
-  return !!(
-    process.env.STRIPE_SECRET_KEY &&
-    (process.env.STRIPE_PRICE_ID ||
-      process.env.STRIPE_PRICE_ID_PRO ||
-      process.env.STRIPE_PRICE_ID_PRO_PLUS ||
-      process.env.STRIPE_PRICE_ID_TEAM)
-  );
+  return value && value.trim() ? value.trim() : null;
 }
 
 /** Stripe price ids per tier, from env (STRIPE_PRICE_ID is the Pro legacy). */
 export function priceIds(): Record<string, string | null> {
   return {
-    pro: env("STRIPE_PRICE_ID_PRO") ?? env("STRIPE_PRICE_ID"),
+    pro: env("STRIPE_PRICE_ID_PRO") ?? legacyProPriceId(),
     pro_plus: env("STRIPE_PRICE_ID_PRO_PLUS"),
     team: env("STRIPE_PRICE_ID_TEAM"),
   };
@@ -146,7 +129,7 @@ export const planForUser = internalQuery({
   },
 });
 
-/** Internal: update the stored plan (called by the Stripe webhook). */
+/** Internal: update the stored Stripe customer/subscription state. */
 export const setPlan = internalMutation({
   args: {
     userId: v.id("users"),
