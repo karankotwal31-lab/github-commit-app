@@ -363,10 +363,25 @@ export function buildReleaseReadiness(input: {
 }): ReleaseReadiness {
   const blockers = [...input.proof.unresolved.filter((x) => /CI|offline/i.test(x))];
   const warnings: string[] = [];
-  if (input.highSecurityFindings > 0) blockers.push(`${input.highSecurityFindings} high-severity security finding(s) remain`);
-  if (input.risk.requiresIndependentApproval) warnings.push("critical-risk change needs independent approval");
-  else if (input.risk.requiresHumanApproval) warnings.push("high-risk change needs explicit human approval");
-  if (input.deploymentState && input.deploymentState !== "success") warnings.push(`deployment state is ${input.deploymentState}`);
+  const deploymentProof = input.proof.claims.find((claim) => claim.id === "deployment");
+
+  if (input.highSecurityFindings > 0) {
+    blockers.push(`${input.highSecurityFindings} high-severity security finding(s) remain`);
+  }
+  if (deploymentProof?.state === "blocked") {
+    blockers.push("deployment evidence reports a failed or blocked deployment");
+  } else if (!deploymentProof || deploymentProof.state !== "proven") {
+    warnings.push("deployment health is not proven");
+  }
+
+  if (input.risk.requiresIndependentApproval) {
+    warnings.push("critical-risk change must satisfy the applicable server-authoritative independent approval policy");
+  } else if (input.risk.requiresHumanApproval) {
+    warnings.push("high-risk change needs explicit human approval");
+  }
+  if (input.deploymentState && input.deploymentState !== "success" && deploymentProof?.state !== "blocked") {
+    warnings.push(`deployment state is ${input.deploymentState}`);
+  }
   const score = Math.max(0, 100 - blockers.length * 30 - warnings.length * 12 - Math.min(25, input.risk.score));
   return { state: blockers.length ? "blocked" : warnings.length ? "needs_review" : "ready", score, blockers, warnings };
 }
@@ -383,14 +398,14 @@ export function buildRescuePlan(input: {
     steps.push({ rank: 1, hypothesis: "the current change broke a validation or CI contract", evidence: input.failedChecks.slice(0, 8), reversibleAction: "inspect the failed logs and prepare a source-controlled fix; do not bypass the gate" });
   }
   if (input.deploymentError) {
-    steps.push({ rank: steps.length + 1, hypothesis: "the deployment environment or runtime rejected the build", evidence: [input.deploymentError], reversibleAction: "compare environment/runtime assumptions against the last known-good release before changing production" });
+    steps.push({ rank: steps.length + 1, hypothesis: "the deployment environment or runtime rejected the build", evidence: [input.deploymentError], reversibleAction: "compare environment/runtime assumptions against a separately verified successful release before changing production" });
   }
   const infrastructure = input.changedFiles.filter((p) => /workflow|deploy|docker|vercel|convex|package|lock|env|config/i.test(p));
   if (infrastructure.length) {
     steps.push({ rank: steps.length + 1, hypothesis: "delivery/configuration changes may explain the failure", evidence: infrastructure.slice(0, 10), reversibleAction: "simulate or revert only the implicated configuration change on a branch, then rerun verification" });
   }
   if (input.lastKnownGood) {
-    steps.push({ rank: steps.length + 1, hypothesis: "a deterministic rollback point exists", evidence: [`last known good: ${input.lastKnownGood}`], reversibleAction: "keep this SHA as the rollback target; prefer a Git revert/fix over manual production edits" });
+    steps.push({ rank: steps.length + 1, hypothesis: "a candidate rollback SHA was supplied", evidence: [`candidate rollback SHA: ${input.lastKnownGood}`], reversibleAction: "verify this SHA was actually healthy in the target environment before using it as a rollback point; prefer a Git revert/fix over manual production edits" });
   }
   if (!steps.length) {
     steps.push({ rank: 1, hypothesis: "there is not enough evidence to name a root cause", evidence: ["no failed checks or deployment error supplied"], reversibleAction: "collect CI/runtime evidence before proposing a fix" });
