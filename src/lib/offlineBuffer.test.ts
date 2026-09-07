@@ -138,7 +138,7 @@ describe("offline commit queue", () => {
     const commits = pendingCommits();
     expect(commits).toHaveLength(50);
     expect(commits[0].message).toBe("commit-10");
-    expect(commits.at(-1)?.message).toBe("commit-59");
+    expect(commits[commits.length - 1]?.message).toBe("commit-59");
   });
 });
 
@@ -164,7 +164,7 @@ describe("offline draft queue", () => {
     expect(pendingDraftCount()).toBe(200);
     const drafts = pendingDrafts();
     expect(drafts[0].path).toBe("209.ts");
-    expect(drafts.at(-1)?.path).toBe("10.ts");
+    expect(drafts[drafts.length - 1]?.path).toBe("10.ts");
   });
 
   test("draft queues are isolated by account", () => {
