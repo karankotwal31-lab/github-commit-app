@@ -12,6 +12,7 @@ import { InboxDialog } from "@/components/InboxDialog";
 import { AiReviewDialog } from "@/components/AiReviewDialog";
 import { AdminDialog } from "@/components/AdminDialog";
 import { SecurityCenterDialog } from "@/components/SecurityCenterDialog";
+import { TrustContinuityDialog } from "@/components/TrustContinuityDialog";
 import { PlatformDialog } from "@/components/PlatformDialog";
 import { StressTestDialog } from "@/components/StressTestDialog";
 import { CreateIssueDialog } from "@/components/CreateIssueDialog";
@@ -37,9 +38,10 @@ import { RepoQaDialog } from "@/components/workspace/RepoQaDialog";
 import { StackDialog } from "@/components/workspace/StackDialog";
 import { JumpToFileDialog } from "@/components/workspace/JumpToFileDialog";
 import { DeleteFileDialog } from "@/components/workspace/DeleteFileDialog";
+import { approvalFirewall, decodeCapsule } from "@/lib/trustContinuity";
 import { cn } from "@/lib/utils";
 import { lazy, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { ArrowLeft, Cpu, ShieldAlert } from "lucide-react";
+import { ArrowLeft, Cpu, ShieldAlert, ShieldCheck } from "lucide-react";
 export type { WorkspaceViewProps } from "./workspace/types";
 import type { WorkspaceViewProps } from "./workspace/types";
 
@@ -92,6 +94,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [securityOpen, setSecurityOpen] = useState(false);
+  const [trustOpen, setTrustOpen] = useState(false);
   const [platformOpen, setPlatformOpen] = useState(false);
   const [stressOpen, setStressOpen] = useState(false);
   const [issueOpen, setIssueOpen] = useState(false);
@@ -103,7 +106,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
 
   const centerPanelOpen =
     runtimeOpen || shareOpen || localOpen || dockOpen || inboxOpen ||
-    reviewOpen || adminOpen || securityOpen || platformOpen || stressOpen ||
+    reviewOpen || adminOpen || securityOpen || trustOpen || platformOpen || stressOpen ||
     issueOpen || whyOpen || crossRepoOpen || billingOpen || aiOpen ||
     stackOpen ||
     vaultOpen || prsOpen || historyOpen || codeSearchOpen || searchOpen ||
@@ -123,8 +126,33 @@ export function WorkspaceView(props: WorkspaceViewProps) {
 
   useEffect(() => {
     if (isMobile && editorFocused) setFocusMode(true);
-  }, [isMobile, editorFocused]);
+  }, [isMobile, editorFocused, setFocusMode]);
   useEffect(() => onActiveEditorFocus(setEditorFocused), []);
+
+  // Work Capsule restore: the capsule itself is stored cross-device in the
+  // existing server-side project memory. The Resume action deep-links back to
+  // this repo/branch/path and drops only layout metadata into sessionStorage
+  // for this device. Apply it only after the selected workspace matches,
+  // preventing a stale capsule from mutating an unrelated workspace.
+  useEffect(() => {
+    if (!selectedRepo || !currentBranch) return;
+    try {
+      const raw = sessionStorage.getItem("aria:restore-capsule");
+      if (!raw) return;
+      const capsule = decodeCapsule(raw);
+      if (!capsule) {
+        sessionStorage.removeItem("aria:restore-capsule");
+        return;
+      }
+      if (capsule.repo !== selectedRepo.fullName || capsule.branch !== currentBranch) return;
+      setPath(capsule.path);
+      setViewMode(capsule.viewMode);
+      setFocusMode(capsule.focusMode);
+      sessionStorage.removeItem("aria:restore-capsule");
+    } catch {
+      // Restricted storage only means layout defaults are used after restore.
+    }
+  }, [selectedRepo, currentBranch, setPath, setViewMode, setFocusMode]);
 
   const accessoryVisible = isMobile && !accessoryHidden && (focusMode || editorFocused || vv.keyboardOpen);
   const stagedPathSet = useMemo(() => new Set(staged.map((f) => f.path)), [staged]);
@@ -133,6 +161,31 @@ export function WorkspaceView(props: WorkspaceViewProps) {
   const owner = selectedRepo?.fullName.split("/")[0] ?? "";
   const repo = selectedRepo?.fullName.split("/")[1] ?? "";
   const branch = currentBranch ?? "";
+
+  const commitFirewall = useMemo(() => {
+    const files = staged.length > 0
+      ? staged.map((f) => ({ path: f.path, action: f.action, content: f.content }))
+      : openFile && (dirty || isNewFile)
+        ? [{ path: openFile.path, action: isNewFile ? ("create" as const) : ("update" as const), content: editorContent }]
+        : [];
+    return approvalFirewall({
+      files,
+      operation: "commit",
+      branch: currentBranch,
+      defaultBranch: selectedRepo?.defaultBranch ?? null,
+    });
+  }, [staged, openFile, dirty, isNewFile, editorContent, currentBranch, selectedRepo?.defaultBranch]);
+
+  const guardedCommit = () => {
+    if (commitFirewall.requiresHumanApproval) {
+      const reasons = commitFirewall.reasons.slice(0, 4).join("\n• ");
+      const accepted = window.confirm(
+        `Aria Approval Firewall: ${commitFirewall.level.toUpperCase()} risk change.\n\n• ${reasons || "elevated change surface"}\n\nContinue to the existing server-side commit and policy gates?`,
+      );
+      if (!accepted) return;
+    }
+    handleCommit();
+  };
 
   return (
     <div
@@ -207,16 +260,22 @@ export function WorkspaceView(props: WorkspaceViewProps) {
       <AiReviewDialog open={reviewOpen} onOpenChange={setReviewOpen} owner={owner} repo={repo} branch={branch} />
       <AdminDialog open={adminOpen} onOpenChange={setAdminOpen} />
       <SecurityCenterDialog open={securityOpen} onOpenChange={setSecurityOpen} owner={owner} repo={repo} branch={branch} />
+      <TrustContinuityDialog open={trustOpen} onOpenChange={setTrustOpen} selectedRepo={selectedRepo} currentBranch={currentBranch} path={path} openFile={openFile} dirty={dirty} editorContent={editorContent} viewMode={viewMode} focusMode={focusMode} aiHistory={aiHistory} staged={staged} checks={checks} deployment={deployment} deploymentError={props.deploymentError} offline={offline} lastCommit={lastCommit} branches={branches} connection={connection} loadChecks={loadChecks} loadDeployment={loadDeployment} />
       <PlatformDialog open={platformOpen} onOpenChange={setPlatformOpen} owner={owner} repo={repo} branch={branch} commit={lastCommit?.sha ?? null} />
 
-      {selectedRepo && !securityOpen && (
+      {selectedRepo && !securityOpen && !trustOpen && (
         <button type="button" onClick={() => setSecurityOpen(true)} className="fixed bottom-16 right-4 z-40 flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-600 shadow-sm transition-colors hover:bg-neutral-50" title="Security command center">
           <ShieldAlert className="size-3.5 text-neutral-500" /> Security
         </button>
       )}
-      {selectedRepo && !platformOpen && !securityOpen && (
+      {selectedRepo && !platformOpen && !securityOpen && !trustOpen && (
         <button type="button" onClick={() => setPlatformOpen(true)} className="fixed bottom-24 right-4 z-40 flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-600 shadow-sm transition-colors hover:bg-neutral-50" title="Platform controls">
           <Cpu className="size-3.5 text-neutral-500" /> Platform
+        </button>
+      )}
+      {selectedRepo && !trustOpen && !securityOpen && !platformOpen && (
+        <button type="button" onClick={() => setTrustOpen(true)} className="fixed bottom-32 right-4 z-40 flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1.5 text-xs text-neutral-600 shadow-sm transition-colors hover:bg-neutral-50" title="Trust and continuity controls">
+          <ShieldCheck className="size-3.5 text-neutral-500" /> Trust
         </button>
       )}
 
@@ -238,7 +297,7 @@ export function WorkspaceView(props: WorkspaceViewProps) {
           <>
             <ReposSidebar mobileView={mobileView} focusMode={focusMode} reposLoading={props.reposLoading} reposError={props.reposError} repoQuery={props.repoQuery} setRepoQuery={props.setRepoQuery} filteredRepos={filteredRepos} selectedRepo={selectedRepo} handleSelectRepo={props.handleSelectRepo} loadRepos={props.loadRepos} />
             <FilesSidebar mobileView={mobileView} focusMode={focusMode} handleBackToRepos={props.handleBackToRepos} selectedRepo={selectedRepo} currentBranch={currentBranch} branches={branches} branchesLoading={branchesLoading} handleSwitchBranch={handleSwitchBranch} setDialog={setDialog} path={path} setPath={setPath} pathSegments={pathSegments} handleBreadcrumb={handleBreadcrumb} handleOpenEntry={handleOpenEntry} loadEntries={loadEntries} entries={entries} entriesLoading={entriesLoading} entriesError={entriesError} sortedEntries={sortedEntries} stagedPathSet={stagedPathSet} checks={checks} checksLoading={checksLoading} deployment={deployment} deploymentLoading={deploymentLoading} onOpenChecks={() => { setChecksOpen(true); if (!checks) loadChecks(); }} onPreview={() => { setViewMode("preview"); loadDeployment(); }} onJumpToFile={() => setSearchOpen(true)} onCodeSearch={() => { setCodeQuery(""); setCodeResults(null); setCodeSearchError(null); setCodeSearchOpen(true); }} onOpenHistory={() => { setHistoryOpen(true); loadHistory(); }} onOpenIssues={() => { setIssuesOpen(true); loadIssues(); }} onOpenPrs={() => { setPrsOpen(true); loadPullRequests(); }} onAskAria={() => { setAiInstruction(""); setAiResult(null); setAiError(null); setAiOpen(true); }} onAskAboutRepo={() => setQaOpen(true)} onOpenVault={() => setVaultOpen(true)} onNewFile={() => setDialog({ kind: "newFile" })} />
-            <EditorPane mobileView={mobileView} connection={connection} selectedRepo={selectedRepo} currentBranch={currentBranch} openFile={openFile} setOpenFile={setOpenFile} isNewFile={isNewFile} editorContent={editorContent} setEditorContent={setEditorContent} viewMode={viewMode} setViewMode={setViewMode} fileLoading={fileLoading} dirty={dirty} openFileIsStaged={openFileIsStaged} status={status} lastCommit={lastCommit} prResult={prResult} handleOpenPr={handleOpenPr} prOpen={prOpen} staged={staged} setStaged={setStaged} stagedDiffOpen={stagedDiffOpen} setStagedDiffOpen={setStagedDiffOpen} handleUnstage={handleUnstage} flaggedSecretPaths={props.flaggedSecretPaths} allowSecrets={props.allowSecrets} setAllowSecrets={props.setAllowSecrets} commitMessage={commitMessage} setCommitMessage={setCommitMessage} canCommit={canCommit} handleCommit={handleCommit} handleStage={handleStage} committing={committing} onOpenWhy={() => setWhyOpen(true)} onRename={() => setDialog({ kind: "rename" })} onDelete={() => setDeleteOpen(true)} />
+            <EditorPane mobileView={mobileView} connection={connection} selectedRepo={selectedRepo} currentBranch={currentBranch} openFile={openFile} setOpenFile={setOpenFile} isNewFile={isNewFile} editorContent={editorContent} setEditorContent={setEditorContent} viewMode={viewMode} setViewMode={setViewMode} fileLoading={fileLoading} dirty={dirty} openFileIsStaged={openFileIsStaged} status={status} lastCommit={lastCommit} prResult={prResult} handleOpenPr={handleOpenPr} prOpen={prOpen} staged={staged} setStaged={setStaged} stagedDiffOpen={stagedDiffOpen} setStagedDiffOpen={setStagedDiffOpen} handleUnstage={handleUnstage} flaggedSecretPaths={props.flaggedSecretPaths} allowSecrets={props.allowSecrets} setAllowSecrets={props.setAllowSecrets} commitMessage={commitMessage} setCommitMessage={setCommitMessage} canCommit={canCommit} handleCommit={guardedCommit} handleStage={handleStage} committing={committing} onOpenWhy={() => setWhyOpen(true)} onRename={() => setDialog({ kind: "rename" })} onDelete={() => setDeleteOpen(true)} />
           </>
         )}
       </div>
