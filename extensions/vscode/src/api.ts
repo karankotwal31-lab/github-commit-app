@@ -74,9 +74,14 @@ export class AriaApiError extends Error {
 }
 
 export class AriaApi {
-  readonly site: string;
+  site: string;
 
   constructor(site: string) {
+    this.site = "";
+    this.setSite(site);
+  }
+
+  setSite(site: string): void {
     this.site = site.trim().replace(/\/+$/, "");
   }
 
