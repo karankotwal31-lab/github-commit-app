@@ -14,8 +14,8 @@ is kept in VS Code's secure secret storage (OS keychain), not in a file.
 
 ```bash
 cd extensions/vscode
-bun install            # or: npm install
-bun run compile        # tsc → out/
+bun install
+bun run compile
 ```
 
 Then press **F5** in VS Code with this folder open to launch an Extension
@@ -26,11 +26,15 @@ bunx @vscode/vsce package --no-dependencies
 code --install-extension aria-vscode-0.1.0.vsix
 ```
 
-## Get a token
+## First-time setup
 
-1. Open the Aria web app and sign in.
-2. Go to **Platform → CLI & API → Create token**.
-3. Copy the token — it is shown exactly once and starts with `aria_`.
+1. Set **Aria: Site Url** (`aria.siteUrl`) in VS Code Settings to the trusted
+   production HTTPS origin. There is intentionally no hardcoded production
+   fallback; HTTP is accepted only for localhost development.
+2. Open the Aria web app and sign in.
+3. Go to **Platform → CLI & API → Create token**.
+4. Copy the token — it is shown exactly once and starts with `aria_`.
+5. Run **Aria: Sign in** in VS Code and paste the token.
 
 The token is scoped to *your* account. Revoke it anytime from the same
 screen; revoked tokens are rejected immediately, including here.
@@ -53,7 +57,10 @@ screen; revoked tokens are rejected immediately, including here.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `aria.siteUrl` | `https://steady-scorpion-839.convex.site` | The Aria backend URL. Override only if the app is deployed elsewhere. |
+| `aria.siteUrl` | *(required)* | Trusted Aria production HTTPS origin |
+
+Changing `aria.siteUrl` takes effect immediately for the shared API client and
+all extension views.
 
 ## Security notes
 
@@ -62,13 +69,14 @@ screen; revoked tokens are rejected immediately, including here.
 - Only the **SHA-256 hash** of your token exists server-side; the plaintext
   is returned once, at creation.
 - Every response is scoped server-side to the token's owner.
+- Remote Aria origins must use HTTPS; only localhost may use HTTP.
 - The extension is **read-only by design** — it can inspect, never modify.
 
 ## Development
 
 - `src/api.ts` — pure HTTP client for `/api/cli/*` (no `vscode` imports),
   covered by unit tests.
-- `src/views.ts` — the three tree data providers.
+- `src/views.ts` — the tree data providers.
 - `src/extension.ts` — activation, commands, secret storage, status bar.
 
 Run the tests from the repo root (Bun):
