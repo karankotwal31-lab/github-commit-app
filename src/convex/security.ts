@@ -9,6 +9,13 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { installLegacyBillingGateCompatibility } from "./billingConfig";
+
+// Several long-lived action modules historically use STRIPE_PRICE_ID only as
+// a boolean "billing is enabled" check. Normalize modern per-tier price keys
+// once at backend module load; billing.ts filters the sentinel from real price
+// resolution, so no checkout can ever use it as a Stripe price id.
+installLegacyBillingGateCompatibility();
 
 /** Security and reliability primitives shared by backend features. */
 export const RATE_WINDOW_MS = 60_000;

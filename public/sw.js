@@ -12,6 +12,7 @@
 
 const CACHE_NAME = "aria-shell-v1";
 const CACHE_ENABLED = new URL(self.location.href).searchParams.get("cache") === "1";
+const REVIEW_ACTIONS = new Set(["approve", "comment", "merge"]);
 
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/logo.svg"];
 
@@ -103,8 +104,34 @@ function safeNotificationUrl(value) {
   }
 }
 
+function isGithubPullUrl(value) {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "github.com" &&
+      /^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function actionLaunchUrl(action, target) {
+  const url = new URL("/dashboard", self.location.origin);
+  url.searchParams.set("ariaAction", action);
+  url.searchParams.set("ariaUrl", target);
+  return url.href;
+}
+
 self.addEventListener("push", (event) => {
-  let payload = { title: "Aria", body: "", url: "/", tag: "aria" };
+  let payload = {
+    title: "Aria",
+    body: "",
+    url: "/",
+    tag: "aria",
+    kind: "assign",
+  };
   try {
     if (event.data) {
       const parsed = JSON.parse(event.data.text());
@@ -116,40 +143,78 @@ self.addEventListener("push", (event) => {
     // Non-JSON payload — fall back to safe defaults.
   }
 
-  const title = typeof payload.title === "string" ? payload.title.slice(0, 160) : "Aria";
+  const kind = payload.kind === "review" ? "review" : "assign";
+  const target = safeNotificationUrl(payload.url);
+  const title =
+    typeof payload.title === "string" ? payload.title.slice(0, 160) : "Aria";
   const options = {
     body: typeof payload.body === "string" ? payload.body.slice(0, 500) : "",
     icon: "/logo.svg",
     badge: "/logo.svg",
     tag: typeof payload.tag === "string" ? payload.tag.slice(0, 120) : "aria",
-    data: { url: safeNotificationUrl(payload.url) },
+    data: { url: target, kind },
   };
 
-  // Notification action buttons previously advertised approve/comment/merge
-  // but only navigated to the PR. Do not present controls that imply a write
-  // occurred; opening the real review surface is the complete supported path.
+  // The app already has a signed-in PushActionHandler backed by the same
+  // GitHub action layer as the normal review UI. Only surface write actions
+  // for an actual github.com PR URL; otherwise the notification remains a
+  // simple safe navigation notification.
+  if (kind === "review" && isGithubPullUrl(target)) {
+    options.actions = [
+      { action: "approve", title: "✓ Approve" },
+      { action: "comment", title: "💬 Comment" },
+      { action: "merge", title: "🔀 Merge" },
+    ];
+  }
+
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const target = safeNotificationUrl(event.notification.data?.url);
+  const kind = event.notification.data?.kind === "review" ? "review" : "assign";
+  const action = typeof event.action === "string" ? event.action : "";
+  const actionable =
+    kind === "review" && REVIEW_ACTIONS.has(action) && isGithubPullUrl(target);
+
   event.waitUntil(
-    self.clients
-      .matchAll({ type: "window", includeUncontrolled: true })
-      .then(async (clients) => {
+    (async () => {
+      const clients = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+
+      if (actionable) {
+        // Keep the action inside Aria so it uses the signed-in user's existing
+        // server-side GitHub token and normal permission/confirmation checks.
         for (const client of clients) {
           if (!("focus" in client)) continue;
-          try {
-            if ("navigate" in client) await client.navigate(target);
-          } catch {
-            // If an existing window cannot navigate, opening a new safe window
-            // below is preferable to failing the click entirely.
-          }
+          client.postMessage({
+            type: "aria-push-action",
+            action,
+            url: target,
+          });
           return client.focus();
         }
-        if (self.clients.openWindow) return self.clients.openWindow(target);
+        if (self.clients.openWindow) {
+          return self.clients.openWindow(actionLaunchUrl(action, target));
+        }
         return undefined;
-      }),
+      }
+
+      for (const client of clients) {
+        if (!("focus" in client)) continue;
+        try {
+          if ("navigate" in client) await client.navigate(target);
+        } catch {
+          // Opening a new safe window below is preferable to dropping the tap.
+          continue;
+        }
+        return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+      return undefined;
+    })(),
   );
 });
