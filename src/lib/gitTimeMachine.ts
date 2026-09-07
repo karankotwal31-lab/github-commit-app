@@ -8,6 +8,7 @@ import {
   mergeBranch,
   readTreeFiles,
   repoCtx,
+  runRebase,
   startRebase,
   type GitBackend,
   type GitPerson,
@@ -97,19 +98,6 @@ async function materializeBranch(owner: string, repo: string, branch: string): P
 async function currentHead(owner: string, repo: string): Promise<string> {
   const { fs, dir, gitdir } = await repoCtx(owner, repo);
   return git.resolveRef({ fs, dir, gitdir, ref: "HEAD" });
-}
-
-async function changedPathsBetween(owner: string, repo: string, a: string, b: string): Promise<string[]> {
-  const [aTree, bTree] = await Promise.all([
-    readTreeFiles(owner, repo, a),
-    readTreeFiles(owner, repo, b),
-  ]);
-  const paths = new Set([...aTree.keys(), ...bTree.keys()]);
-  return [...paths].filter((path) => {
-    const left = aTree.get(path);
-    const right = bTree.get(path);
-    return left?.oid !== right?.oid || left?.mode !== right?.mode;
-  }).sort();
 }
 
 async function simulateRevert(
@@ -248,17 +236,37 @@ export async function simulateGitOperation(input: {
     if (input.operation === "rebase") {
       await materializeBranch(shadowOwner, shadowRepo, input.target);
       const plan = await startRebase({ owner: shadowOwner, repo: shadowRepo, base: input.target });
+      input.onProgress?.("rebase", 0, plan.todos.length);
+      const outcome = await runRebase(backend, { owner: shadowOwner, repo: shadowRepo });
+      if (outcome.conflict) {
+        const conflicts = outcome.files.map((f) => f.path).sort();
+        return {
+          operation: "rebase",
+          safeToAttempt: false,
+          outcome: "conflicts",
+          summary: `Rebase simulation found ${conflicts.length} conflict(s) at replay step ${outcome.step + 1}.`,
+          conflicts,
+          details: [
+            `base: ${input.target}`,
+            `${plan.todos.length} planned replay commit(s)`,
+            `${plan.autoDroppedMerges} merge commit(s) auto-dropped from replay`,
+            "No real branch, working tree, or remote ref was modified.",
+          ],
+          shadowOnly: true,
+        };
+      }
+      input.onProgress?.("rebase", plan.todos.length, plan.todos.length);
       return {
         operation: "rebase",
         safeToAttempt: true,
-        outcome: "plan",
-        summary: `Rebase plan contains ${plan.todos.length} commit(s) to replay.`,
+        outcome: "clean",
+        summary: `Rebase replayed cleanly across ${plan.todos.length} planned commit(s) in the shadow repository.`,
         conflicts: [],
         details: [
           `base: ${input.target}`,
-          `${plan.todos.length} replay commit(s)`,
+          `${outcome.commits} commit(s) materialized by the replay`,
           `${plan.autoDroppedMerges} merge commit(s) auto-dropped from replay`,
-          "Plan generation is read-only; no real branch changed.",
+          "shadow clone only",
         ],
         shadowOnly: true,
       };
