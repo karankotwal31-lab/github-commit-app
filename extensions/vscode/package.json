@@ -87,8 +87,8 @@
       "properties": {
         "aria.siteUrl": {
           "type": "string",
-          "default": "https://steady-scorpion-839.convex.site",
-          "description": "The Aria backend URL. Override only if the app is deployed elsewhere."
+          "default": "",
+          "description": "Required: trusted Aria production HTTPS origin. HTTP is accepted only for localhost development."
         }
       }
     },
