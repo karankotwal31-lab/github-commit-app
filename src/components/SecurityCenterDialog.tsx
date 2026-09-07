@@ -200,7 +200,7 @@ export function SecurityCenterDialog({
 
   const scanRepo = useAction(api.securityScanner.scanRepo);
   const dismissFinding = useMutation(api.securityCenter.dismissSecurityFinding);
-  const signOutAllSessions = useMutation(api.securityHardening.signOutAllSessions);
+  const signOutAllSessions = useAction(api.securityHardening.signOutAllSessions);
 
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
@@ -1706,3 +1706,4 @@ function SessionsTab({
     </div>
   );
 }
+

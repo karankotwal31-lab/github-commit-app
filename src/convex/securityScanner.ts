@@ -983,6 +983,7 @@ async function runReviewer(
   const gate = (await ctx.runQuery(internal.securityCenter.ruleGateForFiles, {
     repo: mission.repo,
     files: coding?.files ?? [],
+    userId: mission.userId,
   })) as { blocked: unknown[]; review: unknown[] };
   if (gate.blocked.length > 0) {
     notes.push(

@@ -375,10 +375,14 @@ function OrgMembersView({
 // ---------------------------------------------------------------------------
 
 function ApprovalsTab({
+  repo,
   branch,
+  commit,
   orgId,
 }: {
+  repo: string;
   branch: string;
+  commit: string | null;
   orgId: string | null;
 }) {
   if (!orgId) {
@@ -388,15 +392,19 @@ function ApprovalsTab({
       </p>
     );
   }
-  return <ApprovalsOrg branch={branch} orgId={orgId} />;
+  return <ApprovalsOrg repo={repo} branch={branch} commit={commit} orgId={orgId} />;
 }
 
 /** Approval-policy management — mounted only when an org is selected. */
 function ApprovalsOrg({
+  repo,
   branch,
+  commit,
   orgId,
 }: {
+  repo: string;
   branch: string;
+  commit: string | null;
   orgId: string;
 }) {
   const policies = useQuery(api.organizations.policiesForOrg, {
@@ -414,11 +422,20 @@ function ApprovalsOrg({
   const upsert = useMutation(api.organizations.upsertApprovalPolicy);
   const remove = useMutation(api.organizations.deleteApprovalPolicy);
   const approve = useMutation(api.organizations.approveAction);
+  // Release approvals are scoped to the exact commit currently shown in the
+  // workspace. Falling back to a branch key keeps the policy editor useful
+  // before the first commit has been loaded, but never lets an approval for a
+  // previous tip authorize a newer release.
+  const changeKey = /^[a-f0-9]{40}$/i.test(commit ?? "")
+    ? (commit as string)
+    : `branch:${repo}:${branch}`;
 
   const status = useQuery(api.organizations.approvalStatus, {
     orgId: orgId as never,
     action: APPROVAL_ACTIONS.DEPLOY,
     branch,
+    repo,
+    changeKey,
   }) as unknown as {
     policy: {
       minRole: OrgRole;
@@ -430,6 +447,19 @@ function ApprovalsOrg({
     canApprove: boolean;
     actorRole: OrgRole;
   } | undefined;
+  const pending = useQuery(api.organizations.pendingApprovals, {
+    orgId: orgId as never,
+    repo,
+  }) as unknown as
+    | Array<{
+        _id: unknown;
+        branch: string;
+        changeKey: string;
+        commit: string;
+        paths: string[];
+        expiresAt: number;
+      }>
+    | undefined;
 
   const [action, setAction] = useState<ApprovalAction>(APPROVAL_ACTIONS.DEPLOY);
   const [branchGlob, setBranchGlob] = useState("");
@@ -498,6 +528,8 @@ function ApprovalsOrg({
                         orgId: orgId as never,
                         action: APPROVAL_ACTIONS.DEPLOY,
                         branch,
+                        repo,
+                        changeKey,
                       }),
                     )
                   }
@@ -516,6 +548,47 @@ function ApprovalsOrg({
               No deploy policy matches this branch — nothing to approve.
             </p>
           )}
+        </div>
+      )}
+
+      {pending && pending.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50/60 p-3">
+          <p className="text-xs font-medium text-amber-900">Pending protected-branch changes</p>
+          <p className="mt-1 text-[11px] text-amber-800">
+            Review the exact commit and approve it before the author retries the push.
+          </p>
+          <div className="mt-2 space-y-1.5">
+            {pending.map((request) => (
+              <div key={String(request._id)} className="flex items-center gap-2 rounded border border-amber-200 bg-white px-2 py-1.5">
+                <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-700">
+                  <span className="font-mono">{request.branch}</span> · {request.commit.slice(0, 12)} · {request.paths.length} path{request.paths.length === 1 ? "" : "s"}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[11px]"
+                  disabled={busy === `approve-${String(request._id)}`}
+                  onClick={() =>
+                    run(`approve-${String(request._id)}`, () =>
+                      approve({
+                        orgId: orgId as never,
+                        action: APPROVAL_ACTIONS.PROTECTED_BRANCH,
+                        branch: request.branch,
+                        repo,
+                        changeKey: request.changeKey,
+                        paths: request.paths,
+                        requestId: request._id as never,
+                      }),
+                    )
+                  }
+                >
+                  {busy === `approve-${String(request._id)}` ? <Loader2 className="size-3.5 animate-spin" /> : <BadgeCheck className="size-3.5" />}
+                  Approve
+                </Button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1139,11 +1212,13 @@ function ReleaseTab({
   owner,
   repo,
   branch,
+  commit,
   orgId,
 }: {
   owner: string;
   repo: string;
   branch: string;
+  commit: string | null;
   orgId: string | null;
 }) {
   if (!orgId) {
@@ -1153,7 +1228,7 @@ function ReleaseTab({
       </p>
     );
   }
-  return <ReleaseOrg owner={owner} repo={repo} branch={branch} orgId={orgId} />;
+  return <ReleaseOrg owner={owner} repo={repo} branch={branch} commit={commit} orgId={orgId} />;
 }
 
 /** Release command center — mounted only when an org is selected. */
@@ -1161,17 +1236,25 @@ function ReleaseOrg({
   owner,
   repo,
   branch,
+  commit,
   orgId,
 }: {
   owner: string;
   repo: string;
   branch: string;
+  commit: string | null;
   orgId: string;
 }) {
+  const fullName = `${owner}/${repo}`;
+  const changeKey = /^[a-f0-9]{40}$/i.test(commit ?? "")
+    ? (commit as string)
+    : `branch:${fullName}:${branch}`;
   const status = useQuery(api.organizations.approvalStatus, {
     orgId: orgId as never,
     action: APPROVAL_ACTIONS.DEPLOY,
     branch,
+    repo: fullName,
+    changeKey,
   }) as unknown as {
     policy: { minRole: OrgRole; minApprovers: number } | null;
     approvalCount: number;
@@ -1180,7 +1263,6 @@ function ReleaseOrg({
     actorRole: OrgRole;
   } | undefined;
 
-  const fullName = `${owner}/${repo}`;
   const securityCount = useQuery(
     api.securityCenter.listSecurityFindings,
     { repo: fullName },
@@ -1205,6 +1287,7 @@ function ReleaseOrg({
         orgId: orgId as never,
         repo: `${owner}/${repo}`,
         branch,
+        commit: commit ?? "",
         action: APPROVAL_ACTIONS.DEPLOY,
       });
       setResult(
@@ -1286,12 +1369,19 @@ function ReleaseOrg({
           type="button"
           size="sm"
           className="h-8 gap-1.5"
-          disabled={!orgId || busy || (status?.policy ? !status.satisfied : false)}
+          disabled={
+            !orgId ||
+            busy ||
+            !/^[a-f0-9]{40}$/i.test(commit ?? "") ||
+            (status?.policy ? !status.satisfied : false)
+          }
           onClick={() => setConfirming(true)}
           title={
             !orgId
               ? "Create/select an organization first"
-              : status?.policy && !status.satisfied
+              : !/^[a-f0-9]{40}$/i.test(commit ?? "")
+                ? "Load a branch commit before recording a release"
+                : status?.policy && !status.satisfied
                 ? "Approve the deploy gate first"
                 : "Record a controlled release"
           }
@@ -1329,6 +1419,8 @@ function ReleaseOrg({
         </div>
       )}
       <p className="text-[11px] leading-4 text-neutral-400">
+        {!/^[a-f0-9]{40}$/i.test(commit ?? "") &&
+          "Open or refresh a committed branch tip before recording a release. "}
         The release view reflects live scans (security findings, dependency
         reports) and the server-authoritative approval gate. It never fabricates
         a deployment.
@@ -1646,17 +1738,21 @@ export function PlatformDialog({
   owner,
   repo,
   branch,
+  commit,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   owner: string;
   repo: string;
   branch: string;
+  commit: string | null;
 }) {
   const orgs = useQuery(api.organizations.myOrgs);
   const [orgId, setOrgId] = useState<string | null>(null);
   const [tab, setTab] = useState("org");
-  const [currentRepo] = useState(`${owner}/${repo}`);
+  // Derive this from props so switching repositories while the dialog is
+  // mounted never leaves approval/security queries pointed at the old repo.
+  const currentRepo = `${owner}/${repo}`;
 
   const selectFirstOrg = useCallback(() => {
     if (orgs && orgs.length > 0 && !orgId) {
@@ -1734,7 +1830,7 @@ export function PlatformDialog({
             <OrgTab />
           </TabsContent>
           <TabsContent value="approvals" className="mt-3">
-            <ApprovalsTab branch={branch} orgId={orgId} />
+            <ApprovalsTab repo={currentRepo} branch={branch} commit={commit} orgId={orgId} />
           </TabsContent>
           <TabsContent value="plugins" className="mt-3">
             <PluginsTab />
@@ -1747,6 +1843,7 @@ export function PlatformDialog({
               owner={owner || currentRepo.split("/")[0] || ""}
               repo={repo || currentRepo.split("/")[1] || ""}
               branch={branch}
+              commit={commit}
               orgId={orgId}
             />
           </TabsContent>

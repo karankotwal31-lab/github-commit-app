@@ -240,7 +240,7 @@ http.route({
 });
 
 http.route({
-  path: "/api/cli/prs/{owner}/{repo}/{number}",
+  pathPrefix: "/api/cli/prs/",
   method: "GET",
   handler: httpAction(async (ctx, request) => {
     const token = bearerOf(request);
@@ -248,12 +248,11 @@ http.route({
       ? await ctx.runMutation(internal.cli.verifyCliToken, { token })
       : null;
     if (!userId) return unauthorized();
-
-    const params = (request as unknown as { params: Record<string, string> }).params;
-    const owner = params.owner ?? "";
-    const repo = params.repo ?? "";
-    const number = Number(params.number);
-    if (!owner || !repo || !Number.isInteger(number) || number < 1) {
+    const match = new URL(request.url).pathname.match(/^\/api\/cli\/prs\/([^/]+)\/([^/]+)\/(\d+)$/);
+    const owner = match ? decodeURIComponent(match[1]) : "";
+    const repo = match ? decodeURIComponent(match[2]) : "";
+    const number = match ? Number(match[3]) : NaN;
+    if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo) || !Number.isInteger(number) || number < 1) {
       return secureJson({ error: "Invalid PR reference." }, { status: 400 });
     }
     try {

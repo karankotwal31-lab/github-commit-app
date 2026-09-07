@@ -9,12 +9,12 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
+import { sha256Hex } from "./sha256";
 import { cleanName, cleanText } from "../lib/sanitize";
 import {
   canRole,
   evaluateApprovalPolicies,
   isOrgRole,
-  ORG_ROLE_RANK,
   ORG_ROLES,
   type ApprovalAction,
   type ApprovalPolicy,
@@ -348,6 +348,9 @@ export const updateMemberRole = mutation({
         throw new Error("Only the owner can manage owner roles.");
       }
     }
+    if (actorM.role !== ORG_ROLES.OWNER &&
+        (canRole(target.role as OrgRole, ORG_ROLES.ADMIN) || canRole(args.role, ORG_ROLES.ADMIN)))
+      throw new Error("Only an owner can manage administrator roles.");
     await ctx.db.patch(args.memberId, { role: args.role });
     await ctx.db.insert("auditLogs", {
       userId: actor,
@@ -365,7 +368,7 @@ export const removeMember = mutation({
   args: { orgId: v.id("organizations"), memberId: v.id("orgMembers") },
   handler: async (ctx, args) => {
     const actor = await currentUserId(ctx);
-    await requireOrgRole(ctx, args.orgId, actor, ORG_ROLES.ADMIN);
+    const actorM = await requireOrgRole(ctx, args.orgId, actor, ORG_ROLES.ADMIN);
     const target = await ctx.db.get(args.memberId);
     if (!target || target.orgId !== args.orgId) {
       throw new Error("Member not found in this organization.");
@@ -373,6 +376,9 @@ export const removeMember = mutation({
     if (target.userId === actor) {
       throw new Error("Leave the organization instead of removing yourself.");
     }
+    if (target.role === ORG_ROLES.OWNER) throw new Error("Transfer ownership before removing an owner.");
+    if (actorM.role !== ORG_ROLES.OWNER && canRole(target.role as OrgRole, ORG_ROLES.ADMIN))
+      throw new Error("Only an owner can remove an administrator.");
     await ctx.db.delete(args.memberId);
     await ctx.db.insert("auditLogs", {
       userId: actor,
@@ -519,203 +525,102 @@ export const deleteApprovalPolicy = mutation({
 
 /** Approve a sensitive action (release center). Only members with role >= the
  *  policy's minRole may approve; the approval is recorded and counted. */
+const approvalAction = v.union(v.literal("deploy"), v.literal("protected_branch"), v.literal("dependency_upgrade"), v.literal("database_migration"), v.literal("high_risk_ai"));
+const approvalScope = { orgId: v.id("organizations"), action: approvalAction, branch: v.string(),
+  repo: v.string(), changeKey: v.string(), paths: v.optional(v.array(v.string())) };
+
+async function approvalState(ctx: QueryCtx | MutationCtx, args: {
+  orgId: Id<"organizations">; action: ApprovalAction; branch: string; repo: string; changeKey: string; paths?: string[];
+}, userId: Id<"users">) {
+  const m = await membership(ctx, args.orgId, userId);
+  const rows = await ctx.db.query("approvalPolicies").withIndex("by_org", q => q.eq("orgId", args.orgId)).collect();
+  const policy = evaluateApprovalPolicies(rows, { action: args.action, branch: args.branch, paths: args.paths ?? [] });
+  const version = sha256Hex(JSON.stringify(rows.sort((a,b) => a._id.localeCompare(b._id))));
+  const grants = await ctx.db.query("actionApprovals").withIndex("by_orgAction", q => q.eq("orgId", args.orgId).eq("action", args.action).eq("branch", args.branch)).collect();
+  const valid = new Set<string>();
+  for (const grant of grants) {
+    if (!policy || grant.repo !== args.repo || grant.changeKey !== args.changeKey || grant.policyVersion !== version || (grant.expiresAt ?? 0) <= Date.now()) continue;
+    const approver = await membership(ctx, args.orgId, grant.approvedBy);
+    if (approver && canRole(approver.role, policy.minRole)) valid.add(grant.approvedBy);
+  }
+  return { policy, version, approvalCount: valid.size, actorRole: m?.role ?? ORG_ROLES.VIEWER,
+    canApprove: Boolean(m && policy && canRole(m.role, policy.minRole)),
+    satisfied: !policy || Boolean(m && canRole(m.role, policy.minRole) && valid.size >= policy.minApprovers) };
+}
+
 export const approveAction = mutation({
-  args: {
-    orgId: v.id("organizations"),
-    action: v.union(
-      v.literal("deploy"),
-      v.literal("protected_branch"),
-      v.literal("dependency_upgrade"),
-      v.literal("database_migration"),
-      v.literal("high_risk_ai"),
-    ),
-    branch: v.string(),
-  },
+  args: { ...approvalScope, requestId: v.optional(v.id("approvalRequests")) },
   handler: async (ctx, args) => {
     const actor = await currentUserId(ctx);
-    const m = await requireOrgRole(ctx, args.orgId, actor, ORG_ROLES.VIEWER);
-    const rows = await ctx.db
-      .query("approvalPolicies")
-      .withIndex("by_org", (q) => q.eq("orgId", args.orgId as never))
-      .collect();
-    const matched = evaluateApprovalPolicies(
-      rows.map((p) => ({
-        action: p.action as ApprovalAction,
-        branchGlob: p.branchGlob,
-        minRole: p.minRole as OrgRole,
-        minApprovers: p.minApprovers,
-        pathGlobs: p.pathGlobs,
-      })),
-      { action: args.action, branch: args.branch, paths: [] },
-    );
-    if (!matched) {
-      throw new Error(
-        "No approval policy matches this action on this branch — nothing to approve.",
-      );
+    await requireOrgRole(ctx, args.orgId, actor, ORG_ROLES.VIEWER);
+    let paths = args.paths ?? [];
+    if (args.action === "protected_branch") {
+      const request = args.requestId
+        ? await ctx.db.get(args.requestId)
+        : await ctx.db
+            .query("approvalRequests")
+            .withIndex("by_change", (q) =>
+              q
+                .eq("orgId", args.orgId)
+                .eq("repo", args.repo)
+                .eq("changeKey", args.changeKey),
+            )
+            .filter((q) => q.eq(q.field("branch"), args.branch))
+            .first();
+      if (!request || request.orgId !== args.orgId || request.repo !== args.repo || request.branch !== args.branch || request.changeKey !== args.changeKey || request.expiresAt <= Date.now())
+        throw new Error("Select a current proposed commit to approve.");
+      paths = request.paths;
     }
-    if (!canRole(m.role, matched.minRole)) {
-      throw new Error(
-        `Approving this needs the ${matched.minRole} role or higher in the organization.`,
-      );
-    }
-    const existing = await ctx.db
-      .query("actionApprovals")
-      .withIndex("by_orgAction", (q) =>
-        q
-          .eq("orgId", args.orgId as never)
-          .eq("action", args.action)
-          .eq("branch", args.branch),
-      )
-      .filter((q) => q.eq(q.field("approvedBy"), actor as never))
-      .first();
-    if (!existing) {
-      await ctx.db.insert("actionApprovals", {
-        orgId: args.orgId,
-        action: args.action,
-        branch: args.branch.slice(0, 200),
-        approvedBy: actor,
-        approvedAt: Date.now(),
-      });
-    }
+    if (!args.changeKey || !args.repo.includes("/")) throw new Error("A repository and exact change are required.");
+    const state = await approvalState(ctx, { ...args, paths }, actor);
+    if (!state.policy || !state.canApprove) throw new Error("Your role cannot approve this change.");
+    const existing = await ctx.db.query("actionApprovals").withIndex("by_orgAction", q => q.eq("orgId", args.orgId).eq("action", args.action).eq("branch", args.branch)).collect();
+    for (const grant of existing.filter(g => g.approvedBy === actor && g.repo === args.repo && g.changeKey === args.changeKey)) await ctx.db.delete(grant._id);
+    await ctx.db.insert("actionApprovals", { orgId: args.orgId, action: args.action, branch: args.branch,
+      repo: args.repo, changeKey: args.changeKey, policyVersion: state.version, approvedBy: actor, approvedAt: Date.now(), expiresAt: Date.now() + 60 * 60 * 1000 });
     await ctx.db.insert("auditLogs", {
       userId: actor,
       action: "org.approval.granted",
       resource: `org:${args.orgId}`,
-      branch: args.branch.slice(0, 200),
+      repo: args.repo,
+      branch: args.branch,
       result: "approved",
       approval: true,
-      detail: `${args.action} on ${args.branch.slice(0, 120)}`,
+      detail: `${args.action} · ${args.changeKey.slice(0, 64)}`,
       createdAt: Date.now(),
     });
   },
 });
 
-/** Release-center status: matched policy, approval count, and whether the
- *  caller can approve / the action is satisfied. */
 export const approvalStatus = query({
-  args: {
-    orgId: v.id("organizations"),
-    action: v.union(
-      v.literal("deploy"),
-      v.literal("protected_branch"),
-      v.literal("dependency_upgrade"),
-      v.literal("database_migration"),
-      v.literal("high_risk_ai"),
-    ),
-    branch: v.string(),
-  },
+  args: approvalScope,
   handler: async (ctx, args) => {
     const userId = await currentUserId(ctx);
-    const m = await requireOrgRole(ctx, args.orgId, userId, ORG_ROLES.VIEWER);
-    const rows = await ctx.db
-      .query("approvalPolicies")
-      .withIndex("by_org", (q) => q.eq("orgId", args.orgId as never))
-      .collect();
-    const matched = evaluateApprovalPolicies(
-      rows.map((p) => ({
-        action: p.action as ApprovalAction,
-        branchGlob: p.branchGlob,
-        minRole: p.minRole as OrgRole,
-        minApprovers: p.minApprovers,
-        pathGlobs: p.pathGlobs,
-      })),
-      { action: args.action, branch: args.branch, paths: [] },
-    );
-    const approvers = matched
-      ? await ctx.db
-          .query("actionApprovals")
-          .withIndex("by_orgAction", (q) =>
-            q
-              .eq("orgId", args.orgId as never)
-              .eq("action", args.action)
-              .eq("branch", args.branch),
-          )
-          .collect()
-      : [];
-    const count = new Set(approvers.map((a) => a.approvedBy)).size;
-    const canApprove = matched ? canRole(m.role, matched.minRole) : false;
-    return {
-      policy: matched,
-      approvalCount: count,
-      satisfied: matched
-        ? canRole(m.role, matched.minRole) && count >= matched.minApprovers
-        : true,
-      canApprove,
-      actorRole: m.role,
-    };
+    await requireOrgRole(ctx, args.orgId, userId, ORG_ROLES.VIEWER);
+    return approvalState(ctx, args, userId);
   },
 });
 
-/**
- * Release center: record a controlled release action (deploy / dependency
- * upgrade). Server-authoritative — when an approval policy matches, the
- * action is only recorded when the caller's role and the approval count
- * satisfy it. No matching policy means nothing requires approval. A release
- * record is an audit entry + explicit permission gate; actually deploying to
- * a hosting platform is an external dependency (reported, not faked).
- */
-export const recordRelease = mutation({
-  args: {
-    orgId: v.id("organizations"),
-    repo: v.string(),
-    branch: v.string(),
-    commit: v.optional(v.string()),
-    action: v.union(v.literal("deploy"), v.literal("dependency_upgrade")),
+export const pendingApprovals = query({
+  args: { orgId: v.id("organizations"), repo: v.string() },
+  handler: async (ctx, args) => {
+    await requireOrgRole(ctx, args.orgId, await currentUserId(ctx), ORG_ROLES.VIEWER);
+    return (await ctx.db.query("approvalRequests").withIndex("by_org", q => q.eq("orgId", args.orgId)).collect())
+      .filter(r => r.repo === args.repo && r.expiresAt > Date.now()).slice(-50);
   },
+});
+
+export const recordRelease = mutation({
+  args: { orgId: v.id("organizations"), repo: v.string(), branch: v.string(), commit: v.string(), action: v.union(v.literal("deploy"), v.literal("dependency_upgrade")) },
   handler: async (ctx, args) => {
     const actor = await currentUserId(ctx);
-    const m = await requireOrgRole(ctx, args.orgId, actor, ORG_ROLES.VIEWER);
-    const rows = await ctx.db
-      .query("approvalPolicies")
-      .withIndex("by_org", (q) => q.eq("orgId", args.orgId as never))
-      .collect();
-    const matched = evaluateApprovalPolicies(
-      rows.map((p) => ({
-        action: p.action as ApprovalAction,
-        branchGlob: p.branchGlob,
-        minRole: p.minRole as OrgRole,
-        minApprovers: p.minApprovers,
-        pathGlobs: p.pathGlobs,
-      })),
-      { action: args.action, branch: args.branch, paths: [] },
-    );
-    let approvalCount = 0;
-    if (matched) {
-      const approvers = await ctx.db
-        .query("actionApprovals")
-        .withIndex("by_orgAction", (q) =>
-          q
-            .eq("orgId", args.orgId as never)
-            .eq("action", args.action)
-            .eq("branch", args.branch),
-        )
-        .collect();
-      approvalCount = new Set(approvers.map((a) => a.approvedBy)).size;
-      if (
-        !canRole(m.role, matched.minRole) ||
-        approvalCount < matched.minApprovers
-      ) {
-        throw new Error(
-          `This release needs approval first: the policy requires the ${matched.minRole} role (or higher) and ${matched.minApprovers} approval(s) for ${args.action} on ${args.branch} (${approvalCount} recorded).`,
-        );
-      }
-    }
-    await ctx.db.insert("auditLogs", {
-      userId: actor,
-      action: `release.${args.action}`,
-      resource: `org:${args.orgId}`,
-      repo: args.repo.slice(0, 200),
-      branch: args.branch.slice(0, 200),
-      result: "approved",
-      approval: matched !== null,
-      detail: `${args.commit ? args.commit.slice(0, 12) : ""} recorded (policy ${matched ? "required" : "none"})`,
-      createdAt: Date.now(),
-    });
-    return {
-      recorded: true,
-      policyRequired: matched !== null,
-      approvalCount,
-    };
+    await requireOrgRole(ctx, args.orgId, actor, ORG_ROLES.DEVELOPER);
+    if (!/^[a-f0-9]{40}$/.test(args.commit)) throw new Error("Select an exact commit for this release.");
+    const state = await approvalState(ctx, { ...args, changeKey: args.commit }, actor);
+    if (!state.satisfied) throw new Error("This exact release still requires approval.");
+    await ctx.db.insert("auditLogs", { userId: actor, action: `release.${args.action}`, repo: args.repo, branch: args.branch,
+      result: "approved", approval: Boolean(state.policy), detail: args.commit, createdAt: Date.now() });
+    return { recorded: true, policyRequired: Boolean(state.policy), approvalCount: state.approvalCount };
   },
 });
 
@@ -756,84 +661,38 @@ export const internalPolicies = internalQuery({
  * role and the current approval count, so the git gate can block or allow
  * server-side. No org data other than the matched requirement leaks.
  */
-export const internalCommitGate = internalQuery({
-  args: {
-    userId: v.id("users"),
-    branch: v.string(),
-    paths: v.array(v.string()),
-  },
+export const internalCommitGate = internalMutation({
+  args: { userId: v.id("users"), repo: v.string(), branch: v.string(), paths: v.array(v.string()), changeKey: v.string(), proposedCommit: v.string() },
   handler: async (ctx, args) => {
-    const members = await ctx.db
-      .query("orgMembers")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId as never))
-      .collect();
-    let best: {
-      orgId: Id<"organizations">;
-      orgName: string;
-      role: OrgRole;
-      minRole: OrgRole;
-      minApprovers: number;
-      approvalCount: number;
-    } | null = null;
-    for (const member of members) {
-      const org = await ctx.db.get(member.orgId);
-      if (!org) continue;
-      const policies = await ctx.db
-        .query("approvalPolicies")
-        .withIndex("by_org", (q) => q.eq("orgId", member.orgId as never))
-        .collect();
-      const matched = evaluateApprovalPolicies(
-        policies.map((p) => ({
-          action: p.action as ApprovalAction,
-          branchGlob: p.branchGlob,
-          minRole: p.minRole as OrgRole,
-          minApprovers: p.minApprovers,
-          pathGlobs: p.pathGlobs,
-        })),
-        {
-          action: "protected_branch" as ApprovalAction,
-          branch: args.branch,
-          paths: args.paths,
-        },
-      );
-      if (!matched) continue;
-      const approvers = await ctx.db
-        .query("actionApprovals")
-        .withIndex("by_orgAction", (q) =>
-          q
-            .eq("orgId", member.orgId as never)
-            .eq("action", "protected_branch")
-            .eq("branch", args.branch),
-        )
-        .collect();
-      const approvalCount = new Set(approvers.map((a) => a.approvedBy)).size;
-      const role = member.role as OrgRole;
-      if (
-        !best ||
-        (ORG_ROLE_RANK[matched.minRole] ?? 0) >
-          (ORG_ROLE_RANK[best.minRole] ?? 0) ||
-        (ORG_ROLE_RANK[matched.minRole] ?? 0) ===
-          (ORG_ROLE_RANK[best.minRole] ?? 0) &&
-          matched.minApprovers > best.minApprovers
-      ) {
-        best = {
-          orgId: member.orgId,
-          orgName: org.name,
-          role,
-          minRole: matched.minRole as OrgRole,
-          minApprovers: matched.minApprovers,
-          approvalCount,
-        };
+    const binding = await ctx.db.query("orgRepositories").withIndex("by_repo", q => q.eq("repo", args.repo)).unique();
+    // Legacy policies remain enforced for memberships until an admin binds the repository.
+    const memberships = await ctx.db.query("orgMembers").withIndex("by_user", q => q.eq("userId", args.userId)).collect();
+    const orgIds = binding ? [binding.orgId] : [...new Set(memberships.map(m => m.orgId))];
+    let result: { orgName: string; minRole: OrgRole; minApprovers: number; approvalCount: number; satisfied: boolean } | null = null;
+    for (const orgId of orgIds) {
+      const state = await approvalState(ctx, { ...args, orgId, action: "protected_branch" }, args.userId);
+      if (!state.policy) continue;
+      const org = await ctx.db.get(orgId);
+      const existing = await ctx.db.query("approvalRequests").withIndex("by_change", q => q.eq("orgId", orgId).eq("repo", args.repo).eq("changeKey", args.changeKey)).first();
+      if (!existing || existing.expiresAt <= Date.now()) {
+        if (existing) await ctx.db.delete(existing._id);
+        await ctx.db.insert("approvalRequests", { orgId, repo: args.repo, branch: args.branch, paths: args.paths,
+          changeKey: args.changeKey, commit: args.proposedCommit, createdAt: Date.now(), expiresAt: Date.now() + 60 * 60 * 1000 });
       }
+      const gate = { orgName: org?.name ?? "Organization", minRole: state.policy.minRole, minApprovers: state.policy.minApprovers, approvalCount: state.approvalCount, satisfied: state.satisfied };
+      if (!result || !gate.satisfied) result = gate;
     }
-    return best
-      ? {
-          ...best,
-          satisfied:
-            canRole(best.role, best.minRole) &&
-            best.approvalCount >= best.minApprovers,
-        }
-      : null;
+    return result;
+  },
+});
+
+export const linkRepository = internalMutation({
+  args: { orgId: v.id("organizations"), repo: v.string(), userId: v.id("users") },
+  handler: async (ctx, args) => {
+    await requireOrgRole(ctx, args.orgId, args.userId, ORG_ROLES.ADMIN);
+    const prior = await ctx.db.query("orgRepositories").withIndex("by_repo", q => q.eq("repo", args.repo)).unique();
+    if (prior && prior.orgId !== args.orgId) throw new Error("This repository is already managed by another organization.");
+    if (!prior) await ctx.db.insert("orgRepositories", { orgId: args.orgId, repo: args.repo, linkedBy: args.userId });
   },
 });
 
