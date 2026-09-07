@@ -4,9 +4,19 @@ import { internal } from "./_generated/api";
 import { fetchWithRetry } from "./net";
 
 const GITHUB_API = "https://api.github.com";
+const DEFAULT_OTP_RELAY_URL = "https://auth.freebuff.app/send_otp";
+
+type ProbeName =
+  | "auth"
+  | "otp"
+  | "github"
+  | "ai"
+  | "email"
+  | "airbrake"
+  | "posthog";
 
 interface ProbeResult {
-  check: "auth" | "github" | "ai" | "email" | "airbrake" | "posthog";
+  check: ProbeName;
   ok: boolean;
   detail?: string;
 }
@@ -45,6 +55,41 @@ async function probeAuth(): Promise<ProbeResult> {
       detail: e instanceof Error ? e.message.slice(0, 300) : "auth probe failed",
     };
   }
+}
+
+/** Configuration-only probe: never sends a real OTP or exposes the relay key. */
+async function probeOtp(): Promise<ProbeResult> {
+  if (!process.env.FREEBUFF_EMAIL_API_KEY?.trim()) {
+    return {
+      check: "otp",
+      ok: false,
+      detail: "FREEBUFF_EMAIL_API_KEY is not configured; email OTP sign-in cannot send codes.",
+    };
+  }
+
+  const rawUrl = process.env.FREEBUFF_EMAIL_API_URL?.trim() || DEFAULT_OTP_RELAY_URL;
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== "https:") {
+      return {
+        check: "otp",
+        ok: false,
+        detail: "FREEBUFF_EMAIL_API_URL must use HTTPS.",
+      };
+    }
+  } catch {
+    return {
+      check: "otp",
+      ok: false,
+      detail: "FREEBUFF_EMAIL_API_URL is invalid.",
+    };
+  }
+
+  return {
+    check: "otp",
+    ok: true,
+    detail: "Email OTP relay credential and HTTPS endpoint are configured.",
+  };
 }
 
 async function probeGithub(): Promise<ProbeResult> {
@@ -119,6 +164,7 @@ async function probeAi(): Promise<ProbeResult> {
   }
 }
 
+/** Optional notification-email integration; separate from critical OTP auth. */
 async function probeEmail(): Promise<ProbeResult> {
   const key = process.env.RESEND_API_KEY;
   if (!key) {
@@ -211,6 +257,7 @@ export const runHealthChecks = internalAction({
   handler: async (ctx): Promise<{ results: ProbeResult[] }> => {
     const results = await Promise.all([
       probeAuth(),
+      probeOtp(),
       probeGithub(),
       probeAi(),
       probeEmail(),
