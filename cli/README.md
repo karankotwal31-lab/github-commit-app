@@ -11,6 +11,8 @@ without ever handing your GitHub OAuth token to a script.
 ## What you need
 
 - **Node.js 18+** (global `fetch` is required; no packages are installed).
+- The **trusted Aria production HTTPS origin**. There is intentionally no
+  built-in historical deployment fallback.
 - An **Aria personal access token**, created in the web app:
   **Platform → CLI & API → Create token**. The token is shown exactly once,
   starts with `aria_`, and is scoped to *your* account only.
@@ -28,17 +30,23 @@ aria --version
 
 ## Login
 
-```bash
-aria login <token>          # stored in ~/.aria/config.json (chmod 600)
-aria login                  # same, but prompts for the token
-```
-
-You can skip storing a token per-machine with the environment:
+Configure the production origin on first login:
 
 ```bash
-export ARIA_TOKEN="aria_…"  # env overrides the config file
-export ARIA_SITE="https://your-site.convex.site"   # only if self-hosting elsewhere
+aria login <token> --site https://YOUR_PUBLIC_APP_ORIGIN
 ```
+
+The site and token are stored in `~/.aria/config.json` with owner-only file
+permissions. You can also keep either value out of the config file and use
+environment variables instead:
+
+```bash
+export ARIA_SITE="https://YOUR_PUBLIC_APP_ORIGIN"
+export ARIA_TOKEN="aria_…"
+```
+
+`ARIA_URL` is accepted as an alias for `ARIA_SITE`. HTTP is rejected for
+remote origins and accepted only for localhost development.
 
 ## Commands
 
@@ -48,7 +56,7 @@ export ARIA_SITE="https://your-site.convex.site"   # only if self-hosting elsewh
 | `aria repos` | Your connected repositories (private marked) |
 | `aria inbox` | Unified inbox — findings newest first, `[new]` for unread |
 | `aria prs` | Open pull requests across your repos, newest first |
-| `aria open` | Print the web app URL |
+| `aria open` | Print the configured web app URL |
 | `aria help` | Full help text |
 | `aria --version` | Version |
 
@@ -66,6 +74,7 @@ aria prs --json | jq '.[] | select(.draft == false)'
 - Every request is scoped server-side to the user the token belongs to.
 - Revoke a token at any time in **Platform → CLI & API**; revoked tokens
   are rejected immediately.
+- Remote Aria origins must use HTTPS; only localhost may use HTTP.
 - The CLI is **read-only by design**: it can inspect your repos and inbox,
   but it cannot change anything on GitHub.
 
