@@ -170,3 +170,5 @@ Record the released Git commit SHA. If a production smoke test fails, fix or rev
 ## Known build characteristic
 
 Monaco and its language workers are intentionally substantial assets. The production build currently completes successfully in CI. Large editor/worker chunks are a performance optimization opportunity, not evidence of a failed build; changes to Monaco loading should be treated as product-sensitive because they can alter editor capabilities.
+
+The repository build command gives Vite a 4 GiB Node old-space limit. The locked production bundle exceeds Node's roughly 2 GiB default in some environments, which otherwise aborts the canonical deployment build with a JavaScript heap out-of-memory error even when CI succeeds. Use a build machine with memory available for that heap plus Node, bundler workers, and operating-system overhead. This setting is part of `bun run build`, so `bun run verify` and `bun run deploy` use the same budget without a shell-only override.
