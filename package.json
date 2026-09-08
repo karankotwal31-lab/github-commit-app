@@ -8,7 +8,7 @@
     "dev": "vite",
     "preflight": "bun run lint && bun test && bun run extension:typecheck && bun run extension:test && bun run extension:legacy:typecheck",
     "deploy": "bun run preflight && bunx @convex-dev/static-hosting deploy --build-command \"bun run build\"",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && node --max-old-space-size=4096 node_modules/vite/bin/vite.js build",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
     "test": "bun test",
