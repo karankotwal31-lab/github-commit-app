@@ -1,0 +1,68 @@
+name: Mock Deploy Audit
+
+on:
+  push:
+    branches:
+      - audit/mock-deploy-20260910
+
+permissions:
+  contents: read
+
+jobs:
+  mock-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Provision isolated Convex backend
+        run: bunx convex dev --once --typecheck-components
+
+      - name: Hard verification
+        run: |
+          bun run lint
+          node --check public/sw.js
+          bun run build
+          bun test
+          (cd extension && bun install --frozen-lockfile && bunx tsc -p ./ --noEmit)
+          (cd extensions/vscode && bun install --frozen-lockfile && bunx tsc -p ./ --noEmit && bun test)
+
+      - name: Mock deployment smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          bunx vite preview --host 127.0.0.1 --port 4173 > /tmp/aria-preview.log 2>&1 &
+          preview_pid=$!
+          trap 'kill "$preview_pid" 2>/dev/null || true' EXIT
+
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:4173/ > /tmp/aria-index.html; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -fsS --retry 3 http://127.0.0.1:4173/ > /tmp/aria-index.html
+          grep -q 'id="root"' /tmp/aria-index.html
+
+          for route in auth privacy terms; do
+            code=$(curl -sS -o "/tmp/aria-${route}.html" -w '%{http_code}' "http://127.0.0.1:4173/${route}")
+            test "$code" = "200"
+            grep -q 'id="root"' "/tmp/aria-${route}.html"
+          done
+
+          asset=$(grep -oE 'src="/[^"]+\.js"' /tmp/aria-index.html | head -n1 | cut -d'"' -f2)
+          test -n "$asset"
+          curl -fsS --retry 3 "http://127.0.0.1:4173${asset}" > /tmp/aria-main.js
+          test -s /tmp/aria-main.js
+
+          echo 'Mock deployment smoke test passed: root, SPA routes, and main JS asset are all served successfully.'
