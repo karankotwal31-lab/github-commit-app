@@ -49,6 +49,7 @@ import {
   queueDraft,
   getOfflineAccount,
   offlineStorageDurable,
+  isNetworkError,
 } from "@/lib/offlineBuffer";
 
 // Per-tab device id for live presence. Module-scope so it is generated once
@@ -66,12 +67,6 @@ const DEVICE_ID =
 /** True when a Convex/GitHub failure looks like a connectivity problem
  *  (used by the offline commit queue — network failures queue the commit
  *  instead of losing it). */
-function isNetworkError(message: string): boolean {
-  return /failed to fetch|networkerror|network error|offline|ecoconn|fetch failed|timeout|enetdown|socket hang up/i.test(
-    message,
-  );
-}
-
 function Workspace({
   connection,
 }: {

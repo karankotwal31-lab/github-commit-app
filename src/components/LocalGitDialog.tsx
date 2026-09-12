@@ -52,6 +52,7 @@ import {
   type StatusRow,
 } from "@/lib/localGit";
 import { errorMessage, ownerOf, repoNameOf } from "@/lib/github";
+import { queuePush, isNetworkError, pendingPushes, clearPendingPush } from "@/lib/offlineBuffer";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown,
@@ -256,6 +257,41 @@ export function LocalGitDialog({
     return () => clearTimeout(timer);
   }, [init]);
 
+  // Retry a queued push for this repo/branch the moment connectivity
+  // returns. Scoped to this dialog's own repo/branch only -- it doesn't
+  // reach into other repos' queued pushes, which retry next time their own
+  // dialog is open and online.
+  useEffect(() => {
+    const retry = () => {
+      const queued = pendingPushes().find(
+        (p) => p.repo === `${owner}/${repo}` && p.branch === branch,
+      );
+      if (!queued) return;
+      pushLocal(backend, {
+        owner,
+        repo,
+        branch,
+        force: queued.force,
+        allowSecrets: queued.allowSecrets,
+        onProgress: () => {},
+      })
+        .then(() => {
+          clearPendingPush(queued.id);
+          setPushNote(`Reconnected — queued push to ${branch} went through.`);
+          toast.success("Back online — queued push completed.");
+          onRefresh();
+        })
+        .catch(() => {
+          // Still can't push (e.g. a real conflict surfaced once online, not
+          // just a network blip) -- leave it queued; the existing push UI
+          // surfaces the real error next time the user tries manually.
+        });
+    };
+    if (navigator.onLine) retry();
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+  }, [owner, repo, branch, backend, onRefresh]);
+
   // Refresh status/graph when the repo was just cloned.
   const afterLocalChange = useCallback(() => {
     void reloadAll();
@@ -384,6 +420,12 @@ export function LocalGitDialog({
             },
           },
         );
+      } else if (isNetworkError(message) || !navigator.onLine) {
+        queuePush({ repo: `${owner}/${repo}`, branch, force, allowSecrets: pushConfirm });
+        setPushNote(
+          "You're offline — this push is queued and will go out automatically the moment you're back online. Your commits are already saved locally.",
+        );
+        toast.info("Offline — push queued, will retry automatically.");
       } else {
         toast.error(message);
       }
