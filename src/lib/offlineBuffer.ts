@@ -24,10 +24,24 @@ export interface PendingDraft {
 
 const MAX_DRAFTS_PER_ACCOUNT = 200;
 const MAX_COMMITS_PER_ACCOUNT = 50;
+const MAX_PENDING_PUSHES = 20;
 
 let account: string | null = null;
 const memory = new Map<string, string>();
 const volatile = new Set<string>();
+
+/**
+ * Heuristic: does this error message indicate a network/connectivity
+ * failure (as opposed to a real application-level rejection, e.g. a
+ * conflict or a permissions error)? Shared here so every offline-queueing
+ * call site (drafts, commits, pushes) classifies failures the same way
+ * instead of each maintaining its own copy that could drift.
+ */
+export function isNetworkError(message: string): boolean {
+  return /failed to fetch|networkerror|network error|offline|ecoconn|fetch failed|timeout|enetdown|socket hang up/i.test(
+    message,
+  );
+}
 
 export function setOfflineAccount(userId: string | null) {
   account = userId;
@@ -194,4 +208,68 @@ export function clearPendingCommit(id: string): void {
 
 export function clearAllPendingCommits(): void {
   writeCommits([]);
+}
+
+// ---------------------------------------------------------------------------
+// Offline push queue
+//
+// Merge and rebase run entirely against the local isomorphic-git object
+// database (IndexedDB) and need no network at all -- only the final push to
+// GitHub does. Previously a push that failed because the network dropped
+// just threw, with no queue and no retry, unlike the commit flow above.
+// Unlike commits, a pending push doesn't need to serialize any file content:
+// the actual unpushed commits already live safely in the local git object
+// database, so "replay" is just calling pushLocal again with the same
+// owner/repo/branch once connectivity returns -- this queue only needs to
+// remember that an unpushed push attempt exists.
+// ---------------------------------------------------------------------------
+
+export interface PendingPush {
+  id: string;
+  repo: string;
+  branch: string;
+  force?: boolean;
+  allowSecrets?: boolean;
+  queuedAt: number;
+}
+
+const readPushes = (userId = account) => read<PendingPush>("pushes", userId);
+const writePushes = (pushes: PendingPush[], userId = account) =>
+  write("pushes", pushes, userId);
+
+/**
+ * Queue a push that couldn't reach GitHub because the network dropped.
+ * At most one pending push per repo+branch -- a newer attempt replaces an
+ * older queued one rather than stacking duplicates that would just replay
+ * the same underlying commits.
+ */
+export function queuePush(
+  push: Omit<PendingPush, "id" | "queuedAt">,
+  userId = account,
+): string {
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const all = readPushes(userId).filter(
+    (p) => !(p.repo === push.repo && p.branch === push.branch),
+  );
+  all.push({ ...push, id, queuedAt: Date.now() });
+  writePushes(all.slice(-MAX_PENDING_PUSHES), userId);
+  return id;
+}
+
+/** All queued pushes, oldest first (replay order). */
+export function pendingPushes(): PendingPush[] {
+  return readPushes().sort((a, b) => a.queuedAt - b.queuedAt);
+}
+
+export function pendingPushCount(): number {
+  return readPushes().length;
+}
+
+/** Drop a queued push after it has been replayed successfully. */
+export function clearPendingPush(id: string): void {
+  writePushes(readPushes().filter((p) => p.id !== id));
+}
+
+export function clearAllPendingPushes(): void {
+  writePushes([]);
 }
